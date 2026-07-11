@@ -1,0 +1,7 @@
+{
+  "name": "ControlableNautilusEffect",
+  "displayName": "Nautilus",
+  "textures": [
+    "assets/particles/nautilus/nautilus.png"
+  ]
+}

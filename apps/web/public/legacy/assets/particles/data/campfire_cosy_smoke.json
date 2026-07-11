@@ -1,0 +1,18 @@
+{
+  "name": "ControlableCampfireCosySmokeEffect",
+  "displayName": "CampfireCosySmoke",
+  "textures": [
+    "assets/particles/campfire_cosy_smoke/big_smoke_0.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_1.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_2.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_3.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_4.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_5.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_6.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_7.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_8.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_9.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_10.png",
+    "assets/particles/campfire_cosy_smoke/big_smoke_11.png"
+  ]
+}

@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>粒子发射器可视化</title>
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.min.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/"
+          }
+        }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/noisejs@2.1.0/index.min.js"></script>
+    <link rel="stylesheet" href="./assets/emitter_generator/css/style.css?v=20260313_6"/>
+    <link rel="stylesheet" href="./assets/shared/css/minecraft-theme.css?v=20260709_1"/>
+    <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
+</head>
+
+<body data-theme="dark-1" data-mc-theme="deep-pink">
+<div class="app">
+    <header class="topbar">
+        <div class="brand">
+            <a class="btn smallBtn" href="../index.html" target="_top">项目</a>
+            <div class="dot"></div>
+            <div>
+                <div class="title">粒子发射器可视化</div>
+                <div class="sub">
+                    生成 Kotlin：<code
+                >class GeneratedEmitter(pos: Vec3, world: Level?) : AutoParticleEmitters(pos, world)</code>
+                </div>
+            </div>
+        </div>
+        <div class="top-actions">
+            <div class="page-switch">
+                <button class="btn primary" id="btnPageEditor" type="button">编辑</button>
+                <button class="btn" id="btnPageCode" type="button">代码</button>
+            </div>
+            <div class="sep"></div>
+            <button class="btn" id="btnPlay">▶ 预览</button>
+            <button class="btn" id="btnPause">⏸ 暂停</button>
+            <button class="btn" id="btnClear">🧹 清空粒子</button>
+            <button class="btn" id="btnSettings">设置</button>
+            <button class="btn" id="btnUndo" title="撤回 (Ctrl+Z / ⌘Z)">↶ 撤回</button>
+            <button class="btn" id="btnRedo" title="重做 (Ctrl+Y / ⌘⇧Z)">↷ 重做</button>
+            <div class="sep"></div>
+            <button class="btn" id="btnImportJson" title="从 JSON 导入">📥 从JSON导入</button>
+            <button class="btn" id="btnExportJson" title="导出为 JSON">📤 导出为 JSON</button>
+            <button class="btn danger" id="btnResetAll" title="重置为默认">⟲ 重置</button>
+        </div>
+    </header>
+
+    <main id="pageEditor" class="main page page-editor">
+        <!-- 左侧参数栏 -->
+        <section class="panel left">
+            <div class="panel-title">粒子发射器</div>
+            <div id="emitterTools" class="panel-tools emitter-tools">
+                <button class="btn small" id="btnAddEmitter">➕ 添加发射器</button>
+            </div>
+
+            <div class="panel-subtitle">预览参数</div>
+            <div class="grid2">
+                <div class="field">
+                    <label>Tick/秒（预览）</label>
+                    <input
+                            id="ticksPerSecond"
+                            type="number"
+                            step="1"
+                            min="1"
+                            max="200"
+                            value="20"
+                            data-step-fixed="1"
+                    />
+                </div>
+            </div>
+
+            <div class="panel-subtitle behavior-config-title">页面切换</div>
+            <div class="config-tabs" id="cfgPageTabs">
+                <button class="config-tab active" type="button" data-cfg-tab="emitters">发射器卡片</button>
+                <button class="config-tab" type="button" data-cfg-tab="queues">命令队列</button>
+                <button class="config-tab" type="button" data-cfg-tab="kotlin">项目设置</button>
+                <button class="config-tab" type="button" data-cfg-tab="tick">doTick 表达式</button>
+                <button class="config-tab" type="button" data-cfg-tab="death">死亡行为</button>
+            </div>
+
+            <div id="cfgPageEmitters" class="cfg-page active">
+                <div class="panel-subtitle">发射器卡片</div>
+                <div id="emitList" class="emitList"></div>
+            </div>
+
+            <div id="cfgPageQueues" class="cfg-page">
+                <div class="panel-subtitle">命令队列</div>
+                <div class="panel-tools emitter-tools">
+                    <button class="btn small" id="btnAddCmdQueue">➕ 添加队列</button>
+                </div>
+                <div id="cmdQueueList" class="cmdQueueList"></div>
+                <div class="hint">选择队列后，右侧编辑命令；队列名称和 sign 在卡片内维护。</div>
+            </div>
+
+            <div id="cfgPageKotlin" class="cfg-page">
+                <div class="panel-subtitle">项目设置</div>
+                <div class="grid2">
+                    <div class="field">
+                        <label>类名</label>
+                        <input id="kClassName" type="text" value="GeneratedEmitter"/>
+                    </div>
+                    <div class="field">
+                        <label>包名（可空）</label>
+                        <input id="kPackageName" type="text" value="" placeholder="cn.coostack.generated.emitters"/>
+                    </div>
+                </div>
+                <div class="hint">和 Composition Builder 一样，这里维护生成类的项目级信息。代码页只输出整合后的完整 Emitter Kotlin 类。</div>
+                <div class="panel-subtitle">总发射器生命周期（父级）</div>
+                <div class="grid3">
+                    <div class="field"><label>模式</label><select id="rootLifecycleMode" class="input"><option value="once">once（单次）</option><option value="interval">interval（按间隔持续）</option><option value="interval_n_tick">interval_n_tick（按间隔，持续 N tick）</option></select></div>
+                    <div class="field root-life-field" data-root-life="interval"><label>间隔 tick</label><input id="rootLifecycleInterval" class="input" type="number" step="1" min="1" value="1" data-step-fixed="1"/></div>
+                    <div class="field root-life-field" data-root-life="interval_n_tick"><label>总持续 tick (N)</label><input id="rootLifecycleMaxTick" class="input" type="number" step="1" min="1" value="120" data-step-fixed="1"/></div>
+                </div>
+                <div class="hint">父生命周期驱动全部子发射器；每个子发射器再用 <code>startTick/endTick</code> 控制生效窗口。示例：父 <code>maxTick=50</code>，子 A <code>0~10</code>，子 B <code>15~50</code>。注意：<code>endTick=-1</code> 仅表示子窗口不限，父模式若为 <code>interval_n_tick</code> 仍会在 N tick 后停止发射。</div>
+            </div>
+
+            <div id="cfgPageTick" class="cfg-page">
+                <div class="panel-subtitle">全局发射器变量</div>
+                <div id="globalVarList" class="kv-list"></div>
+                <div class="add-row">
+                    <button class="btn small" id="btnAddGlobalVar">➕ 添加变量</button>
+                </div>
+
+                <div class="panel-subtitle">doTick 表达式</div>
+                <div id="tickActionList" class="kv-list"></div>
+            </div>
+
+            <div id="cfgPageDeath" class="cfg-page">
+                <div class="panel-subtitle">死亡行为（singleParticleDeathAction）</div>
+                <div class="grid2" id="deathBaseRow">
+                    <div class="field">
+                        <label>启用死亡逻辑</label>
+                        <select id="deathEnabled" class="input">
+                            <option value="true">true</option>
+                            <option value="false">false</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>模式</label>
+                        <select id="deathMode" class="input">
+                            <option value="dissipate">直接消散</option>
+                            <option value="respawn">重生粒子</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="deathLogicBody">
+                    <div class="grid2" id="deathConditionHead">
+                        <div class="field">
+                            <label>条件启用</label>
+                            <select id="deathConditionEnabled" class="input">
+                                <option value="true">true</option>
+                                <option value="false">false</option>
+                            </select>
+                        </div>
+                        <div class="field" id="deathConditionTools">
+                            <label>条件卡片</label>
+                            <button class="btn small" id="btnAddDeathCondRule" type="button">➕ 添加条件</button>
+                        </div>
+                    </div>
+                    <div id="deathConditionList" class="kv-list expr-rule-list"></div>
+                    <div id="deathRespawnBlock">
+                        <div class="grid3">
+                            <div class="field">
+                                <label>重生数量</label>
+                                <input id="deathRespawnCount" class="input" type="text" inputmode="decimal" value="1"/>
+                            </div>
+                            <div class="field">
+                                <label>size 倍率</label>
+                                <input id="deathSizeMul" class="input" type="text" inputmode="decimal" value="1.0"/>
+                            </div>
+                            <div class="field">
+                                <label>speed 倍率</label>
+                                <input id="deathSpeedMul" class="input" type="text" inputmode="decimal" value="1.0"/>
+                            </div>
+                        </div>
+                        <div class="vec3Row">
+                            <div class="miniLabel">重生偏移 Vec3</div>
+                            <div class="vec3">
+                                <input id="deathOffX" class="input" type="text" inputmode="decimal" value="0"/>
+                                <input id="deathOffY" class="input" type="text" inputmode="decimal" value="0"/>
+                                <input id="deathOffZ" class="input" type="text" inputmode="decimal" value="0"/>
+                            </div>
+                        </div>
+                        <div class="grid2">
+                            <div class="field">
+                                <label>sign 处理</label>
+                                <select id="deathSignMode" class="input">
+                                    <option value="keep">保持旧 sign</option>
+                                    <option value="set">覆盖 sign</option>
+                                </select>
+                            </div>
+                            <div class="field" id="deathSignValueWrap">
+                                <label>sign 值</label>
+                                <input id="deathSignValue" class="input" type="text" inputmode="decimal" value="0"/>
+                            </div>
+                        </div>
+                        <div class="grid3">
+                            <div class="field">
+                                <label>maxAge 覆盖</label>
+                                <select id="deathMaxAgeEnabled" class="input">
+                                    <option value="false">false</option>
+                                    <option value="true">true</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label>来源</label>
+                                <select id="deathMaxAgeType" class="input">
+                                    <option value="number">常量</option>
+                                    <option value="var">变量</option>
+                                    <option value="age">age</option>
+                                    <option value="maxAge">maxAge</option>
+                                    <option value="respawnCount">respawnCount</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label>值</label>
+                                <input id="deathMaxAgeValueNum" class="input" type="number" step="1" min="1" value="1"/>
+                                <select id="deathMaxAgeValueVar" class="input"></select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel-subtitle" id="deathVarActionTitle">死亡时变量修改语句</div>
+                    <div id="deathVarActionList" class="kv-list"></div>
+                    <div class="add-row" id="deathVarActionAddRow">
+                        <button class="btn small" id="btnAddDeathVarAction">➕ 添加修改卡片</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="hint">
+                预览相机操作：<strong>中键旋转</strong> /
+                <strong>右键平移</strong> / <strong>方向键平移</strong> /
+                <strong>滚轮缩放</strong>。<br/>
+                代码页直接生成整合后的完整 Emitter Kotlin 类。
+            </div>
+        </section>
+
+        <div class="resizer resizer-left" data-resizer="left" aria-hidden="true"></div>
+
+        <!-- 中间预览 -->
+        <section class="panel center">
+            <div class="panel-title">预览</div>
+            <div id="viewportWrap" class="viewport-wrap">
+                <div id="viewport" class="viewport"></div>
+                <div class="overlay">
+                    <div class="chip">中键旋转 / 右键平移 / 方向键平移 / 滚轮缩放</div>
+                    <div id="statusSnapMode" class="chip hidden"></div>
+                    <div class="chip" id="statChip">Particles: 0</div>
+                    <div class="chip" id="fpsChip">FPS: --</div>
+                </div>
+                <div class="fsBtn">
+                    <button class="btn" id="btnFull">⛶ 全屏</button>
+                    <button class="btn" id="btnExitFull" style="display: none">
+                        ✕ 退出
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <div class="resizer resizer-right" data-resizer="right" aria-hidden="true"></div>
+
+        <!-- 右侧命令队列 -->
+        <section class="panel right">
+            <div id="commandPanelTitle" class="panel-title">参数编辑</div>
+
+            <div id="selectionInspector" class="inspector-page active">
+                <div id="inspectorEmpty" class="inspector-empty">
+                    <div class="hint">在左侧选择发射器或命令队列。</div>
+                </div>
+                <div id="inspectorEmitter" class="inspector-card hidden"></div>
+                <div id="inspectorQueue" class="inspector-card hidden"></div>
+            </div>
+
+            <div id="commandEditorPage" class="cmd-page">
+                <div id="commandTools" class="panel-tools command-tools"><span class="chip" id="activeQueueBadge">队列 #1</span><button class="btn small" id="btnExpandCommands">展开全部</button><button class="btn small" id="btnCollapseCommands">折叠全部</button></div>
+                <div class="add-row"><select id="addCommandType"><option value="ParticleNoiseCommand">Noise 噪声扰动</option><option value="ParticleDragCommand">Drag 空气阻力</option><option value="ParticleFlowFieldCommand">FlowField 流场</option><option value="ParticleAttractionCommand">Attraction 吸引/排斥</option><option value="ParticleOrbitCommand">Orbit 轨道</option><option value="ParticleVortexCommand">Vortex 旋涡（吸入 center）</option><option value="ParticleRotationForceCommand">RotationForce 切向旋转力</option><option value="ParticleDistortionCommand">Distortion 扭曲环</option><option value="ParticleGravityCommand">Gravity 重力(物理)</option><option value="ParticleLifetimeMotionCommand">LifetimeMotion 生命周期运动</option><option value="ParticleInheritVelocityCommand">InheritVelocity 继承速度</option></select><button class="btn" id="btnAddCmd">➕ 添加</button></div>
+                <div id="cmdList" class="cmdList"></div>
+                <div class="hint">拖动卡片左侧“≡”排序；关闭“启用”则生成代码时跳过该命令。<br/>Gravity 历史 bug：生成模板必须回写 <code>data.velocity = data.velocity.add(...)</code>。</div>
+            </div>
+        </section>
+    </main>
+
+    <section id="pageCode" class="page page-code hidden">
+        <div class="panel code-panel">
+            <div class="panel-title kotlin-title">
+                <span>Kotlin 输出</span>
+            </div>
+            <div class="kotlin-toolbar">
+                <div class="kotlin-actions">
+                    <button class="btn primary" id="btnGenKotlin">🧾 生成 Kotlin</button>
+                    <button class="btn" id="btnCopyKotlin">📋 复制代码</button>
+                </div>
+                <div class="kotlin-note">代码页固定输出整合后的完整 Emitter 类。</div>
+            </div>
+            <div id="kotlinBody" class="kotlin-body">
+                <pre id="kotlinOutEmitter" class="kotlin-out code code-highlight" aria-readonly="true"></pre>
+            </div>
+        </div>
+    </section>
+
+    <!-- 设置 -->
+    <div id="settingsMask" class="modal-mask hidden"></div>
+    <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <div class="modal-title">设置</div>
+            <button id="btnCloseSettings" class="btn icon">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="settings-layout">
+                <div class="settings-panel">
+                    <div class="settings-panel-title">数值</div>
+                    <div class="settings-form">
+                        <div class="settings-row">
+                            <div class="settings-label">参数步长</div>
+                            <input id="inpParamStep" class="input" type="number" value="0.1" step="0.01"
+                                   min="0.000001"/>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">预览粒子大小倍率</div>
+                            <input id="inpPointSize" class="input" type="number" value="1.0" step="0.01" min="0.01"/>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-panel">
+                    <div class="settings-panel-title">显示</div>
+                    <div class="settings-form">
+                        <div class="settings-row">
+                            <div class="settings-label">主题</div>
+                            <select id="themeSelect" class="input theme-select" title="Alt+[ / Alt+] 切换">
+                                <option value="dark-1">夜岚</option>
+                                <option value="dark-2">深潮</option>
+                                <option value="dark-3">焰砂</option>
+                                <option value="light-1">雾蓝</option>
+                                <option value="light-2">杏露</option>
+                                <option value="light-3">薄荷</option>
+                            </select>
+                        </div>
+                        <div class="settings-toggles">
+                            <label class="chk settings-toggle">
+                                <input id="chkAxes" type="checkbox" checked/>
+                                <span>显示坐标轴</span>
+                            </label>
+                            <label class="chk settings-toggle">
+                                <input id="chkGrid" type="checkbox" checked/>
+                                <span>显示网格</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-panel settings-panel-wide">
+                    <div class="settings-panel-title">快捷键</div>
+                    <div class="settings-form">
+                        <div class="settings-row">
+                            <div class="settings-label">网格吸附快捷键</div>
+                            <label class="chk settings-toggle">
+                                <input id="chkSnapGridKeyToggleMode" type="checkbox"/>
+                                <span>切换模式（单点切换）</span>
+                            </label>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">粒子吸附快捷键</div>
+                            <label class="chk settings-toggle">
+                                <input id="chkSnapParticleKeyToggleMode" type="checkbox"/>
+                                <span>切换模式（单点切换）</span>
+                            </label>
+                        </div>
+                        <div class="settings-actions">
+                            <button id="    btnOpenHotkeys" class="btn primary">打开快捷键设置</button>
+                            <div class="settings-note">未启用切换模式时，长按会临时切换吸附状态。</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-panel settings-panel-wide">
+                    <div class="settings-panel-title">关键帧</div>
+                    <div class="settings-form">
+                        <div class="settings-row"><div class="settings-label">关键帧吸附平面</div><select id="selMotionSnapPlane" class="input"><option value="XZ">XZ</option><option value="XY">XY</option><option value="ZY">ZY</option></select></div>
+                        <div class="settings-row"><div class="settings-label"></div><label class="chk settings-toggle"><input id="chkMotionSnapGrid" type="checkbox"/><span>拖动关键帧时启用网格吸附</span></label></div>
+                        <div class="settings-row"><div class="settings-label">网格步长</div><input id="inpMotionSnapStep" class="input" type="number" value="0.5" step="0.01" min="0.0001"/></div>
+                        <div class="settings-row"><div class="settings-label">吸附半径</div><input id="inpMotionSnapRadius" class="input" type="number" value="0.35" step="0.01" min="0"/></div>
+                        <div class="settings-actions"><button id="btnOpenHotkeys" class="btn primary">打开快捷键设置</button><div class="settings-note">A / S / D 快速切换 XZ / XY / ZY 平面</div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-foot" style="display:flex; gap:8px; align-items:center;">
+            <button id="btnHotkeysExport" class="btn">导出设置</button>
+            <button id="btnHotkeysImport" class="btn">导入设置</button>
+            <input id="fileHotkeys" type="file" accept="application/json" hidden/>
+            <span style="flex:1 1 auto;"></span>
+        </div>
+    </div>
+
+    <!-- 快捷键设置（二级菜单） -->
+    <div id="hkMask" class="modal-mask hidden"></div>
+    <div id="hkModal" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <div class="modal-title">快捷键设置</div>
+            <input id="hkSearch" class="input" placeholder="搜索快捷键：播放 / 导出 / 全屏 ..."/>
+            <button id="btnCloseHotkeys" class="btn icon">✕</button>
+        </div>
+        <div class="modal-body">
+            <div id="hkHint" style="margin:0 0 10px; opacity:.8; font-size:12px;">点击“设置”后按下你想要的按键（Esc
+                取消，Backspace 清空）。
+            </div>
+            <div id="hkList" class="hk-list"></div>
+        </div>
+        <div class="modal-foot" style="display:flex; gap:8px; align-items:center;">
+            <button id="btnHotkeysReset" class="btn">恢复默认</button>
+            <span style="flex:1 1 auto;"></span>
+            <button id="btnCloseHotkeys2" class="btn primary">关闭</button>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <div>Depend：<code>CooParticlesAPI</code></div>
+    </footer>
+</div>
+<!-- app -->
+<script type="module" src="./assets/src/js/pages/generator.page.js?v=20260501_1"></script>
+
+<!-- modal / file input -->
+<div id="modalMask" class="modal-mask hidden" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <div class="modal-head">
+            <div class="modal-title" id="modalTitle">确认</div>
+            <button class="modal-close" id="modalClose" title="关闭">✕</button>
+        </div>
+        <div class="modal-body" id="modalBody"></div>
+        <div class="modal-actions">
+            <button class="btn" id="modalCancel">取消</button>
+            <button class="btn primary" id="modalOk">确定</button>
+        </div>
+    </div>
+</div>
+<input id="importJsonFile" type="file" accept="application/json,.json" style="display:none"/>
+
+</body>
+</html>

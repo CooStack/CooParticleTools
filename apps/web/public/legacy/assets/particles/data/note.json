@@ -1,0 +1,7 @@
+{
+  "name": "ControlableNoteEffect",
+  "displayName": "Note",
+  "textures": [
+    "assets/particles/note/note.png"
+  ]
+}

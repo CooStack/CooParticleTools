@@ -1,0 +1,390 @@
+.shader-legacy {
+  --bg: #0e1218;
+  --panel: #151b24;
+  --panel2: #121822;
+  --card: #1b2330;
+  --line: rgba(255,255,255,.1);
+  --line2: rgba(255,255,255,.16);
+  --text: rgba(232,238,247,.94);
+  --muted: rgba(171,184,202,.66);
+  --accent: #6fa8ff;
+  --danger: #ff6b6b;
+  --ok: #7ad9ff;
+  --input-bg: rgba(15,20,28,.7);
+  --shadow: 0 10px 30px rgba(0,0,0,.32);
+  --radius: 14px;
+  --radius2: 10px;
+  --topbar-h: 56px;
+  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  background:
+    radial-gradient(1100px 680px at 15% 8%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 55%),
+    radial-gradient(900px 540px at 82% 12%, color-mix(in srgb, var(--ok) 16%, transparent), transparent 58%),
+    var(--bg);
+  overflow: hidden;
+  transition: background .28s ease, color .28s ease;
+}
+
+.shader-legacy[data-theme='dark-2'] {
+  --bg: #0b1513;
+  --panel: #101c19;
+  --panel2: #0d1614;
+  --card: #15221f;
+  --line: rgba(255,255,255,.09);
+  --line2: rgba(255,255,255,.15);
+  --text: rgba(225,245,239,.94);
+  --muted: rgba(173,214,200,.64);
+  --accent: #31c8a3;
+  --danger: #ff6a79;
+  --ok: #70e0c8;
+  --input-bg: rgba(10,18,16,.74);
+}
+
+.shader-legacy[data-theme='dark-3'] {
+  --bg: #17120f;
+  --panel: #211915;
+  --panel2: #1b1511;
+  --card: #271d18;
+  --line: rgba(255,227,202,.11);
+  --line2: rgba(255,227,202,.18);
+  --text: rgba(255,242,226,.94);
+  --muted: rgba(236,209,184,.62);
+  --accent: #ff9a5f;
+  --danger: #ff715e;
+  --ok: #ffcf8a;
+  --input-bg: rgba(25,18,14,.78);
+}
+
+.shader-legacy[data-theme='light-1'] {
+  --bg: #e7f4ff;
+  --panel: #f8fbff;
+  --panel2: #edf5ff;
+  --card: #ffffff;
+  --line: rgba(49,81,126,.15);
+  --line2: rgba(49,81,126,.22);
+  --text: rgba(28,46,70,.92);
+  --muted: rgba(40,62,90,.62);
+  --accent: #4a8fdf;
+  --danger: #d85252;
+  --ok: #43b9c8;
+  --input-bg: rgba(255,255,255,.9);
+}
+
+.shader-legacy[data-theme='light-2'] {
+  --bg: #fff7f0;
+  --panel: #fffefb;
+  --panel2: #fff6ee;
+  --card: #ffffff;
+  --line: rgba(86,61,45,.14);
+  --line2: rgba(86,61,45,.22);
+  --text: rgba(62,41,29,.92);
+  --muted: rgba(84,56,40,.64);
+  --accent: #e6883b;
+  --danger: #da5151;
+  --ok: #cc9a6b;
+  --input-bg: rgba(255,248,240,.95);
+}
+
+.shader-legacy[data-theme='light-3'] {
+  --bg: #eefaf6;
+  --panel: #fdfefe;
+  --panel2: #f1faf6;
+  --card: #ffffff;
+  --line: rgba(26,67,52,.14);
+  --line2: rgba(26,67,52,.21);
+  --text: rgba(19,40,32,.92);
+  --muted: rgba(19,40,32,.62);
+  --accent: #2bab86;
+  --danger: #d24f5a;
+  --ok: #49b99c;
+  --input-bg: rgba(237,248,243,.94);
+}
+
+.shader-legacy *,
+.shader-legacy *::before,
+.shader-legacy *::after { box-sizing: border-box; }
+
+.shader-legacy,
+.shader-legacy .form-grid,
+.shader-legacy .list,
+.shader-legacy .settings-grid,
+.shader-legacy .kotlin-block,
+.shader-legacy .hk-list,
+.shader-legacy .field,
+.shader-legacy .panel.right,
+.shader-legacy .panel.left { display: grid; gap: 12px; }
+
+.shader-legacy .topbar,
+.shader-legacy .topbar-left,
+.shader-legacy .topbar-right,
+.shader-legacy .page-switch,
+.shader-legacy .field-inline,
+.shader-legacy .panel-title-row,
+.shader-legacy .viewer-hud,
+.shader-legacy .settings-actions,
+.shader-legacy .modal-head,
+.shader-legacy .modal-foot,
+.shader-legacy .chk,
+.shader-legacy .proj-name,
+.shader-legacy .hk-head,
+.shader-legacy .card-title-row { display: flex; }
+
+.shader-legacy .topbar {
+  height: var(--topbar-h);
+  flex: 0 0 var(--topbar-h);
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.01));
+  backdrop-filter: blur(8px);
+}
+
+.shader-legacy .topbar-left,
+.shader-legacy .topbar-right,
+.shader-legacy .page-switch,
+.shader-legacy .field-inline,
+.shader-legacy .panel-title-row,
+.shader-legacy .viewer-hud,
+.shader-legacy .settings-actions,
+.shader-legacy .proj-name,
+.shader-legacy .chk,
+.shader-legacy .hk-head,
+.shader-legacy .card-title-row { align-items: center; gap: 8px; }
+
+.shader-legacy .topbar-left { min-width: 0; }
+.shader-legacy .topbar-right { flex-wrap: wrap; justify-content: flex-end; }
+.shader-legacy .brand { display: flex; flex-direction: column; min-width: 0; }
+.shader-legacy .brand-title { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shader-legacy .brand-sub,
+.shader-legacy .hint,
+.shader-legacy .field > span { font-size: 12px; color: var(--muted); }
+.shader-legacy .sep { width: 1px; height: 22px; background: var(--line2); }
+
+.shader-legacy .btn,
+.shader-legacy .input,
+.shader-legacy textarea,
+.shader-legacy select {
+  border-radius: var(--radius2);
+  border: 1px solid var(--line2);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.shader-legacy .btn {
+  min-height: 34px;
+  padding: 0 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: all .18s ease;
+}
+
+.shader-legacy .btn:hover { border-color: color-mix(in srgb, var(--accent) 52%, var(--line2)); }
+.shader-legacy .btn.primary,
+.shader-legacy .page-btn.active { background: color-mix(in srgb, var(--accent) 23%, var(--input-bg)); border-color: color-mix(in srgb, var(--accent) 55%, var(--line2)); }
+.shader-legacy .btn.danger { background: color-mix(in srgb, var(--danger) 22%, var(--input-bg)); border-color: color-mix(in srgb, var(--danger) 46%, var(--line2)); }
+.shader-legacy .btn.small { min-height: 28px; padding: 0 8px; font-size: 12px; }
+.shader-legacy .btn.icon { width: 34px; padding: 0; }
+
+.shader-legacy .input,
+.shader-legacy textarea,
+.shader-legacy select { width: 100%; padding: 10px 12px; }
+.shader-legacy textarea { min-height: 150px; resize: vertical; }
+
+.shader-legacy .layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(300px, var(--sb-left-w, 360px)) 8px minmax(320px, 1fr) 8px minmax(420px, var(--sb-right-w, 520px));
+  gap: 0;
+  padding: 12px;
+}
+
+.shader-legacy .panel,
+.shader-legacy .viewer {
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  transition: background .28s ease, border-color .28s ease, box-shadow .28s ease;
+}
+
+.shader-legacy .panel.left,
+.shader-legacy .panel.right {
+  padding: 14px;
+  align-content: start;
+  overflow: auto;
+}
+
+.shader-legacy .panel-title,
+.shader-legacy .card-title,
+.shader-legacy .modal-title { font-weight: 700; }
+
+.shader-legacy .card,
+.shader-legacy .subcard {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  transition: background .28s ease, border-color .28s ease, box-shadow .28s ease;
+}
+
+.shader-legacy .subcard { background: color-mix(in srgb, var(--card) 90%, transparent); }
+.shader-legacy .card-muted { opacity: .8; }
+
+.shader-legacy .resizer {
+  width: 8px;
+  cursor: col-resize;
+  border-radius: 999px;
+  align-self: stretch;
+  margin: 6px 8px;
+  background: rgba(255,255,255,.05);
+  transition: background .15s ease;
+}
+
+.shader-legacy .resizer:hover { background: rgba(255,255,255,.14); }
+
+.shader-legacy .viewer {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 14px;
+  min-width: 0;
+}
+
+.shader-legacy .viewer-hud { flex-wrap: wrap; justify-content: flex-start; }
+.shader-legacy .badge {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: color-mix(in srgb, var(--accent) 68%, white);
+  font-size: 12px;
+  transition: background .28s ease, color .28s ease, border-color .28s ease;
+}
+
+.shader-legacy .three-host-wrap,
+.shader-legacy .three-host-wrap :deep(.preview-panel),
+.shader-legacy .three-host-wrap :deep(.preview-host),
+.shader-legacy .three-host-wrap :deep(.preview-canvas) {
+  min-height: 0;
+  height: 100%;
+}
+
+.shader-legacy .graph-wrap {
+  min-height: 300px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--panel2) 72%, transparent);
+}
+
+.shader-legacy .graph-wrap :deep(.shader-graph-editor) { height: 100%; min-height: 300px; }
+
+.shader-legacy .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
+.shader-legacy .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
+.shader-legacy .proj-name { min-width: 220px; }
+.shader-legacy .proj-input { width: 180px; }
+.shader-legacy .node-select { min-width: 220px; }
+.shader-legacy .actions-row { justify-content: flex-end; }
+.shader-legacy .kotlin-actions { flex-wrap: wrap; justify-content: flex-end; }
+.shader-legacy .kotlin-card { align-content: start; }
+.shader-legacy .kotlin-block pre {
+  margin: 0;
+  min-height: 180px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 12px;
+  background: #0a1018;
+  color: #dbeafe;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.shader-legacy .modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.45);
+  backdrop-filter: blur(3px);
+  z-index: 90;
+}
+
+.shader-legacy .modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(960px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  z-index: 91;
+}
+
+.shader-legacy .modal-head,
+.shader-legacy .modal-foot {
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.shader-legacy .modal-foot { border-bottom: none; border-top: 1px solid var(--line); }
+.shader-legacy .modal-body { padding: 14px; display: grid; gap: 14px; }
+.shader-legacy .settings-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+.shader-legacy .settings-actions { justify-content: flex-start; flex-wrap: wrap; }
+.shader-legacy .hk-list { gap: 10px; }
+.shader-legacy .hk-item {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+.shader-legacy .hk-head { justify-content: space-between; }
+
+@media (max-width: 1600px) {
+  .shader-legacy .layout {
+    grid-template-columns: minmax(280px, var(--sb-left-w, 32vw)) 8px minmax(280px, 1fr) 8px minmax(360px, var(--sb-right-w, 34vw));
+  }
+}
+
+@media (max-width: 1280px) {
+  .shader-legacy .layout {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    overflow: auto;
+  }
+
+  .shader-legacy .resizer { display: none; }
+  .shader-legacy .panel,
+  .shader-legacy .viewer { min-height: 420px; }
+  .shader-legacy .grid2,
+  .shader-legacy .grid3,
+  .shader-legacy .settings-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 980px) {
+  .shader-legacy .topbar {
+    height: auto;
+    min-height: var(--topbar-h);
+    padding: 8px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .shader-legacy .topbar-left,
+  .shader-legacy .topbar-right { width: 100%; flex-wrap: wrap; }
+  .shader-legacy .topbar-right { justify-content: flex-start; }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "ControlableComposterEffect",
+  "displayName": "Composter",
+  "textures": [
+    "assets/particles/composter/glint.png"
+  ]
+}

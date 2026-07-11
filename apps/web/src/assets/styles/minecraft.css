@@ -1,0 +1,789 @@
+:root {
+  --mc-size: 8px;
+  --mc-radius: 0;
+  --mc-bg: #f7dbe1;
+  --mc-bg-deep: #cf91a2;
+  --mc-sky: #a9d8f2;
+  --mc-plank: #e8b8c2;
+  --mc-plank-light: #f4cbd2;
+  --mc-plank-dark: #b86f82;
+  --mc-leaf: #ef9ebe;
+  --mc-leaf-dark: #a94f72;
+  --mc-dirt: #8a5b3f;
+  --mc-dirt-dark: #5a3425;
+  --mc-grass: #86ad5b;
+  --mc-stone: #8c8790;
+  --mc-stone-dark: #5f5662;
+  --mc-gold: #efc75f;
+  --mc-redstone: #c94b52;
+  --mc-diamond: #79d6dc;
+  --mc-ink: #372630;
+  --mc-text: #fff7f5;
+  --mc-muted: #765161;
+  --mc-line: #56313e;
+  --mc-field-bg: #fff7fa;
+  --mc-field-text: #2f1d28;
+  --mc-tex-planks: url('../textures/sakura-planks.svg');
+  --mc-tex-leaves: url('../textures/sakura-leaves.svg');
+  --mc-tex-grass-dirt: url('../textures/grass-dirt.svg');
+  --mc-tex-log-end: url('../textures/sakura-log-end.svg');
+  --mc-tex-skybox: url('../textures/skybox.svg');
+  --mc-shadow: 0 6px 0 #3a2330, 0 14px 24px rgba(69, 38, 49, 0.32);
+  --mc-shadow-soft: 0 4px 0 rgba(58, 35, 48, 0.85), 0 10px 18px rgba(69, 38, 49, 0.22);
+}
+
+.app-shell--minecraft {
+  --bg-panel: rgba(255, 236, 242, 0.9);
+  --bg-panel-strong: rgba(255, 247, 250, 0.96);
+  --bg-soft: rgba(185, 111, 130, 0.12);
+  --border: rgba(86, 49, 62, 0.9);
+  --mc-control-line: rgba(122, 76, 92, 0.42);
+  --mc-control-line-strong: rgba(86, 49, 62, 0.56);
+  --text-soft: var(--mc-muted);
+  --brand: var(--mc-leaf);
+  --brand-2: var(--mc-diamond);
+  --success: var(--mc-grass);
+  --warning: var(--mc-gold);
+  color: var(--mc-ink);
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 34%),
+    var(--mc-tex-skybox),
+    linear-gradient(180deg, #83c8f2 0%, #bfe6fb 54%, #f7dbe1 100%);
+  background-repeat: no-repeat;
+  background-size: auto, cover, auto;
+  image-rendering: pixelated;
+}
+
+.app-shell--minecraft:not(.app-shell--fullbleed) {
+  padding: 24px;
+}
+
+.app-shell--minecraft .app-header,
+.app-shell--minecraft .panel,
+.app-shell--minecraft .tool-card,
+.app-shell--minecraft .stat-card,
+.app-shell--minecraft .section-card,
+.app-shell--minecraft .code-panel,
+.app-shell--minecraft .legacy-page-frame,
+.app-shell--minecraft .generator-topbar,
+.app-shell--minecraft .generator-panel,
+.app-shell--minecraft .generator-page .mc-suggestions,
+.app-shell--minecraft .generator-page .modal,
+.app-shell--minecraft .generator-page .queue-card,
+.app-shell--minecraft .generator-page .command-card,
+.app-shell--minecraft .generator-page .emitter-list-card {
+  border-radius: var(--mc-radius) !important;
+  border: 3px solid var(--mc-line) !important;
+  box-shadow: var(--mc-shadow) !important;
+}
+
+.app-shell--minecraft .panel,
+.app-shell--minecraft .tool-card,
+.app-shell--minecraft .stat-card,
+.app-shell--minecraft .section-card,
+.app-shell--minecraft .code-panel,
+.app-shell--minecraft .generator-topbar,
+.app-shell--minecraft .generator-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 20%),
+    linear-gradient(180deg, rgba(255, 247, 250, 0.94), rgba(246, 208, 218, 0.92)),
+    var(--bg-panel) !important;
+  background-size: auto !important;
+}
+
+.app-shell--minecraft .panel::before,
+.app-shell--minecraft .tool-card::before,
+.app-shell--minecraft .stat-card::before,
+.app-shell--minecraft .section-card::before,
+.app-shell--minecraft .code-panel::before {
+  border-radius: 0 !important;
+}
+
+.app-shell--minecraft .app-header h1,
+.app-shell--minecraft .panel h2,
+.app-shell--minecraft .panel h3,
+.app-shell--minecraft .generator-brand h1,
+.app-shell--minecraft .brand-title,
+.app-shell--minecraft .title {
+  color: var(--mc-ink) !important;
+  letter-spacing: 0 !important;
+  text-shadow: none;
+}
+
+.app-shell--minecraft .eyebrow,
+.app-shell--minecraft .panel-tag,
+.app-shell--minecraft .tool-card__foot,
+.app-shell--minecraft .generator-page .section-title,
+.app-shell--minecraft .generator-page .block-title {
+  color: var(--mc-leaf-dark) !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase;
+  text-shadow: none;
+}
+
+.app-shell--minecraft .nav-link,
+.app-shell--minecraft .btn,
+.app-shell--minecraft button,
+.app-shell--minecraft .input,
+.app-shell--minecraft .select,
+.app-shell--minecraft .textarea,
+.app-shell--minecraft select,
+.app-shell--minecraft textarea,
+.app-shell--minecraft input,
+.app-shell--minecraft .generator-page .left-tabs button,
+.app-shell--minecraft .generator-page .icon-btn,
+.app-shell--minecraft .generator-page .mc-suggestion {
+  border-radius: 0 !important;
+}
+
+.app-shell--minecraft .nav-link,
+.app-shell--minecraft .btn,
+.app-shell--minecraft button.btn,
+.app-shell--minecraft button,
+.app-shell--minecraft .generator-page .left-tabs button,
+.app-shell--minecraft .generator-page .icon-btn {
+  border: 1px solid var(--mc-control-line) !important;
+  color: var(--mc-ink) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.44), rgba(184, 111, 130, 0.16)),
+    var(--mc-tex-planks),
+    var(--mc-plank-light) !important;
+  background-size: auto, 32px 32px, auto !important;
+  box-shadow: 0 2px 0 rgba(184, 111, 130, 0.28) !important;
+  text-shadow: none !important;
+  transition: transform 80ms ease, box-shadow 80ms ease, filter 120ms ease !important;
+}
+
+.app-shell--minecraft .nav-link:hover,
+.app-shell--minecraft .btn:hover,
+.app-shell--minecraft button.btn:hover,
+.app-shell--minecraft button:hover,
+.app-shell--minecraft .generator-page .left-tabs button:hover,
+.app-shell--minecraft .generator-page .icon-btn:hover {
+  filter: brightness(1.04) saturate(1.03);
+  transform: translateY(1px);
+  border-color: var(--mc-control-line-strong) !important;
+  box-shadow: 0 1px 0 rgba(184, 111, 130, 0.28) !important;
+}
+
+.app-shell--minecraft .nav-link.router-link-active,
+.app-shell--minecraft .btn.primary,
+.app-shell--minecraft button.primary,
+.app-shell--minecraft .generator-page .left-tabs button.active {
+  color: #3b2530 !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.36), rgba(169, 79, 114, 0.12)),
+    var(--mc-tex-leaves),
+    var(--mc-leaf) !important;
+  background-size: auto, 32px 32px, auto !important;
+  border-color: rgba(169, 79, 114, 0.52) !important;
+  box-shadow: 0 2px 0 rgba(169, 79, 114, 0.28) !important;
+  text-shadow: none !important;
+}
+
+.app-shell--minecraft .btn.danger,
+.app-shell--minecraft button.danger {
+  color: var(--mc-text) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(90, 52, 37, 0.16)),
+    var(--mc-tex-log-end),
+    var(--mc-redstone) !important;
+  background-size: auto, 24px 24px, auto !important;
+  border-color: rgba(138, 47, 57, 0.58) !important;
+  box-shadow: 0 2px 0 rgba(138, 47, 57, 0.32) !important;
+}
+
+.app-shell--minecraft .btn:disabled,
+.app-shell--minecraft button:disabled,
+.app-shell--minecraft .generator-page .left-tabs button:disabled,
+.app-shell--minecraft .generator-page .icon-btn:disabled {
+  cursor: default !important;
+  filter: saturate(0.72) opacity(0.64) !important;
+  transform: none !important;
+  box-shadow: 0 1px 0 rgba(184, 111, 130, 0.24) !important;
+}
+
+.app-shell--minecraft .generator-page .emitter-toggle {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  min-height: 18px !important;
+  padding: 0 !important;
+  border: 1px solid var(--mc-control-line-strong) !important;
+  background: var(--mc-field-bg) !important;
+  box-shadow: none !important;
+  color: var(--mc-ink) !important;
+  line-height: 1 !important;
+  transform: none !important;
+}
+
+.app-shell--minecraft .generator-page .emitter-toggle:hover {
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.app-shell--minecraft .input,
+.app-shell--minecraft .select,
+.app-shell--minecraft .textarea,
+.app-shell--minecraft input,
+.app-shell--minecraft select,
+.app-shell--minecraft textarea,
+.app-shell--minecraft .generator-page .mc-suggestions {
+  border: 1px solid var(--mc-control-line-strong) !important;
+  color: var(--mc-field-text) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(248, 220, 227, 0.96)),
+    var(--mc-field-bg) !important;
+  background-size: auto !important;
+  text-shadow: none !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 1px 0 rgba(86, 49, 62, 0.08) !important;
+}
+
+.app-shell--minecraft .generator-page input,
+.app-shell--minecraft .generator-page select,
+.app-shell--minecraft .generator-page .input {
+  height: 40px !important;
+  min-height: 40px !important;
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+}
+
+.app-shell--minecraft .generator-page input[type='checkbox'],
+.app-shell--minecraft .generator-page input[type='radio'] {
+  appearance: auto !important;
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 16px !important;
+  min-height: 16px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+  accent-color: var(--mc-leaf-dark);
+}
+
+.app-shell--minecraft .generator-page textarea,
+.app-shell--minecraft .generator-page .textarea {
+  height: auto !important;
+}
+
+.app-shell--minecraft .input:focus,
+.app-shell--minecraft .select:focus,
+.app-shell--minecraft .textarea:focus,
+.app-shell--minecraft input:focus,
+.app-shell--minecraft select:focus,
+.app-shell--minecraft textarea:focus {
+  border-color: rgba(239, 199, 95, 0.92) !important;
+  outline: 2px solid rgba(239, 199, 95, 0.34) !important;
+  outline-offset: 1px;
+}
+
+.app-shell--minecraft .preview-canvas,
+.app-shell--minecraft .code-panel pre,
+.app-shell--minecraft .generator-page .generator-preview,
+.app-shell--minecraft .generator-page .preview-canvas-shell {
+  border-radius: 0 !important;
+  border: 3px solid var(--mc-line) !important;
+  background:
+    linear-gradient(180deg, rgba(131, 200, 242, 0.48), rgba(191, 230, 251, 0.28) 42%, rgba(247, 219, 225, 0.34)),
+    var(--mc-tex-skybox),
+    #bfe6fb !important;
+  background-repeat: no-repeat !important;
+  background-size: auto, cover, auto !important;
+}
+
+.app-shell--minecraft .generator-page.generator-page--skybox-off,
+.app-shell--minecraft .generator-page.generator-page--skybox-off .generator-preview,
+.app-shell--minecraft .generator-page .preview-host--skybox-off,
+.app-shell--minecraft .generator-page .preview-host--skybox-off .preview-canvas {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(248, 220, 227, 0.38)),
+    #fff7fa !important;
+  background-repeat: no-repeat !important;
+  background-size: auto !important;
+}
+
+.app-shell--minecraft .card-item,
+.app-shell--minecraft .node-item,
+.app-shell--minecraft .project-item,
+.app-shell--minecraft .badge,
+.app-shell--minecraft .status-pill,
+.app-shell--minecraft .generator-page .emitter-list-card,
+.app-shell--minecraft .generator-page .queue-card,
+.app-shell--minecraft .generator-page .command-card {
+  border-radius: 0 !important;
+  border: 1px solid var(--mc-control-line) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent),
+    rgba(255, 247, 250, 0.72) !important;
+  background-size: auto !important;
+}
+
+.app-shell--minecraft .card-item.active,
+.app-shell--minecraft .node-item.active,
+.app-shell--minecraft .project-item.active,
+.app-shell--minecraft .generator-page .emitter-list-card.selected,
+.app-shell--minecraft .generator-page .queue-card.selected {
+  border-color: rgba(239, 199, 95, 0.88) !important;
+  box-shadow: inset 0 0 0 1px rgba(239, 199, 95, 0.24) !important;
+}
+
+.app-shell--minecraft .generator-page .emitter-list-card,
+.app-shell--minecraft .generator-page .queue-card,
+.app-shell--minecraft .generator-page .command-card {
+  border: 1px solid var(--mc-control-line) !important;
+  background: rgba(255, 247, 250, 0.62) !important;
+  box-shadow: none !important;
+}
+
+.app-shell--minecraft .generator-page .emitter-list-card.selected,
+.app-shell--minecraft .generator-page .queue-card.selected {
+  border-color: rgba(239, 199, 95, 0.88) !important;
+  box-shadow: inset 0 0 0 1px rgba(239, 199, 95, 0.26) !important;
+}
+
+.app-shell--minecraft .generator-page .plain-input {
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--mc-ink) !important;
+}
+
+.app-shell--minecraft .generator-page .plain-input:focus {
+  outline: 1px solid rgba(239, 199, 95, 0.9) !important;
+  outline-offset: 2px;
+}
+
+.app-shell--minecraft .generator-page .emitter-list-card .row-actions .icon-btn {
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 24px !important;
+  min-height: 24px !important;
+  padding: 0 !important;
+  border: 1px solid var(--mc-control-line) !important;
+  background: rgba(255, 247, 250, 0.54) !important;
+  box-shadow: none !important;
+  color: rgba(55, 38, 48, 0.72) !important;
+  transform: none !important;
+}
+
+.app-shell--minecraft .generator-page .emitter-list-card .row-actions .icon-btn:hover {
+  background: rgba(244, 203, 210, 0.72) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.app-shell--minecraft .panel-resizer::before {
+  border-radius: 0 !important;
+  background: repeating-linear-gradient(0deg, var(--mc-plank-light) 0 8px, var(--mc-plank-dark) 8px 16px) !important;
+}
+
+.app-shell--minecraft .generator-page {
+  --generator-page-bg: rgba(255, 247, 250, 0.76) !important;
+  --generator-text: var(--mc-ink) !important;
+  --input-bg: var(--mc-field-bg) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 247, 250, 0.84), rgba(247, 219, 225, 0.9)),
+    var(--mc-tex-skybox),
+    #f7dbe1 !important;
+  background-repeat: no-repeat !important;
+  background-size: auto, cover, auto !important;
+  background-blend-mode: normal, soft-light, normal !important;
+}
+
+.app-shell--minecraft .curve-editor {
+  --curve-canvas-bg:
+    linear-gradient(180deg, rgba(96, 54, 69, 0.97), rgba(126, 74, 89, 0.94));
+  --curve-grid-color: rgba(244, 203, 210, 0.16);
+  --curve-line-color: #ffd6e3;
+  --curve-fill-start: rgba(244, 203, 210, 0.38);
+  --curve-fill-end: rgba(244, 203, 210, 0.06);
+  --curve-handle-color: var(--mc-gold);
+  --curve-handle-line-color: rgba(239, 199, 95, 0.72);
+  --curve-point-color: #fff7fa;
+  --curve-point-stroke: #372630;
+  --curve-selected-color: var(--mc-gold);
+  --curve-selected-border: rgba(239, 199, 95, 0.64);
+}
+
+@media (max-width: 768px) {
+  .app-shell--minecraft:not(.app-shell--fullbleed) {
+    padding: 12px;
+  }
+
+  .app-shell--minecraft .panel,
+  .app-shell--minecraft .tool-card,
+  .app-shell--minecraft .stat-card,
+  .app-shell--minecraft .section-card,
+  .app-shell--minecraft .code-panel {
+    box-shadow: var(--mc-shadow-soft) !important;
+  }
+}
+
+.app-shell--generator-theme.app-shell--minecraft {
+  --mc-bg: #170812;
+  --mc-bg-deep: #090408;
+  --mc-plank: #5f2742;
+  --mc-plank-light: #8a3f61;
+  --mc-plank-dark: #361521;
+  --mc-leaf: #f06aa7;
+  --mc-leaf-dark: #8e2d58;
+  --mc-ink: #fff3f8;
+  --mc-text: #fff3f8;
+  --mc-muted: #dec0cf;
+  --mc-line: #10070c;
+  --mc-field-bg: #21101a;
+  --mc-field-text: #fff3f8;
+  --mc-shadow: 0 6px 0 #090408, 0 14px 24px rgba(0, 0, 0, 0.5);
+  --mc-shadow-soft: 0 4px 0 rgba(9, 4, 8, 0.9), 0 10px 18px rgba(0, 0, 0, 0.34);
+  --bg-panel: rgba(43, 20, 33, 0.96);
+  --bg-panel-strong: rgba(31, 14, 24, 0.98);
+  --bg-soft: rgba(240, 106, 167, 0.13);
+  --border: rgba(255, 214, 232, 0.18);
+  --mc-control-line: rgba(255, 214, 232, 0.18);
+  --mc-control-line-strong: rgba(255, 214, 232, 0.32);
+  --text-soft: #dec0cf;
+  --brand: #f06aa7;
+  --brand-2: #8ee7ef;
+  --success: #a7e6b2;
+  --warning: #ffd76a;
+  color: var(--mc-text);
+  background:
+    linear-gradient(180deg, rgba(255, 116, 176, 0.1), transparent 34%),
+    repeating-linear-gradient(45deg, rgba(255, 147, 190, 0.035) 0 8px, transparent 8px 16px),
+    linear-gradient(180deg, #1b0a15 0%, #12070e 56%, #080408 100%) !important;
+  background-repeat: repeat !important;
+  background-size: auto !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .panel,
+.app-shell--generator-theme.app-shell--minecraft .tool-card,
+.app-shell--generator-theme.app-shell--minecraft .stat-card,
+.app-shell--generator-theme.app-shell--minecraft .section-card,
+.app-shell--generator-theme.app-shell--minecraft .code-panel,
+.app-shell--generator-theme.app-shell--minecraft .generator-topbar,
+.app-shell--generator-theme.app-shell--minecraft .generator-panel,
+.app-shell--generator-theme.app-shell--minecraft .legacy-page-frame {
+  background:
+    linear-gradient(180deg, rgba(255, 218, 235, 0.08), transparent 20%),
+    linear-gradient(180deg, rgba(53, 25, 41, 0.96), rgba(31, 14, 24, 0.95)),
+    var(--bg-panel) !important;
+  color: var(--mc-text) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-brand h1,
+.app-shell--generator-theme.app-shell--minecraft .generator-brand p,
+.app-shell--generator-theme.app-shell--minecraft .generator-brand code,
+.app-shell--generator-theme.app-shell--minecraft .panel-title-row,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .section-title,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .block-title,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .sub,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .empty-state,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .field span,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .mini-field span,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .bindable-field > span,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .hotkey-row > span,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .chip {
+  color: var(--mc-muted) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-brand h1,
+.app-shell--generator-theme.app-shell--minecraft .generator-page strong,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .plain-input {
+  color: var(--mc-text) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-brand .btn.small {
+  min-width: 96px;
+  white-space: nowrap;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .nav-link,
+.app-shell--generator-theme.app-shell--minecraft .btn,
+.app-shell--generator-theme.app-shell--minecraft button.btn,
+.app-shell--generator-theme.app-shell--minecraft button,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .left-tabs button,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .icon-btn {
+  color: var(--mc-text) !important;
+  border-color: var(--mc-control-line-strong) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(0, 0, 0, 0.2)),
+    repeating-linear-gradient(90deg, rgba(255, 218, 235, 0.08) 0 4px, transparent 4px 12px),
+    #321621 !important;
+  background-size: auto !important;
+  box-shadow: 0 2px 0 #140811 !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .nav-link:hover,
+.app-shell--generator-theme.app-shell--minecraft .btn:hover,
+.app-shell--generator-theme.app-shell--minecraft button.btn:hover,
+.app-shell--generator-theme.app-shell--minecraft button:hover,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .left-tabs button:hover,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .icon-btn:hover {
+  border-color: rgba(255, 214, 232, 0.46) !important;
+  filter: brightness(1.12) saturate(1.06);
+  box-shadow: 0 1px 0 #140811 !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .nav-link.router-link-active,
+.app-shell--generator-theme.app-shell--minecraft .btn.primary,
+.app-shell--generator-theme.app-shell--minecraft button.primary,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .left-tabs button.active {
+  color: #170812 !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(0, 0, 0, 0.1)),
+    var(--mc-leaf) !important;
+  border-color: rgba(255, 214, 232, 0.5) !important;
+  box-shadow: 0 2px 0 var(--mc-leaf-dark) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .input,
+.app-shell--generator-theme.app-shell--minecraft .select,
+.app-shell--generator-theme.app-shell--minecraft .textarea,
+.app-shell--generator-theme.app-shell--minecraft input,
+.app-shell--generator-theme.app-shell--minecraft select,
+.app-shell--generator-theme.app-shell--minecraft textarea,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .mc-suggestions {
+  color: var(--mc-field-text) !important;
+  border-color: var(--mc-control-line-strong) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 218, 235, 0.05), rgba(0, 0, 0, 0.12)),
+    var(--mc-field-bg) !important;
+  background-size: auto !important;
+  box-shadow: inset 0 1px 0 rgba(255, 218, 235, 0.08), 0 1px 0 rgba(0, 0, 0, 0.28) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft input::placeholder,
+.app-shell--generator-theme.app-shell--minecraft textarea::placeholder {
+  color: rgba(222, 192, 207, 0.6) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .preview-canvas,
+.app-shell--generator-theme.app-shell--minecraft .code-panel pre,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .generator-preview,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .preview-canvas-shell,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .preview-host,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .preview-host--bare {
+  border-color: var(--mc-line) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 106, 167, 0.07), transparent 42%),
+    #070409 !important;
+  background-repeat: no-repeat !important;
+  background-size: auto !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-page.generator-page--skybox-off,
+.app-shell--generator-theme.app-shell--minecraft .generator-page.generator-page--skybox-off .generator-preview,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .preview-host--skybox-off,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .preview-host--skybox-off .preview-canvas {
+  background:
+    linear-gradient(180deg, rgba(255, 106, 167, 0.07), transparent 42%),
+    #070409 !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .card-item,
+.app-shell--generator-theme.app-shell--minecraft .node-item,
+.app-shell--generator-theme.app-shell--minecraft .project-item,
+.app-shell--generator-theme.app-shell--minecraft .badge,
+.app-shell--generator-theme.app-shell--minecraft .status-pill,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .emitter-list-card,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .queue-card,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .command-card,
+.app-shell--generator-theme.app-shell--minecraft .generator-right .editor-section,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .axis-curve-box {
+  color: var(--mc-text) !important;
+  border-color: var(--mc-control-line) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 218, 235, 0.05), transparent),
+    rgba(36, 16, 27, 0.78) !important;
+  background-size: auto !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-page .emitter-list-card.selected,
+.app-shell--generator-theme.app-shell--minecraft .generator-page .queue-card.selected,
+.app-shell--generator-theme.app-shell--minecraft .card-item.active,
+.app-shell--generator-theme.app-shell--minecraft .node-item.active,
+.app-shell--generator-theme.app-shell--minecraft .project-item.active {
+  border-color: rgba(255, 215, 106, 0.88) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 215, 106, 0.24) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-page {
+  --generator-page-bg: transparent !important;
+  --generator-text: var(--mc-text) !important;
+  --input-bg: var(--mc-field-bg) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 116, 176, 0.08), transparent 34%),
+    linear-gradient(180deg, #1b0a15 0%, #12070e 60%, #080408 100%) !important;
+  background-repeat: no-repeat !important;
+  background-size: auto !important;
+  background-blend-mode: normal !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-page .theme-swatch {
+  background: linear-gradient(135deg, #f06aa7, #8ee7ef) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-page .theme-choice[data-theme-option='dark-1'] .theme-swatch {
+  background: linear-gradient(135deg, #361521, #f06aa7) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-page .theme-choice[data-theme-option='light-pink'] .theme-swatch {
+  background: linear-gradient(135deg, #fff7fa, #ef9ebe) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-page .panel-resizer::before {
+  background: repeating-linear-gradient(0deg, #421b2f 0 8px, #24101b 8px 16px) !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft {
+  --mc-bg: #f7dbe1;
+  --mc-bg-deep: #cf91a2;
+  --mc-plank: #e8b8c2;
+  --mc-plank-light: #f4cbd2;
+  --mc-plank-dark: #b86f82;
+  --mc-leaf: #ef9ebe;
+  --mc-leaf-dark: #a94f72;
+  --mc-ink: #372630;
+  --mc-text: #372630;
+  --mc-muted: #765161;
+  --mc-line: #56313e;
+  --mc-field-bg: #fff7fa;
+  --mc-field-text: #2f1d28;
+  --mc-shadow: 0 6px 0 #b76f82, 0 14px 24px rgba(69, 38, 49, 0.22);
+  --mc-shadow-soft: 0 4px 0 rgba(184, 111, 130, 0.52), 0 10px 18px rgba(69, 38, 49, 0.16);
+  --bg-panel: rgba(255, 236, 242, 0.94);
+  --bg-panel-strong: rgba(255, 247, 250, 0.98);
+  --bg-soft: rgba(185, 111, 130, 0.12);
+  --border: rgba(86, 49, 62, 0.42);
+  --mc-control-line: rgba(122, 76, 92, 0.36);
+  --mc-control-line-strong: rgba(86, 49, 62, 0.52);
+  --text-soft: var(--mc-muted);
+  --brand: #d86f9d;
+  --brand-2: #ef9ebe;
+  color: var(--mc-ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 34%),
+    var(--mc-tex-skybox),
+    linear-gradient(180deg, #bfe6fb 0%, #fbeaf0 58%, #f7dbe1 100%) !important;
+  background-repeat: no-repeat !important;
+  background-size: auto, cover, auto !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-topbar,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-panel {
+  color: var(--mc-ink) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.46), transparent 24%),
+    linear-gradient(180deg, rgba(255, 247, 250, 0.98), rgba(246, 208, 218, 0.94)),
+    var(--bg-panel) !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .btn,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page button,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .left-tabs button,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .icon-btn {
+  color: var(--mc-ink) !important;
+  border-color: var(--mc-control-line-strong) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.44), rgba(184, 111, 130, 0.16)),
+    var(--mc-tex-planks),
+    var(--mc-plank-light) !important;
+  background-size: auto, 32px 32px, auto !important;
+  box-shadow: 0 2px 0 rgba(184, 111, 130, 0.42) !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .btn.primary,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page button.primary,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .left-tabs button.active {
+  color: #3b2530 !important;
+  border-color: rgba(169, 79, 114, 0.54) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.38), rgba(169, 79, 114, 0.1)),
+    var(--mc-tex-leaves),
+    var(--mc-leaf) !important;
+  background-size: auto, 32px 32px, auto !important;
+  box-shadow: 0 2px 0 rgba(169, 79, 114, 0.46) !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .btn.danger,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page button.danger {
+  color: #fff7fa !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(138, 47, 57, 0.12)),
+    var(--mc-redstone) !important;
+  box-shadow: 0 2px 0 rgba(138, 47, 57, 0.38) !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page input:not([type='checkbox']):not([type='radio']),
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page select,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page textarea,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .input,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .mc-suggestions {
+  color: var(--mc-field-text) !important;
+  border-color: var(--mc-control-line-strong) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(248, 220, 227, 0.94)),
+    var(--mc-field-bg) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 1px 0 rgba(86, 49, 62, 0.12) !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .plain-input {
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--mc-ink) !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page input::placeholder,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page textarea::placeholder {
+  color: rgba(118, 81, 97, 0.62) !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .generator-preview,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .preview-canvas-shell,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .preview-host,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .preview-host--bare {
+  border-color: var(--mc-line) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 42%),
+    var(--mc-tex-skybox),
+    #bfe6fb !important;
+  background-repeat: no-repeat !important;
+  background-size: auto, cover, auto !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .emitter-list-card,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .queue-card,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .command-card,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-right .editor-section,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page .axis-curve-box {
+  color: var(--mc-ink) !important;
+  border-color: var(--mc-control-line) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent),
+    rgba(255, 239, 245, 0.88) !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-page {
+  --generator-page-bg: rgba(255, 239, 245, 0.86) !important;
+  --generator-text: var(--mc-ink) !important;
+  --input-bg: var(--mc-field-bg) !important;
+  color-scheme: light;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 34%),
+    var(--mc-tex-skybox),
+    linear-gradient(180deg, #bfe6fb 0%, #fbeaf0 58%, #f7dbe1 100%) !important;
+  background-repeat: no-repeat !important;
+  background-size: auto, cover, auto !important;
+}

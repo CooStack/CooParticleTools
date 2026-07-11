@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>CompositionBuilder - PointsBuilder 编辑器</title>
+    <link rel="stylesheet" href="./assets/points_builder/css/style.css?v=20260507_1"/>
+    <link rel="stylesheet" href="./assets/shared/css/minecraft-theme.css?v=20260709_1"/>
+    <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
+    <style>
+        body.composition-no-kotlin #btnRightKotlinTab,
+        body.composition-no-kotlin #rightKotlinPage {
+            display: none !important;
+        }
+    </style>
+</head>
+<body data-theme="dark-1" data-mc-theme="deep-pink" class="composition-no-kotlin">
+<div id="app">
+    <header class="topbar">
+        <div class="topbar-left">
+            <a id="btnBackComposition" class="btn" href="javascript:void(0)">返回 CompositionBuilder</a>
+            <div class="brand">
+                <div class="brand-title">PointsBuilder 可视化构建器</div>
+                <div class="brand-sub">卡片编辑 / Three.js 预览 / 共享预设与设置</div>
+            </div>
+        </div>
+
+        <div class="topbar-tools">
+            <button id="btnSnapRenderSettings" class="btn tool-btn" title="吸附渲染设置">吸附渲染</button>
+            <button id="btnLocalRotate" class="btn tool-btn" title="本地旋转：先选卡片，再点锚点并拖动旋转">本地旋转</button>
+        </div>
+
+        <div class="topbar-right">
+            <button id="btnHotkeys" class="btn">设置</button>
+            <button id="btnFullscreen" class="btn">预览全屏</button>
+            <button id="btnResetCamera" class="btn">重置镜头</button>
+
+            <span class="sep"></span>
+
+            <button id="btnSaveJson" class="btn">导出 JSON</button>
+            <button id="btnLoadJson" class="btn">导入 JSON</button>
+            <div class="topbar-menu">
+                <button class="btn topbar-menu-trigger" type="button">预设 ▾</button>
+                <div class="topbar-submenu">
+                    <button id="btnSavePreset" class="btn" type="button">保存预设</button>
+                    <button id="btnApplyPreset" class="btn" type="button">应用预设</button>
+                    <button id="btnOpenPresetRingToolMenu" class="btn" type="button">环形放置</button>
+                    <button id="btnExportPresets" class="btn" type="button">导出预设</button>
+                    <button id="btnImportPresets" class="btn" type="button">导入预设</button>
+                </div>
+            </div>
+            <button id="btnEditVariables" class="btn">变量</button>
+            <input id="fileJson" type="file" accept="application/json" hidden/>
+            <input id="fileBuilderJson" type="file" accept="application/json" hidden/>
+            <input id="filePresetJson" type="file" accept=".zip,.json,application/zip,application/json" hidden/>
+            <button id="btnReset" class="btn danger">重置</button>
+            <div class="proj-name">
+                <span>项目名</span>
+                <input id="inpProjectName" class="input proj-input" placeholder="未命名"/>
+            </div>
+        </div>
+    </header>
+
+    <div id="snapRenderPopover" class="snap-render-popover hidden" role="dialog" aria-label="吸附渲染设置">
+        <div class="snap-render-popover-title">吸附渲染设置</div>
+        <div class="settings-form">
+            <label class="chk settings-toggle">
+                <input id="chkShowGeometryCenters" type="checkbox" checked/>
+                <span>图形中心渲染</span>
+            </label>
+            <div class="settings-row">
+                <div class="settings-label">直线分点</div>
+                <input id="inpLineDivisionPoints" class="input" type="number" value="0" step="1" min="0" max="64"
+                       title="0 关闭；1 显示中点；2 显示三分点"/>
+            </div>
+            <div class="settings-block">
+                <div class="settings-label">吸附优先级</div>
+                <div id="snapPriorityList" class="snap-priority-list" aria-label="吸附优先级"></div>
+            </div>
+            <div class="settings-note">0 关闭；1 中点；2 三分点。</div>
+        </div>
+    </div>
+
+    <main class="layout">
+        <aside class="panel left">
+            <div class="panel-title">构建列</div>
+            <div id="cardsRoot" class="cards"></div>
+            <div class="panel-footnote">
+                拖拽 ≡ 排序；长按左键可框选多卡片；子元素可放入父卡片。
+            </div>
+        </aside>
+
+        <div class="resizer resizer-left" data-resizer="left" aria-hidden="true"></div>
+
+        <section class="viewer">
+            <div class="viewer-hud">
+                <div class="hud-left">
+                    <div id="statusLinePick" class="badge hidden"></div>
+                    <div id="statusPoints" class="badge">点数：</div>
+                </div>
+                <div class="hud-right">
+                    <label class="chk">
+                        <input id="chkSnapGrid" type="checkbox" checked/>
+                        吸附网格
+                    </label>
+                    <label class="chk">
+                        <input id="chkSnapParticle" type="checkbox" checked>
+                        吸附粒子
+                    </label>
+                    <label class="chk">
+                        <span style="opacity:.7;">吸附平面</span>
+                        <select id="selSnapPlane" class="input plane-select">
+                            <option value="XZ">XZ</option>
+                            <option value="XY">XY</option>
+                            <option value="ZY">ZY</option>
+                        </select>
+                    </label>
+                    <label class="chk">
+                        <span style="opacity:.7;">镜像平面</span>
+                        <select id="selMirrorPlane" class="input plane-select">
+                            <option value="XZ">XZ</option>
+                            <option value="XY">XY</option>
+                            <option value="ZY">ZY</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+            <div id="threeHost" class="three-host"></div>
+        </section>
+
+        <div class="resizer resizer-right" data-resizer="right" aria-hidden="true"></div>
+
+        <aside class="panel right">
+            <div class="panel-title right-panel-title">
+                <span>卡片编辑</span>
+                <div class="right-tabs" role="tablist" aria-label="右侧面板">
+                    <button id="btnRightParamsTab" class="right-tab active" type="button" role="tab"
+                            aria-selected="true" aria-controls="rightParamsPage">参数</button>
+                    <button id="btnRightPresetsTab" class="right-tab" type="button" role="tab"
+                            aria-selected="false" aria-controls="rightPresetsPage">预设</button>
+                    <button id="btnRightKotlinTab" class="right-tab" type="button" role="tab"
+                            aria-selected="false" aria-controls="rightKotlinPage">Kotlin</button>
+                </div>
+            </div>
+            <section id="rightParamsPage" class="right-page right-params-page active" role="tabpanel"
+                     aria-labelledby="btnRightParamsTab">
+                <div id="paramEditorStatus" class="param-editor-status">选择左侧卡片后编辑参数</div>
+                <div id="paramEditorSyncHint" class="param-editor-sync-hint hidden"></div>
+                <div id="paramEditorHost" class="param-editor-host"></div>
+            </section>
+            <section id="rightPresetsPage" class="right-page right-presets-page" role="tabpanel"
+                     aria-labelledby="btnRightPresetsTab">
+                <div class="preset-library-head">
+                    <div id="presetLibraryStatus" class="preset-library-status"></div>
+                    <button id="btnOpenPresetRingTool" class="btn preset-ring-open-btn" type="button"
+                            title="环形放置预设">环形</button>
+                    <button id="btnPresetCreateLibraryGroup" class="btn icon preset-library-add-group-btn" type="button"
+                            title="新建分组" aria-label="新建分组">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l2 2h5.5A2.5 2.5 0 0 1 20 9.5v7A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9ZM12 10v6m-3-3h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                </div>
+                <div id="presetRingTool" class="preset-ring-tool hidden">
+                    <div class="preset-ring-head">
+                        <div>
+                            <div class="preset-ring-title">环形放置</div>
+                            <div id="presetRingStatus" class="preset-ring-status">圆点模式</div>
+                        </div>
+                        <button id="btnPresetRingClose" class="btn icon" type="button" aria-label="收起">
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+                        </button>
+                    </div>
+                    <div class="preset-ring-grid">
+                        <label><span>数量</span><input id="presetRingCount" class="input" type="number" min="1" step="1" value="12"/></label>
+                        <label><span>半径</span><input id="presetRingRadius" class="input" type="number" step="0.1" value="3"/></label>
+                        <label><span>起角</span><input id="presetRingStartDeg" class="input" type="number" step="1" value="0"/></label>
+                        <label><span>总组</span><input id="presetRingGroupLabel" class="input" value="环形预设组"/></label>
+                    </div>
+                    <div class="preset-ring-vector">
+                        <span>圆心</span>
+                        <input id="presetRingOriginX" class="input" type="number" step="0.1" value="0"/>
+                        <input id="presetRingOriginY" class="input" type="number" step="0.1" value="0"/>
+                        <input id="presetRingOriginZ" class="input" type="number" step="0.1" value="0"/>
+                        <button id="btnPresetRingPickOrigin" class="btn" type="button">拾取</button>
+                    </div>
+                    <div class="preset-ring-vector">
+                        <span>基准轴</span>
+                        <input id="presetRingAxisX" class="input" type="number" step="0.1" value="0"/>
+                        <input id="presetRingAxisY" class="input" type="number" step="0.1" value="0"/>
+                        <input id="presetRingAxisZ" class="input" type="number" step="0.1" value="1"/>
+                        <label class="chk preset-ring-inline"><input id="presetRingFaceCenter" type="checkbox" checked/><span>朝向圆心</span></label>
+                    </div>
+                    <div class="preset-ring-vector">
+                        <span>偏移</span>
+                        <input id="presetRingOffsetX" class="input" type="number" step="0.1" value="0"/>
+                        <input id="presetRingOffsetY" class="input" type="number" step="0.1" value="0"/>
+                        <input id="presetRingOffsetZ" class="input" type="number" step="0.1" value="0"/>
+                        <label class="chk preset-ring-inline"><input id="presetRingReverse" type="checkbox"/><span>反向</span></label>
+                    </div>
+                    <div id="presetRingSlots" class="preset-ring-slots"></div>
+                    <div class="preset-ring-actions">
+                        <button id="btnPresetRingSyncSlots" class="btn" type="button">同步槽位</button>
+                        <button id="btnPresetRingApply" class="btn primary" type="button">应用</button>
+                    </div>
+                </div>
+                <div id="presetLibraryList" class="preset-library-list"></div>
+            </section>
+            <section id="rightKotlinPage" class="right-page right-kotlin-page" role="tabpanel"
+                     aria-labelledby="btnRightKotlinTab">
+                <div class="panel-tools kotlin-tools">
+                    <span class="kotlin-tools-label">结尾</span>
+                    <select id="selKotlinEnd" class="input kotlin-end">
+                        <option value="builder">构建器结尾</option>
+                        <option value="list">列表结尾</option>
+                        <option value="clone">克隆列表结尾</option>
+                    </select>
+                </div>
+                <pre id="kotlinOut" class="code code-highlight" aria-readonly="true"></pre>
+
+                <div class="panel-actions">
+                    <button id="btnCopyKotlin2" class="btn">复制</button>
+                    <button id="btnExportKotlin2" class="btn primary">重新生成</button>
+                </div>
+
+                <div class="panel-footnote">
+                    角度可切换为“度/弧度”，导出会按 Kotlin 接口要求转换（多数为 <code>x*PI</code>）。
+                </div>
+            </section>
+        </aside>
+
+        <button id="btnToggleKotlin" class="kotlin-toggle" title="折叠右侧面板">></button>
+    </main>
+
+    <div id="presetSaveMask" class="modal-mask hidden"></div>
+    <div id="presetSaveModal" class="modal preset-save-modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <div class="modal-title">保存预设</div>
+            <button id="btnClosePresetSave" class="btn icon" aria-label="关闭">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+            </button>
+        </div>
+        <div class="modal-body preset-save-modal-body">
+            <div class="preset-save-panel">
+                <div class="preset-save-grid">
+                    <label class="preset-field">
+                        <span>名字</span>
+                        <input id="presetNameInput" class="input" placeholder="未命名预设"/>
+                    </label>
+                    <label class="preset-field">
+                        <span>分组</span>
+                        <div class="preset-group-control">
+                            <select id="presetGroupInput" class="input"></select>
+                            <button id="btnPresetCreateGroup" class="btn icon preset-create-group-btn" type="button" title="新建分组" aria-label="新建分组">
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M3.5 7.5h6.2l1.8 2h9v8.2a2.3 2.3 0 0 1-2.3 2.3H5.8a2.3 2.3 0 0 1-2.3-2.3Z"/>
+                                    <path d="M3.5 7.5V6.2A2.2 2.2 0 0 1 5.7 4h4.4l1.7 1.8h5.9A2.3 2.3 0 0 1 20 8.1v1.4"/>
+                                    <path d="M12 13v5m-2.5-2.5h5"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </label>
+                </div>
+                <div class="preset-origin-panel">
+                    <div class="preset-origin-label">保存原点</div>
+                    <input id="presetOriginX" class="input" type="number" step="0.01" placeholder="x"/>
+                    <input id="presetOriginY" class="input" type="number" step="0.01" placeholder="y"/>
+                    <input id="presetOriginZ" class="input" type="number" step="0.01" placeholder="z"/>
+                    <button id="btnPresetUseCurrentOrigin" class="btn icon preset-origin-icon-btn" type="button" title="使用当前中心" aria-label="使用当前中心">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="12" cy="12" r="6"/>
+                            <path d="M12 3v3m0 12v3M3 12h3m12 0h3"/>
+                        </svg>
+                    </button>
+                    <button id="btnPresetPickOrigin" class="btn icon preset-origin-icon-btn" type="button" title="拾取保存原点" aria-label="拾取保存原点">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M12 21s6-5.6 6-11a6 6 0 0 0-12 0c0 5.4 6 11 6 11Z"/>
+                            <circle cx="12" cy="10" r="2.2"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="modal-foot preset-save-modal-foot">
+            <button id="btnCancelPresetSave" class="btn" type="button">取消</button>
+            <span style="flex:1 1 auto;"></span>
+            <button id="btnPresetSaveCurrent" class="btn primary" type="button">保存</button>
+        </div>
+    </div>
+
+    <div id="modalMask" class="modal-mask hidden"></div>
+    <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <div class="modal-title">添加元素</div>
+            <input id="cardSearch" class="input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-autocomplete="none" data-lpignore="true" data-form-type="other" placeholder="搜索元素：addCircle / rotateTo / Fourier ..."/>
+            <button id="btnCloseModal" class="btn icon" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></button>
+        </div>
+        <div class="modal-body">
+            <div id="modalModeTabs" class="modal-tabs" role="tablist" aria-label="添加模式">
+                <button id="btnModalCardsTab" class="modal-tab active" type="button" role="tab" aria-selected="true">添加卡片</button>
+                <button id="btnModalPresetsTab" class="modal-tab" type="button" role="tab" aria-selected="false">添加预设</button>
+            </div>
+            <div id="cardPicker" class="picker"></div>
+        </div>
+        <div class="modal-foot">
+            <button id="btnCancelModal" class="btn">取消</button>
+        </div>
+    </div>
+
+    <!-- 设置 -->
+    <div id="settingsMask" class="modal-mask hidden"></div>
+    <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <div class="modal-title">设置</div>
+            <button id="btnCloseSettings" class="btn icon" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></button>
+        </div>
+        <div class="modal-body">
+            <div class="settings-layout">
+                <div class="settings-panel">
+                    <div class="settings-panel-title">数值</div>
+                    <div class="settings-form">
+                        <div class="settings-row">
+                            <div class="settings-label">参数步长</div>
+                            <input id="inpParamStep" class="input" type="number" value="0.1" step="0.01"
+                                   min="0.000001"/>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">网格步长</div>
+                            <input id="inpSnapStep" class="input" type="number" value="1" step="0.1" min="0.000001"
+                                   title="吸附网格开启时生效"/>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">旋转吸附角度</div>
+                            <input id="inpRotateSnapDeg" class="input" type="number" value="22.5" step="0.5" min="0.000001"
+                                   title="旋转时按住 Shift 吸附到该角度"/>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">粒子吸附范围</div>
+                            <input id="inpSnapParticleRange" class="input" type="number" value="0.35" step="0.01"
+                                   min="0.000001"
+                                   title="与粒子距离小于该值时吸附"/>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">粒子大小</div>
+                            <input id="inpPointSize" class="input" type="number" value="0.5" step="0.01" min="0.001"
+                                   max="5"/>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">偏移预览上限</div>
+                            <input id="inpOffsetPreviewLimit" class="input" type="number" value="-1" step="1" min="-1"
+                                   title="0 禁用预览，-1 不限制"/>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-panel">
+                    <div class="settings-panel-title">显示</div>
+                    <div class="settings-form">
+                        <div class="settings-row">
+                            <div class="settings-label">主题</div>
+                            <select id="themeSelect" class="input theme-select" title="Alt+[ / Alt+] 切换">
+                                <option value="dark-1">夜岚</option>
+                                <option value="dark-2">深潮</option>
+                                <option value="dark-3">焰砂</option>
+                                <option value="light-1">雾蓝</option>
+                                <option value="light-2">杏露</option>
+                                <option value="light-3">薄荷</option>
+                            </select>
+                        </div>
+                        <div class="settings-toggles">
+                            <label class="chk settings-toggle">
+                                <input id="chkAxes" type="checkbox" checked/>
+                                <span>显示坐标轴</span>
+                            </label>
+                            <label class="chk settings-toggle">
+                                <input id="chkGrid" type="checkbox" checked/>
+                                <span>显示网格</span>
+                            </label>
+                            <label class="chk settings-toggle">
+                                <input id="chkRealtimeKotlin" type="checkbox"/>
+                                <span>实时更新 Kotlin</span>
+                            </label>
+                            <label class="chk settings-toggle">
+                                <input id="chkPointPickPreview" type="checkbox" checked/>
+                                <span>点拾取效果预览</span>
+                            </label>
+                            <label class="chk settings-toggle">
+                                <input id="chkAutoSelectCompleteGroups" type="checkbox"/>
+                                <span>全选组内卡片时自动选择组</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-panel settings-panel-wide">
+                    <div class="settings-panel-title">快捷键</div>
+                    <div class="settings-form">
+                        <div class="settings-row">
+                            <div class="settings-label">网格吸附快捷键</div>
+                            <label class="chk settings-toggle">
+                                <input id="chkSnapGridKeyToggleMode" type="checkbox"/>
+                                <span>切换模式（单点切换）</span>
+                            </label>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">粒子吸附快捷键</div>
+                            <label class="chk settings-toggle">
+                                <input id="chkSnapParticleKeyToggleMode" type="checkbox"/>
+                                <span>切换模式（单点切换）</span>
+                            </label>
+                        </div>
+                        <div class="settings-actions">
+                            <button id="btnOpenHotkeys" class="btn primary">打开快捷键设置</button>
+                            <div class="settings-note">未启用切换模式时，长按会临时切换吸附状态。</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-foot" style="display:flex; gap:8px; align-items:center;">
+            <button id="btnHotkeysExport" class="btn">导出设置</button>
+            <button id="btnHotkeysImport" class="btn">导入设置</button>
+            <input id="fileHotkeys" type="file" accept="application/json" hidden/>
+            <span style="flex:1 1 auto;"></span>
+        </div>
+    </div>
+
+    <!-- 快捷键设置（二级菜单） -->
+    <div id="hkMask" class="modal-mask hidden"></div>
+    <div id="hkModal" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <div class="modal-title">快捷键设置</div>
+            <input id="hkSearch" class="input" placeholder="搜索快捷键：撤销 / 添加元素 / addCircle ..."/>
+            <button id="btnCloseHotkeys" class="btn icon" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></button>
+        </div>
+        <div class="modal-body">
+            <div id="hkHint" style="margin:0 0 10px; opacity:.8; font-size:12px;">点击“设置”后按下你想要的按键（Esc
+                取消，Backspace 清空）。
+            </div>
+            <div id="hkList" class="hk-list"></div>
+        </div>
+        <div class="modal-foot" style="display:flex; gap:8px; align-items:center;">
+            <button id="btnHotkeysReset" class="btn">恢复默认</button>
+            <span style="flex:1 1 auto;"></span>
+            <button id="btnCloseHotkeys2" class="btn primary">关闭</button>
+        </div>
+    </div>
+
+</div>
+
+<script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.min.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/"
+      }
+    }
+</script>
+<script type="module" src="./assets/src/js/pages/composition-pointsbuilder.page.js?v=20260505_1"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "ControlableEndRodEffect",
+  "displayName": "EndRod",
+  "textures": [
+    "assets/particles/end_rod/glitter_7.png",
+    "assets/particles/end_rod/glitter_6.png",
+    "assets/particles/end_rod/glitter_5.png",
+    "assets/particles/end_rod/glitter_4.png",
+    "assets/particles/end_rod/glitter_3.png",
+    "assets/particles/end_rod/glitter_2.png",
+    "assets/particles/end_rod/glitter_1.png",
+    "assets/particles/end_rod/glitter_0.png"
+  ]
+}

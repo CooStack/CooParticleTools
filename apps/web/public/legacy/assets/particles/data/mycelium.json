@@ -1,0 +1,7 @@
+{
+  "name": "ControlableMyceliumEffect",
+  "displayName": "Mycelium",
+  "textures": [
+    "assets/particles/mycelium/generic_0.png"
+  ]
+}

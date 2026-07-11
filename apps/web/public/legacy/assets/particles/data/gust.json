@@ -1,0 +1,18 @@
+{
+  "name": "ControlableGustEffect",
+  "displayName": "Gust",
+  "textures": [
+    "assets/particles/gust/gust_0.png",
+    "assets/particles/gust/gust_1.png",
+    "assets/particles/gust/gust_2.png",
+    "assets/particles/gust/gust_3.png",
+    "assets/particles/gust/gust_4.png",
+    "assets/particles/gust/gust_5.png",
+    "assets/particles/gust/gust_6.png",
+    "assets/particles/gust/gust_7.png",
+    "assets/particles/gust/gust_8.png",
+    "assets/particles/gust/gust_9.png",
+    "assets/particles/gust/gust_10.png",
+    "assets/particles/gust/gust_11.png"
+  ]
+}

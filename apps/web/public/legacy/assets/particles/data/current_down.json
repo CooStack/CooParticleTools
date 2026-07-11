@@ -1,0 +1,7 @@
+{
+  "name": "ControlableCurrentDownEffect",
+  "displayName": "CurrentDown",
+  "textures": [
+    "assets/particles/current_down/bubble.png"
+  ]
+}

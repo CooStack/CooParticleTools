@@ -1,0 +1,11 @@
+{
+  "name": "ControlableBubblePopEffect",
+  "displayName": "BubblePop",
+  "textures": [
+    "assets/particles/bubble_pop/bubble_pop_0.png",
+    "assets/particles/bubble_pop/bubble_pop_1.png",
+    "assets/particles/bubble_pop/bubble_pop_2.png",
+    "assets/particles/bubble_pop/bubble_pop_3.png",
+    "assets/particles/bubble_pop/bubble_pop_4.png"
+  ]
+}

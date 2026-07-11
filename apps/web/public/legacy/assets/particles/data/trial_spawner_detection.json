@@ -1,0 +1,11 @@
+{
+  "name": "ControlableTrialSpawnerDetectionEffect",
+  "displayName": "TrialSpawnerDetection",
+  "textures": [
+    "assets/particles/trial_spawner_detection/trial_spawner_detection_0.png",
+    "assets/particles/trial_spawner_detection/trial_spawner_detection_1.png",
+    "assets/particles/trial_spawner_detection/trial_spawner_detection_2.png",
+    "assets/particles/trial_spawner_detection/trial_spawner_detection_3.png",
+    "assets/particles/trial_spawner_detection/trial_spawner_detection_4.png"
+  ]
+}

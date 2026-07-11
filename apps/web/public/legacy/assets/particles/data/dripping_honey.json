@@ -1,0 +1,7 @@
+{
+  "name": "ControlableDrippingHoneyEffect",
+  "displayName": "DrippingHoney",
+  "textures": [
+    "assets/particles/dripping_honey/drip_hang.png"
+  ]
+}

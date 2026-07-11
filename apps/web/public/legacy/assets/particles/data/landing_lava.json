@@ -1,0 +1,7 @@
+{
+  "name": "ControlableLandingLavaEffect",
+  "displayName": "LandingLava",
+  "textures": [
+    "assets/particles/landing_lava/drip_land.png"
+  ]
+}

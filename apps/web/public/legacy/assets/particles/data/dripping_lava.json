@@ -1,0 +1,7 @@
+{
+  "name": "ControlableDrippingLavaEffect",
+  "displayName": "DrippingLava",
+  "textures": [
+    "assets/particles/dripping_lava/drip_hang.png"
+  ]
+}

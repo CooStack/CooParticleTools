@@ -1,0 +1,10 @@
+{
+  "name": "ControlableSplashEffect",
+  "displayName": "Splash",
+  "textures": [
+    "assets/particles/splash/splash_0.png",
+    "assets/particles/splash/splash_1.png",
+    "assets/particles/splash/splash_2.png",
+    "assets/particles/splash/splash_3.png"
+  ]
+}

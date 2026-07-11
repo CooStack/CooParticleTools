@@ -1,0 +1,7 @@
+{
+  "name": "ControlableGlowEffect",
+  "displayName": "Glow",
+  "textures": [
+    "assets/particles/glow/glow.png"
+  ]
+}

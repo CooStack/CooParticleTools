@@ -1,0 +1,14 @@
+{
+  "name": "ControlablePortalEffect",
+  "displayName": "Portal",
+  "textures": [
+    "assets/particles/portal/generic_0.png",
+    "assets/particles/portal/generic_1.png",
+    "assets/particles/portal/generic_2.png",
+    "assets/particles/portal/generic_3.png",
+    "assets/particles/portal/generic_4.png",
+    "assets/particles/portal/generic_5.png",
+    "assets/particles/portal/generic_6.png",
+    "assets/particles/portal/generic_7.png"
+  ]
+}

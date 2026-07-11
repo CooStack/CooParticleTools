@@ -1,0 +1,11 @@
+{
+  "name": "ControlableTrialSpawnerDetectionOminousEffect",
+  "displayName": "TrialSpawnerDetectionOminous",
+  "textures": [
+    "assets/particles/trial_spawner_detection_ominous/trial_spawner_detection_ominous_0.png",
+    "assets/particles/trial_spawner_detection_ominous/trial_spawner_detection_ominous_1.png",
+    "assets/particles/trial_spawner_detection_ominous/trial_spawner_detection_ominous_2.png",
+    "assets/particles/trial_spawner_detection_ominous/trial_spawner_detection_ominous_3.png",
+    "assets/particles/trial_spawner_detection_ominous/trial_spawner_detection_ominous_4.png"
+  ]
+}

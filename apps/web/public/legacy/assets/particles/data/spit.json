@@ -1,0 +1,14 @@
+{
+  "name": "ControlableSpitEffect",
+  "displayName": "Spit",
+  "textures": [
+    "assets/particles/spit/generic_7.png",
+    "assets/particles/spit/generic_6.png",
+    "assets/particles/spit/generic_5.png",
+    "assets/particles/spit/generic_4.png",
+    "assets/particles/spit/generic_3.png",
+    "assets/particles/spit/generic_2.png",
+    "assets/particles/spit/generic_1.png",
+    "assets/particles/spit/generic_0.png"
+  ]
+}

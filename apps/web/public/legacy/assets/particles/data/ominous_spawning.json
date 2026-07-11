@@ -1,0 +1,7 @@
+{
+  "name": "ControlableOminousSpawningEffect",
+  "displayName": "OminousSpawning",
+  "textures": [
+    "assets/particles/ominous_spawning/ominous_spawning.png"
+  ]
+}

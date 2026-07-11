@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Bezier Scale 工具</title>
+    <style>
+        :root {
+            --bg: #101317;
+            --panel: #171d23;
+            --line: rgba(255, 255, 255, 0.08);
+            --line2: rgba(255, 255, 255, 0.14);
+            --text: #ecf0f5;
+            --muted: #98a6b5;
+            --accent: #8fa7b8;
+            --danger: #c96f62;
+            --ok: #b49363;
+            --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial;
+            --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background:
+                radial-gradient(900px 520px at 20% 10%, rgba(143, 167, 184, 0.14), transparent 55%),
+                radial-gradient(780px 460px at 100% 0%, rgba(180, 147, 99, 0.12), transparent 58%),
+                var(--bg);
+            color: var(--text);
+            font-family: var(--font);
+        }
+
+        .app {
+            width: 100%;
+            height: 100%;
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: 10px;
+            padding: 10px;
+        }
+
+        .row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .panel {
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: color-mix(in srgb, var(--panel) 88%, transparent);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+            padding: 8px;
+        }
+
+        .title {
+            font-size: 12px;
+            color: var(--muted);
+            margin-right: 4px;
+        }
+
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 24px;
+            padding: 0 10px;
+            border-radius: 999px;
+            border: 1px solid var(--line2);
+            background: rgba(0, 0, 0, 0.2);
+            font-size: 12px;
+            color: var(--muted);
+            font-family: var(--mono);
+        }
+
+        label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        input[type="number"] {
+            width: 92px;
+            height: 30px;
+            border-radius: 9px;
+            border: 1px solid var(--line2);
+            background: rgba(0, 0, 0, 0.24);
+            color: var(--text);
+            outline: none;
+            padding: 0 8px;
+            font-family: var(--mono);
+            font-size: 12px;
+        }
+
+        input[type="number"]:focus {
+            border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+            box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 26%, transparent);
+        }
+
+        button {
+            appearance: none;
+            border: 1px solid var(--line2);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text);
+            height: 30px;
+            border-radius: 9px;
+            padding: 0 10px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        button:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        button.primary {
+            border-color: color-mix(in srgb, var(--accent) 48%, var(--ok) 52%);
+            background: linear-gradient(
+                135deg,
+                color-mix(in srgb, var(--accent) 74%, white 8%),
+                color-mix(in srgb, var(--ok) 78%, var(--accent) 22%)
+            );
+            color: #171513;
+        }
+
+        .canvas-wrap {
+            position: relative;
+            min-height: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        #chart {
+            width: 100%;
+            height: 100%;
+            display: block;
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.2));
+            touch-action: none;
+            cursor: crosshair;
+        }
+
+        .footer {
+            font-size: 12px;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .warn {
+            color: var(--danger);
+        }
+
+        .ok {
+            color: var(--ok);
+        }
+    </style>
+    <link rel="stylesheet" href="../shared/css/workbench-theme.css?v=20260313_2"/>
+    <link rel="stylesheet" href="../shared/css/minecraft-theme.css?v=20260707_1"/>
+</head>
+<body>
+<div class="app">
+    <div class="panel">
+        <div class="row">
+            <span class="title">缩放范围</span>
+            <label>start <input id="inpMin" type="number" step="0.01"/></label>
+            <label>end <input id="inpMax" type="number" step="0.01"/></label>
+            <label>maxTick <input id="inpTick" type="number" min="1" step="1"/></label>
+            <button id="btnResetLinear" type="button">重置线性</button>
+            <span id="lblXRange" class="chip">X: 0..18</span>
+        </div>
+    </div>
+
+    <div class="canvas-wrap">
+        <canvas id="chart"></canvas>
+    </div>
+
+    <div class="panel">
+        <div class="row">
+            <span class="title">曲柄控制点</span>
+            <label>C1.x <input id="inpC1x" type="number" step="0.01"/></label>
+            <label>C1.y <input id="inpC1y" type="number" step="0.01"/></label>
+            <label>C1.z <input id="inpC1z" type="number" step="0.01"/></label>
+            <label>C2.x <input id="inpC2x" type="number" step="0.01"/></label>
+            <label>C2.y <input id="inpC2y" type="number" step="0.01"/></label>
+            <label>C2.z <input id="inpC2z" type="number" step="0.01"/></label>
+            <label><input id="chkSnapSEY" type="checkbox" checked/> S/E Y 吸附</label>
+        </div>
+        <div class="footer">
+            <span>拖拽图中的 <span class="ok">C1/C2</span> 可快速调曲线；勾选吸附后会贴合 S/E 横线，按住 Shift 可临时关闭。</span>
+            <span id="status" class="chip">就绪</span>
+        </div>
+    </div>
+</div>
+
+<script type="module" src="../src/js/pages/composition-bezier-tool.page.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "name": "ControlableFallingHoneyEffect",
+  "displayName": "FallingHoney",
+  "textures": [
+    "assets/particles/falling_honey/drip_fall.png"
+  ]
+}

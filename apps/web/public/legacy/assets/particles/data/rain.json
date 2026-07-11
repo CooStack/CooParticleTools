@@ -1,0 +1,10 @@
+{
+  "name": "ControlableRainEffect",
+  "displayName": "Rain",
+  "textures": [
+    "assets/particles/rain/splash_0.png",
+    "assets/particles/rain/splash_1.png",
+    "assets/particles/rain/splash_2.png",
+    "assets/particles/rain/splash_3.png"
+  ]
+}

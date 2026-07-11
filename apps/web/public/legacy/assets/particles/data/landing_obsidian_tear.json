@@ -1,0 +1,7 @@
+{
+  "name": "ControlableLandingObsidianTearEffect",
+  "displayName": "LandingObsidianTear",
+  "textures": [
+    "assets/particles/landing_obsidian_tear/drip_land.png"
+  ]
+}

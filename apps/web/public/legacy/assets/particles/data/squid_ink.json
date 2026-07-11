@@ -1,0 +1,14 @@
+{
+  "name": "ControlableSquidInkEffect",
+  "displayName": "SquidInk",
+  "textures": [
+    "assets/particles/squid_ink/generic_7.png",
+    "assets/particles/squid_ink/generic_6.png",
+    "assets/particles/squid_ink/generic_5.png",
+    "assets/particles/squid_ink/generic_4.png",
+    "assets/particles/squid_ink/generic_3.png",
+    "assets/particles/squid_ink/generic_2.png",
+    "assets/particles/squid_ink/generic_1.png",
+    "assets/particles/squid_ink/generic_0.png"
+  ]
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CodeTip 中文演示 - 纯静态 JS/TS 智能提示编辑器</title>
+  <link rel="stylesheet" href="./css/code_tip.css" />
+</head>
+<body class="ct-demo-page">
+  <header class="ct-demo-header">
+    <h1 class="ct-demo-title">CodeTip 编辑器演示</h1>
+    <p class="ct-demo-subtitle">
+      纯静态 HTML/CSS/JS：Monaco + TS Worker，支持中文面板、问题列表、类型库与 TS↔Kotlin 映射。
+    </p>
+  </header>
+
+  <main class="ct-demo-layout">
+    <section class="ct-main-column">
+      <section id="editor"></section>
+    </section>
+
+    <section class="ct-side-column">
+      <section id="preview"></section>
+      <section class="ct-side-panels-grid">
+        <section id="type-library"></section>
+        <section id="type-mapping"></section>
+      </section>
+    </section>
+  </main>
+
+  <script type="module" src="../src/js/pages/code-tip-index.page.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "name": "ControlableInfestedEffect",
+  "displayName": "Infested",
+  "textures": [
+    "assets/particles/infested/infested.png"
+  ]
+}

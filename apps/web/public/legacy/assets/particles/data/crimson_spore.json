@@ -1,0 +1,7 @@
+{
+  "name": "ControlableCrimsonSporeEffect",
+  "displayName": "CrimsonSpore",
+  "textures": [
+    "assets/particles/crimson_spore/generic_0.png"
+  ]
+}

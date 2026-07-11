@@ -1,0 +1,263 @@
+.app-shell {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+.app-header__brand {
+  display: grid;
+  gap: 6px;
+}
+
+.app-header h1,
+.panel h2,
+.panel h3 {
+  margin: 0;
+}
+
+.eyebrow {
+  color: var(--brand);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.nav-links {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.nav-link,
+.btn {
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  transition: 0.2s ease;
+}
+
+.nav-link.router-link-active,
+.btn.primary {
+  background: linear-gradient(135deg, var(--brand), var(--brand-2));
+  color: #020617;
+  border-color: transparent;
+}
+
+.btn.secondary {
+  background: transparent;
+}
+
+.app-main,
+.page-grid,
+.two-col,
+.three-col,
+.stats-grid,
+.tool-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.page-grid {
+  grid-template-columns: 1.2fr 0.8fr;
+}
+
+.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.three-col,
+.tool-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.stats-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 18px;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.35);
+}
+
+.panel-head,
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.toolbar-actions,
+.inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.muted,
+small {
+  color: var(--text-soft);
+}
+
+.tool-card,
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tool-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-card__foot,
+.panel-tag {
+  color: var(--brand);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+
+.status-pill--info {
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.24);
+}
+
+.status-pill--success {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.24);
+}
+
+.status-pill--warning {
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.26);
+}
+
+.status-pill--danger {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.26);
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.7);
+  color: inherit;
+  padding: 12px 14px;
+}
+
+.textarea {
+  min-height: 130px;
+  resize: vertical;
+}
+
+.form-grid,
+.kv-grid,
+.list-column {
+  display: grid;
+  gap: 12px;
+}
+
+.kv-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.list-column {
+  align-content: start;
+}
+
+.preview-canvas {
+  width: 100%;
+  height: 280px;
+  border-radius: 16px;
+  background: #020617;
+}
+
+.code-panel pre {
+  max-height: 560px;
+  overflow: auto;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(2, 8, 23, 0.9);
+}
+
+.card-list,
+.node-list,
+.project-list {
+  display: grid;
+  gap: 10px;
+}
+
+.card-item,
+.node-item,
+.project-item {
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid transparent;
+}
+
+.card-item.active,
+.node-item.active,
+.project-item.active {
+  border-color: var(--brand);
+}
+
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.badge {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+}
+
+@media (max-width: 1100px) {
+  .page-grid,
+  .two-col,
+  .three-col,
+  .stats-grid,
+  .tool-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .app-header,
+  .panel-head,
+  .toolbar {
+    flex-direction: column;
+  }
+}

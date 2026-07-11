@@ -1,0 +1,7 @@
+{
+  "name": "ControlableWhiteAshEffect",
+  "displayName": "WhiteAsh",
+  "textures": [
+    "assets/particles/white_ash/generic_0.png"
+  ]
+}

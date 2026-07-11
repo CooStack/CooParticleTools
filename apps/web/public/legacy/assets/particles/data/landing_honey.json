@@ -1,0 +1,7 @@
+{
+  "name": "ControlableLandingHoneyEffect",
+  "displayName": "LandingHoney",
+  "textures": [
+    "assets/particles/landing_honey/drip_land.png"
+  ]
+}

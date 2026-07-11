@@ -1,0 +1,7 @@
+{
+  "name": "ControlableSoulFireFlameEffect",
+  "displayName": "SoulFireFlame",
+  "textures": [
+    "assets/particles/soul_fire_flame/soul_fire_flame.png"
+  ]
+}

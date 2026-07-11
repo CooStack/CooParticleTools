@@ -1,0 +1,9 @@
+{
+  "name": "ControlableDragonBreathEffect",
+  "displayName": "DragonBreath",
+  "textures": [
+    "assets/particles/dragon_breath/generic_5.png",
+    "assets/particles/dragon_breath/generic_6.png",
+    "assets/particles/dragon_breath/generic_7.png"
+  ]
+}

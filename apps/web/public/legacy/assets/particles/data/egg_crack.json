@@ -1,0 +1,7 @@
+{
+  "name": "ControlableEggCrackEffect",
+  "displayName": "EggCrack",
+  "textures": [
+    "assets/particles/egg_crack/glint.png"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "ControlableFlashEffect",
+  "displayName": "Flash",
+  "textures": [
+    "assets/particles/flash/flash.png"
+  ]
+}

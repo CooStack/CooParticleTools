@@ -1,0 +1,20 @@
+{
+  "name": "@coo-particles-tools/electron-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron shell for the CooParticlesAPI Tools Python local client.",
+  "main": "src/main.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "ensure": "node scripts/ensure-electron.js",
+    "dev": "node scripts/ensure-electron.js && electron .",
+    "start": "node scripts/ensure-electron.js && electron .",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check scripts/ensure-electron.js"
+  },
+  "devDependencies": {
+    "electron": "^43.1.0"
+  }
+}

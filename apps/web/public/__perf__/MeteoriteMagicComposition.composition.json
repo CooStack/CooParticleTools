@@ -1,0 +1,1682 @@
+{
+  "projectName": "MeteoriteMagicComposition",
+  "compositionType": "sequenced",
+  "previewPlayTicks": 200,
+  "disabledInterval": 20,
+  "compositionAxisPreset": "RelativeLocation.yAxis()",
+  "compositionAxisExpr": "RelativeLocation.yAxis()",
+  "compositionAxisManualCtor": "RelativeLocation",
+  "compositionAxisManualX": 0,
+  "compositionAxisManualY": 1,
+  "compositionAxisManualZ": 0,
+  "projectScale": {
+    "type": "bezier",
+    "runMode": "manual",
+    "min": 0.01,
+    "max": 1,
+    "tick": 10,
+    "c1x": 3.6383928571428568,
+    "c1y": 1.0515996666491265,
+    "c1z": 0,
+    "c2x": 3.6160714285714284,
+    "c2y": 1.0817162498734176,
+    "c2z": 0,
+    "reversedOnDisable": false
+  },
+  "globalVars": [
+    {
+      "name": "direction",
+      "type": "RelativeLocation",
+      "value": "RelativeLocation(0, 1, 0)",
+      "codec": true,
+      "mutable": true,
+      "id": "4d65a4fdb89eb819"
+    },
+    {
+      "name": "color",
+      "type": "Vector3f",
+      "value": "Vector3f(0.858824f, 0.341176f, 0.341176f)",
+      "codec": true,
+      "mutable": true,
+      "id": "29e990aafdb5519c"
+    },
+    {
+      "name": "age",
+      "type": "Int",
+      "value": "0",
+      "codec": true,
+      "mutable": true,
+      "id": "38190ee10a8c2819"
+    },
+    {
+      "name": "option",
+      "type": "Int",
+      "value": "3",
+      "codec": true,
+      "mutable": true,
+      "id": "8849ae9fad7919cc"
+    }
+  ],
+  "globalConsts": [],
+  "compositionAnimates": [
+    {
+      "count": 2,
+      "condition": "age > 0",
+      "id": "219c14ca4d801819"
+    },
+    {
+      "count": 3,
+      "condition": "age > 60",
+      "id": "d0ff07507858419c"
+    }
+  ],
+  "displayActions": [
+    {
+      "id": "56a2a533f2acc19c",
+      "type": "expression",
+      "toUsePreset": false,
+      "toPreset": "RelativeLocation.yAxis()",
+      "toExpr": "RelativeLocation.yAxis()",
+      "toManualCtor": "RelativeLocation",
+      "toManualX": 0,
+      "toManualY": 1,
+      "toManualZ": 0,
+      "angleMode": "numeric",
+      "angleValue": 0.05,
+      "angleUnit": "rad",
+      "angleExpr": "speed / 180 * PI",
+      "angleExprPreset": "speed / 180 * PI",
+      "expression": "if (age++ > 60){\n    scaleHelper.doScale()\n}"
+    }
+  ],
+  "cards": [
+    {
+      "name": "主阵法",
+      "bindMode": "point",
+      "point": {
+        "x": 0,
+        "y": 20,
+        "z": 0
+      },
+      "builderState": {
+        "root": {
+          "id": "root",
+          "kind": "ROOT",
+          "children": []
+        }
+      },
+      "dataType": "particle_shape",
+      "singleEffectClass": "ControlableEndRodEffect",
+      "singleUseTexture": true,
+      "particleInit": [],
+      "controllerVars": [],
+      "controllerActions": [],
+      "controllerInitScript": "",
+      "controllerTickScript": "",
+      "rotateToWithAngle": false,
+      "rotateToUsePreset": false,
+      "rotateToPreset": "RelativeLocation.yAxis()",
+      "rotateToExpr": "RelativeLocation.yAxis()",
+      "rotateAngleMode": "numeric",
+      "rotateAngleValue": 0.05,
+      "rotateAngleUnit": "rad",
+      "rotateAnglePreset": "speed / 180 * PI",
+      "rotateAngleExpr": "speed / 180 * PI",
+      "angleOffsetEnabled": false,
+      "angleOffsetCount": 1,
+      "angleOffsetGlowTick": 20,
+      "angleOffsetEase": "outCubic",
+      "angleOffsetReverseOnDisable": false,
+      "angleOffsetAngleMode": "numeric",
+      "angleOffsetAngleValue": 360,
+      "angleOffsetAngleUnit": "deg",
+      "angleOffsetAnglePreset": "PI * 2",
+      "angleOffsetAngleExpr": "PI * 2",
+      "growthAnimates": [],
+      "sequencedAnimates": [],
+      "shapeAxisPreset": "RelativeLocation.yAxis()",
+      "shapeAxisExpr": "RelativeLocation.yAxis()",
+      "shapeAxisManualCtor": "RelativeLocation",
+      "shapeAxisManualX": 0,
+      "shapeAxisManualY": 1,
+      "shapeAxisManualZ": 0,
+      "shapeDisplayActions": [
+        {
+          "id": "89a72a89b2d8a19c",
+          "type": "expression",
+          "toUsePreset": false,
+          "toPreset": "RelativeLocation.yAxis()",
+          "toExpr": "RelativeLocation.yAxis()",
+          "toManualCtor": "RelativeLocation",
+          "toManualX": 0,
+          "toManualY": 1,
+          "toManualZ": 0,
+          "angleMode": "numeric",
+          "angleValue": 0.05,
+          "angleUnit": "rad",
+          "angleExpr": "speed / 180 * PI",
+          "angleExprPreset": "speed / 180 * PI",
+          "expression": "rotateToWithAngle(direction,PI / 64)"
+        }
+      ],
+      "shapeScale": {
+        "type": "none",
+        "runMode": "auto",
+        "min": 0.01,
+        "max": 1,
+        "tick": 18,
+        "c1x": 0.17106,
+        "c1y": 0.49026,
+        "c1z": 0,
+        "c2x": -0.771523,
+        "c2y": -0.116883,
+        "c2z": 0,
+        "reversedOnDisable": false
+      },
+      "shapeChildren": [
+        {
+          "type": "single",
+          "id": "abe8abc47fa5c19c",
+          "name": "实心三角形",
+          "bindMode": "builder",
+          "point": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "builderState": {
+            "root": {
+              "id": "root",
+              "kind": "ROOT",
+              "children": [
+                {
+                  "id": "1d3420537052319c",
+                  "kind": "add_fill_triangle",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "p1x": 1,
+                    "p1y": 0,
+                    "p1z": 4,
+                    "p2x": -1,
+                    "p2y": 0,
+                    "p2z": 4,
+                    "p3x": 0,
+                    "p3y": 0,
+                    "p3z": 3.625,
+                    "sampler": 8
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "402c67daa29bc19c",
+                  "kind": "scale",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "factor": 5
+                  },
+                  "children": [],
+                  "terms": []
+                }
+              ]
+            }
+          },
+          "axisPreset": "RelativeLocation.yAxis()",
+          "axisExpr": "RelativeLocation.yAxis()",
+          "axisManualCtor": "RelativeLocation",
+          "axisManualX": 0,
+          "axisManualY": 1,
+          "axisManualZ": 0,
+          "displayActions": [],
+          "angleOffsetEnabled": true,
+          "angleOffsetCount": 4,
+          "angleOffsetGlowTick": 20,
+          "angleOffsetEase": "bezierEase",
+          "angleOffsetReverseOnDisable": false,
+          "angleOffsetAngleMode": "numeric",
+          "angleOffsetAngleValue": 360,
+          "angleOffsetAngleUnit": "deg",
+          "angleOffsetAngleExpr": "PI * 2",
+          "angleOffsetAnglePreset": "PI * 2",
+          "scale": {
+            "type": "bezier",
+            "runMode": "auto",
+            "min": 0.01,
+            "max": 1,
+            "tick": 10,
+            "c1x": 6.0267857142857135,
+            "c1y": 1.1787487962615457,
+            "c1z": 0,
+            "c2x": 5.982142857142857,
+            "c2y": 1.1737402937315617,
+            "c2z": 0,
+            "reversedOnDisable": false
+          },
+          "growthAnimates": [],
+          "effectClass": "ControlableEndRodEffect",
+          "useTexture": true,
+          "particleInit": [
+            {
+              "id": "6ab3939a5f96119c",
+              "target": "color",
+              "expr": "this@MeteoriteMagicComposition.color",
+              "exprPreset": "this@MeteoriteMagicComposition.color"
+            }
+          ],
+          "controllerVars": [],
+          "controllerActions": [],
+          "children": [],
+          "angleOffsetEaseOvershoot": 1.1,
+          "angleOffsetEasePeriod": 2.0943951023931953,
+          "angleOffsetEaseDecay": 10,
+          "angleOffsetEaseShift": 0.75,
+          "angleOffsetEaseN1": 7.5625,
+          "angleOffsetEaseD1": 2.75,
+          "angleOffsetEaseBezierStartX": 0.3247767857142857,
+          "angleOffsetEaseBezierStartY": 0.9478705335683385,
+          "angleOffsetEaseBezierEndX": -0.6729910714285714,
+          "angleOffsetEaseBezierEndY": -0.03115846819419954
+        },
+        {
+          "id": "8396949385bcb819",
+          "name": "静态法阵层1",
+          "type": "single",
+          "bindMode": "builder",
+          "point": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "builderState": {
+            "root": {
+              "id": "root",
+              "kind": "ROOT",
+              "children": [
+                {
+                  "id": "64227299a9d0819c",
+                  "kind": "add_polygon",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "r": 18,
+                    "sideCount": 4,
+                    "count": 100
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "1dd6872f54853819",
+                  "kind": "add_discrete_circle_xz",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "r": 18,
+                    "count": 360,
+                    "discrete": 0.4,
+                    "seedEnabled": false,
+                    "seed": 1
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "e706f0b570b0419c",
+                  "kind": "rotate_as_axis",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "deg": 45,
+                    "degUnit": "deg",
+                    "useCustomAxis": false,
+                    "ax": 0,
+                    "ay": 1,
+                    "az": 0
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "cbc7ee7e53967819",
+                  "kind": "add_polygon",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "r": 18,
+                    "sideCount": 4,
+                    "count": 100
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "12d929b93357a819",
+                  "kind": "add_fill_triangle",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "p1x": 6.333333333333334,
+                    "p1y": 0,
+                    "p1z": 2.3333333333333335,
+                    "p2x": 5,
+                    "p2y": 0,
+                    "p2z": 5,
+                    "p3x": 2.3333333333333335,
+                    "p3y": 0,
+                    "p3z": 6.333333333333334,
+                    "sampler": 3
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "ed43cea2732cd819",
+                  "kind": "add_fill_triangle",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "p1x": -6.333333333333334,
+                    "p1y": 0,
+                    "p1z": 2.3333333333333335,
+                    "p2x": -5,
+                    "p2y": 0,
+                    "p2z": 5,
+                    "p3x": -2.3333333333333335,
+                    "p3y": 0,
+                    "p3z": 6.333333333333334,
+                    "sampler": 3
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "f7d16b1a64d4f819",
+                  "kind": "add_fill_triangle",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "p1x": 6.333333333333334,
+                    "p1y": 0,
+                    "p1z": -2.3333333333333335,
+                    "p2x": 5,
+                    "p2y": 0,
+                    "p2z": -5,
+                    "p3x": 2.3333333333333335,
+                    "p3y": 0,
+                    "p3z": -6.333333333333334,
+                    "sampler": 3
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "183da34fe2e8119c",
+                  "kind": "add_fill_triangle",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "p1x": -6.333333333333334,
+                    "p1y": 0,
+                    "p1z": -2.3333333333333335,
+                    "p2x": -5,
+                    "p2y": 0,
+                    "p2z": -5,
+                    "p3x": -2.3333333333333335,
+                    "p3y": 0,
+                    "p3z": -6.333333333333334,
+                    "sampler": 3
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "dbbbfe3ce621d819",
+                  "kind": "scale",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "factor": 2
+                  },
+                  "children": [],
+                  "terms": []
+                }
+              ]
+            }
+          },
+          "axisPreset": "RelativeLocation.yAxis()",
+          "axisExpr": "RelativeLocation.yAxis()",
+          "axisManualCtor": "RelativeLocation",
+          "axisManualX": 0,
+          "axisManualY": 1,
+          "axisManualZ": 0,
+          "displayActions": [],
+          "angleOffsetEnabled": false,
+          "angleOffsetCount": 1,
+          "angleOffsetGlowTick": 20,
+          "angleOffsetEase": "outCubic",
+          "angleOffsetEaseOvershoot": 1.70158,
+          "angleOffsetEasePeriod": 2.0943951023931953,
+          "angleOffsetEaseDecay": 10,
+          "angleOffsetEaseShift": 0.75,
+          "angleOffsetEaseN1": 7.5625,
+          "angleOffsetEaseD1": 2.75,
+          "angleOffsetEaseBezierStartX": 0.17106,
+          "angleOffsetEaseBezierStartY": 0.49026,
+          "angleOffsetEaseBezierEndX": -0.771523,
+          "angleOffsetEaseBezierEndY": -0.116883,
+          "angleOffsetReverseOnDisable": false,
+          "angleOffsetAngleMode": "numeric",
+          "angleOffsetAngleValue": 360,
+          "angleOffsetAngleUnit": "deg",
+          "angleOffsetAngleExpr": "PI * 2",
+          "angleOffsetAnglePreset": "PI * 2",
+          "scale": {
+            "type": "bezier",
+            "runMode": "auto",
+            "min": 0.01,
+            "max": 1,
+            "tick": 10,
+            "c1x": 2.3549107142857144,
+            "c1y": 1.2658723987067353,
+            "c1z": 0,
+            "c2x": 2.388392857142857,
+            "c2y": 1.2815526130887214,
+            "c2z": 0,
+            "reversedOnDisable": false
+          },
+          "growthAnimates": [],
+          "effectClass": "ControlableEndRodEffect",
+          "useTexture": true,
+          "particleInit": [
+            {
+              "id": "2bb8c6823319c19c",
+              "target": "color",
+              "expr": "this@MeteoriteMagicComposition.color",
+              "exprPreset": "this@MeteoriteMagicComposition.color"
+            }
+          ],
+          "controllerVars": [],
+          "controllerActions": [],
+          "children": []
+        }
+      ],
+      "sectionCollapse": {
+        "base": true,
+        "source": true,
+        "single_particle_init": true,
+        "single_controller_init": true,
+        "shape_base": true,
+        "shape_child_params": true,
+        "shape_axis": true,
+        "shape_display": true,
+        "shape_scale": true,
+        "growth": true
+      },
+      "id": "f1b718d887449819",
+      "folded": true,
+      "builderKotlinOverride": "",
+      "rotateToManualCtor": "RelativeLocation",
+      "rotateToManualX": 0,
+      "rotateToManualY": 1,
+      "rotateToManualZ": 0,
+      "viewPath": [
+        1
+      ],
+      "angleOffsetEaseOvershoot": 1.70158,
+      "angleOffsetEasePeriod": 2.0943951023931953,
+      "angleOffsetEaseDecay": 10,
+      "angleOffsetEaseShift": 0.75,
+      "angleOffsetEaseN1": 7.5625,
+      "angleOffsetEaseD1": 2.75,
+      "angleOffsetEaseBezierStartX": 0.17106,
+      "angleOffsetEaseBezierStartY": 0.49026,
+      "angleOffsetEaseBezierEndX": -0.771523,
+      "angleOffsetEaseBezierEndY": -0.116883
+    },
+    {
+      "name": "符文",
+      "bindMode": "point",
+      "point": {
+        "x": 0,
+        "y": 20,
+        "z": 0
+      },
+      "builderState": {
+        "root": {
+          "id": "root",
+          "kind": "ROOT",
+          "children": [
+            {
+              "id": "f3448158e32bc19c",
+              "kind": "add_discrete_circle_xz",
+              "folded": false,
+              "collapsed": false,
+              "bodyHeight": null,
+              "subWidth": null,
+              "subHeight": null,
+              "params": {
+                "r": "48",
+                "count": "240",
+                "discrete": "10",
+                "seedEnabled": false,
+                "seed": 1
+              },
+              "children": [],
+              "terms": []
+            }
+          ]
+        }
+      },
+      "dataType": "particle_shape",
+      "singleEffectClass": "ControlableEndRodEffect",
+      "singleUseTexture": true,
+      "particleInit": [],
+      "controllerVars": [],
+      "controllerActions": [],
+      "controllerInitScript": "",
+      "controllerTickScript": "",
+      "rotateToWithAngle": false,
+      "rotateToUsePreset": false,
+      "rotateToPreset": "RelativeLocation.yAxis()",
+      "rotateToExpr": "RelativeLocation.yAxis()",
+      "rotateAngleMode": "numeric",
+      "rotateAngleValue": 0.05,
+      "rotateAngleUnit": "rad",
+      "rotateAnglePreset": "speed / 180 * PI",
+      "rotateAngleExpr": "speed / 180 * PI",
+      "angleOffsetEnabled": false,
+      "angleOffsetCount": 1,
+      "angleOffsetGlowTick": 20,
+      "angleOffsetEase": "outCubic",
+      "angleOffsetReverseOnDisable": false,
+      "angleOffsetAngleMode": "numeric",
+      "angleOffsetAngleValue": 360,
+      "angleOffsetAngleUnit": "deg",
+      "angleOffsetAnglePreset": "PI * 2",
+      "angleOffsetAngleExpr": "PI * 2",
+      "growthAnimates": [],
+      "sequencedAnimates": [],
+      "shapeAxisPreset": "RelativeLocation.yAxis()",
+      "shapeAxisExpr": "RelativeLocation.yAxis()",
+      "shapeAxisManualCtor": "RelativeLocation",
+      "shapeAxisManualX": 0,
+      "shapeAxisManualY": 1,
+      "shapeAxisManualZ": 0,
+      "shapeDisplayActions": [
+        {
+          "id": "409ba0a82fd4319c",
+          "type": "expression",
+          "toUsePreset": false,
+          "toPreset": "RelativeLocation.yAxis()",
+          "toExpr": "RelativeLocation.yAxis()",
+          "toManualCtor": "RelativeLocation",
+          "toManualX": 0,
+          "toManualY": 1,
+          "toManualZ": 0,
+          "angleMode": "numeric",
+          "angleValue": 0.05,
+          "angleUnit": "rad",
+          "angleExpr": "speed / 180 * PI",
+          "angleExprPreset": "speed / 180 * PI",
+          "expression": "rotateToWithAngle(direction, -PI/64)"
+        }
+      ],
+      "shapeScale": {
+        "type": "bezier",
+        "runMode": "auto",
+        "min": 0.01,
+        "max": 1,
+        "tick": 10,
+        "c1x": 1.9754464285714284,
+        "c1y": 1.2351375113107976,
+        "c1z": 0,
+        "c2x": 1.9977678571428572,
+        "c2y": 1.2586711464422984,
+        "c2z": 0,
+        "reversedOnDisable": false
+      },
+      "shapeChildren": [
+        {
+          "type": "single",
+          "id": "0b4c81b2fee9e19c",
+          "name": "符文内容",
+          "bindMode": "builder",
+          "point": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "builderState": {
+            "root": {
+              "id": "root",
+              "kind": "ROOT",
+              "children": [
+                {
+                  "id": "ced1d1ad6644b819",
+                  "kind": "add_discrete_circle_xz",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "r": "64",
+                    "count": "120 * option",
+                    "discrete": "14",
+                    "seedEnabled": false,
+                    "seed": 1
+                  },
+                  "children": [],
+                  "terms": []
+                }
+              ]
+            }
+          },
+          "axisPreset": "RelativeLocation.yAxis()",
+          "axisExpr": "RelativeLocation.yAxis()",
+          "axisManualCtor": "RelativeLocation",
+          "axisManualX": 0,
+          "axisManualY": 1,
+          "axisManualZ": 0,
+          "displayActions": [],
+          "angleOffsetEnabled": false,
+          "angleOffsetCount": 1,
+          "angleOffsetGlowTick": 20,
+          "angleOffsetEase": "outCubic",
+          "angleOffsetEaseOvershoot": 1.70158,
+          "angleOffsetEasePeriod": 2.0943951023931953,
+          "angleOffsetEaseDecay": 10,
+          "angleOffsetEaseShift": 0.75,
+          "angleOffsetEaseN1": 7.5625,
+          "angleOffsetEaseD1": 2.75,
+          "angleOffsetEaseBezierStartX": 0.17106,
+          "angleOffsetEaseBezierStartY": 0.49026,
+          "angleOffsetEaseBezierEndX": -0.771523,
+          "angleOffsetEaseBezierEndY": -0.116883,
+          "angleOffsetReverseOnDisable": false,
+          "angleOffsetAngleMode": "numeric",
+          "angleOffsetAngleValue": 360,
+          "angleOffsetAngleUnit": "deg",
+          "angleOffsetAngleExpr": "PI * 2",
+          "angleOffsetAnglePreset": "PI * 2",
+          "scale": {
+            "type": "none",
+            "runMode": "auto",
+            "min": 0.01,
+            "max": 1,
+            "tick": 18,
+            "c1x": 0.17106,
+            "c1y": 0.49026,
+            "c1z": 0,
+            "c2x": -0.771523,
+            "c2y": -0.116883,
+            "c2z": 0,
+            "reversedOnDisable": false
+          },
+          "growthAnimates": [],
+          "effectClass": "ControlableEnchantmentEffect",
+          "useTexture": true,
+          "particleInit": [
+            {
+              "id": "1249b4fe96c34819",
+              "target": "currentAge",
+              "expr": "Random.nextInt(lifetime)",
+              "exprPreset": ""
+            },
+            {
+              "id": "db020a431f11a19c",
+              "target": "size",
+              "expr": "2",
+              "exprPreset": ""
+            },
+            {
+              "id": "c1ee4626b97aa19c",
+              "target": "color",
+              "expr": "this@MeteoriteMagicComposition.color",
+              "exprPreset": "this@MeteoriteMagicComposition.color"
+            }
+          ],
+          "controllerVars": [],
+          "controllerActions": [],
+          "children": []
+        }
+      ],
+      "sectionCollapse": {
+        "base": true,
+        "source": true,
+        "single_particle_init": true,
+        "single_controller_init": true,
+        "shape_base": true,
+        "shape_child_params": true,
+        "shape_axis": true,
+        "shape_display": true,
+        "shape_scale": true,
+        "growth": true
+      },
+      "id": "21d5f2bfbe3ea19c",
+      "folded": true,
+      "builderKotlinOverride": "",
+      "rotateToManualCtor": "RelativeLocation",
+      "rotateToManualX": 0,
+      "rotateToManualY": 1,
+      "rotateToManualZ": 0,
+      "angleOffsetEaseOvershoot": 1.70158,
+      "angleOffsetEasePeriod": 2.0943951023931953,
+      "angleOffsetEaseDecay": 10,
+      "angleOffsetEaseShift": 0.75,
+      "angleOffsetEaseN1": 7.5625,
+      "angleOffsetEaseD1": 2.75,
+      "angleOffsetEaseBezierStartX": 0.17106,
+      "angleOffsetEaseBezierStartY": 0.49026,
+      "angleOffsetEaseBezierEndX": -0.771523,
+      "angleOffsetEaseBezierEndY": -0.116883,
+      "viewPath": [
+        0
+      ]
+    },
+    {
+      "name": "中间的阵法1",
+      "bindMode": "point",
+      "point": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "builderState": {
+        "root": {
+          "id": "root",
+          "kind": "ROOT",
+          "children": [
+            {
+              "id": "6377f624893bc819",
+              "kind": "add_circle",
+              "folded": false,
+              "collapsed": false,
+              "bodyHeight": null,
+              "subWidth": null,
+              "subHeight": null,
+              "params": {
+                "r": "24",
+                "count": "720"
+              },
+              "children": [],
+              "terms": []
+            }
+          ]
+        }
+      },
+      "dataType": "particle_shape",
+      "singleEffectClass": "ControlableEndRodEffect",
+      "singleUseTexture": true,
+      "particleInit": [],
+      "controllerVars": [],
+      "controllerActions": [],
+      "controllerInitScript": "",
+      "controllerTickScript": "",
+      "rotateToWithAngle": false,
+      "rotateToUsePreset": false,
+      "rotateToPreset": "RelativeLocation.yAxis()",
+      "rotateToExpr": "RelativeLocation.yAxis()",
+      "rotateAngleMode": "numeric",
+      "rotateAngleValue": 0.05,
+      "rotateAngleUnit": "rad",
+      "rotateAnglePreset": "speed / 180 * PI",
+      "rotateAngleExpr": "speed / 180 * PI",
+      "angleOffsetEnabled": false,
+      "angleOffsetCount": 1,
+      "angleOffsetGlowTick": 20,
+      "angleOffsetEase": "outCubic",
+      "angleOffsetReverseOnDisable": false,
+      "angleOffsetAngleMode": "numeric",
+      "angleOffsetAngleValue": 360,
+      "angleOffsetAngleUnit": "deg",
+      "angleOffsetAnglePreset": "PI * 2",
+      "angleOffsetAngleExpr": "PI * 2",
+      "growthAnimates": [],
+      "sequencedAnimates": [],
+      "shapeAxisPreset": "RelativeLocation.yAxis()",
+      "shapeAxisExpr": "RelativeLocation.yAxis()",
+      "shapeAxisManualCtor": "RelativeLocation",
+      "shapeAxisManualX": 0,
+      "shapeAxisManualY": 1,
+      "shapeAxisManualZ": 0,
+      "shapeDisplayActions": [],
+      "shapeScale": {
+        "type": "none",
+        "runMode": "auto",
+        "min": 0.01,
+        "max": 1,
+        "tick": 18,
+        "c1x": 0.17106,
+        "c1y": 0.49026,
+        "c1z": 0,
+        "c2x": -0.771523,
+        "c2y": -0.116883,
+        "c2z": 0,
+        "reversedOnDisable": false
+      },
+      "shapeChildren": [
+        {
+          "type": "single",
+          "id": "146634c1252ec819",
+          "name": "内容",
+          "bindMode": "builder",
+          "point": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "builderState": {
+            "root": {
+              "id": "root",
+              "kind": "ROOT",
+              "children": [
+                {
+                  "id": "e1df499adf9de819",
+                  "kind": "add_fourier_series",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "count": "240*option",
+                    "scale": "20/6",
+                    "folded": false,
+                    "angleUnit": "deg"
+                  },
+                  "children": [],
+                  "terms": [
+                    {
+                      "id": "f8afc1e2e9d15819",
+                      "r": "1",
+                      "w": "4",
+                      "startAngle": 0,
+                      "startAngleUnit": "deg",
+                      "collapsed": false,
+                      "bodyHeight": null
+                    },
+                    {
+                      "id": "72ffc886e163b19c",
+                      "r": "5",
+                      "w": "-5",
+                      "startAngle": 0,
+                      "startAngleUnit": "deg",
+                      "collapsed": false,
+                      "bodyHeight": null
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "axisPreset": "RelativeLocation.yAxis()",
+          "axisExpr": "RelativeLocation.yAxis()",
+          "axisManualCtor": "RelativeLocation",
+          "axisManualX": 0,
+          "axisManualY": 1,
+          "axisManualZ": 0,
+          "displayActions": [
+            {
+              "id": "9789209498291819",
+              "type": "expression",
+              "toUsePreset": false,
+              "toPreset": "RelativeLocation.yAxis()",
+              "toExpr": "RelativeLocation.yAxis()",
+              "toManualCtor": "RelativeLocation",
+              "toManualX": 0,
+              "toManualY": 1,
+              "toManualZ": 0,
+              "angleMode": "numeric",
+              "angleValue": 0.05,
+              "angleUnit": "rad",
+              "angleExpr": "speed / 180 * PI",
+              "angleExprPreset": "speed / 180 * PI",
+              "expression": "rotateToWithAngle(direction,PI/128)"
+            }
+          ],
+          "angleOffsetEnabled": false,
+          "angleOffsetCount": 1,
+          "angleOffsetGlowTick": 20,
+          "angleOffsetEase": "outCubic",
+          "angleOffsetEaseOvershoot": 1.70158,
+          "angleOffsetEasePeriod": 2.0943951023931953,
+          "angleOffsetEaseDecay": 10,
+          "angleOffsetEaseShift": 0.75,
+          "angleOffsetEaseN1": 7.5625,
+          "angleOffsetEaseD1": 2.75,
+          "angleOffsetEaseBezierStartX": 0.17106,
+          "angleOffsetEaseBezierStartY": 0.49026,
+          "angleOffsetEaseBezierEndX": -0.771523,
+          "angleOffsetEaseBezierEndY": -0.116883,
+          "angleOffsetReverseOnDisable": false,
+          "angleOffsetAngleMode": "numeric",
+          "angleOffsetAngleValue": 360,
+          "angleOffsetAngleUnit": "deg",
+          "angleOffsetAngleExpr": "PI * 2",
+          "angleOffsetAnglePreset": "PI * 2",
+          "scale": {
+            "type": "none",
+            "runMode": "auto",
+            "min": 0.01,
+            "max": 1,
+            "tick": 18,
+            "c1x": 0.17106,
+            "c1y": 0.49026,
+            "c1z": 0,
+            "c2x": -0.771523,
+            "c2y": -0.116883,
+            "c2z": 0,
+            "reversedOnDisable": false
+          },
+          "growthAnimates": [],
+          "effectClass": "ControlableEndRodEffect",
+          "useTexture": true,
+          "particleInit": [
+            {
+              "id": "e79f4cccf764819c",
+              "target": "size",
+              "expr": "0.5",
+              "exprPreset": ""
+            },
+            {
+              "id": "45c1787959496819",
+              "target": "color",
+              "expr": "this@MeteoriteMagicComposition.color",
+              "exprPreset": "this@MeteoriteMagicComposition.color"
+            }
+          ],
+          "controllerVars": [
+            {
+              "id": "ba46880f7914519c",
+              "name": "time",
+              "type": "Float",
+              "expr": "0.0"
+            }
+          ],
+          "controllerActions": [
+            {
+              "id": "d0db72c45ab62819",
+              "type": "tick_js",
+              "script": "time++\nparticle.particleAlpha = time/20"
+            }
+          ],
+          "children": []
+        }
+      ],
+      "sectionCollapse": {
+        "base": true,
+        "source": true,
+        "single_particle_init": false,
+        "single_controller_init": false,
+        "shape_base": false,
+        "shape_child_params": false,
+        "shape_axis": false,
+        "shape_display": false,
+        "shape_scale": false,
+        "growth": false
+      },
+      "id": "3adfc69228fac819",
+      "folded": false,
+      "builderKotlinOverride": "",
+      "rotateToManualCtor": "RelativeLocation",
+      "rotateToManualX": 0,
+      "rotateToManualY": 1,
+      "rotateToManualZ": 0,
+      "angleOffsetEaseOvershoot": 1.70158,
+      "angleOffsetEasePeriod": 2.0943951023931953,
+      "angleOffsetEaseDecay": 10,
+      "angleOffsetEaseShift": 0.75,
+      "angleOffsetEaseN1": 7.5625,
+      "angleOffsetEaseD1": 2.75,
+      "angleOffsetEaseBezierStartX": 0.17106,
+      "angleOffsetEaseBezierStartY": 0.49026,
+      "angleOffsetEaseBezierEndX": -0.771523,
+      "angleOffsetEaseBezierEndY": -0.116883,
+      "viewPath": [
+        0
+      ]
+    },
+    {
+      "name": "向下的副阵法",
+      "bindMode": "point",
+      "point": {
+        "x": 0,
+        "y": -10,
+        "z": 0
+      },
+      "builderState": {
+        "root": {
+          "id": "root",
+          "kind": "ROOT",
+          "children": []
+        }
+      },
+      "dataType": "particle_shape",
+      "singleEffectClass": "ControlableEndRodEffect",
+      "singleUseTexture": true,
+      "particleInit": [],
+      "controllerVars": [],
+      "controllerActions": [],
+      "controllerInitScript": "",
+      "controllerTickScript": "",
+      "rotateToWithAngle": false,
+      "rotateToUsePreset": false,
+      "rotateToPreset": "RelativeLocation.yAxis()",
+      "rotateToExpr": "RelativeLocation.yAxis()",
+      "rotateAngleMode": "numeric",
+      "rotateAngleValue": 0.05,
+      "rotateAngleUnit": "rad",
+      "rotateAnglePreset": "speed / 180 * PI",
+      "rotateAngleExpr": "speed / 180 * PI",
+      "angleOffsetEnabled": false,
+      "angleOffsetCount": 1,
+      "angleOffsetGlowTick": 20,
+      "angleOffsetEase": "outCubic",
+      "angleOffsetReverseOnDisable": false,
+      "angleOffsetAngleMode": "numeric",
+      "angleOffsetAngleValue": 360,
+      "angleOffsetAngleUnit": "deg",
+      "angleOffsetAnglePreset": "PI * 2",
+      "angleOffsetAngleExpr": "PI * 2",
+      "growthAnimates": [],
+      "sequencedAnimates": [],
+      "shapeAxisPreset": "RelativeLocation.yAxis()",
+      "shapeAxisExpr": "RelativeLocation.yAxis()",
+      "shapeAxisManualCtor": "RelativeLocation",
+      "shapeAxisManualX": 0,
+      "shapeAxisManualY": 1,
+      "shapeAxisManualZ": 0,
+      "shapeDisplayActions": [
+        {
+          "id": "930fdb8d985eb819",
+          "type": "expression",
+          "toUsePreset": false,
+          "toPreset": "RelativeLocation.yAxis()",
+          "toExpr": "RelativeLocation.yAxis()",
+          "toManualCtor": "RelativeLocation",
+          "toManualX": 0,
+          "toManualY": 1,
+          "toManualZ": 0,
+          "angleMode": "numeric",
+          "angleValue": 0.05,
+          "angleUnit": "rad",
+          "angleExpr": "speed / 180 * PI",
+          "angleExprPreset": "speed / 180 * PI",
+          "expression": "rotateToWithAngle(direction,PI / 64)"
+        }
+      ],
+      "shapeScale": {
+        "type": "none",
+        "runMode": "auto",
+        "min": 0.01,
+        "max": 1,
+        "tick": 18,
+        "c1x": 0.17106,
+        "c1y": 0.49026,
+        "c1z": 0,
+        "c2x": -0.771523,
+        "c2y": -0.116883,
+        "c2z": 0,
+        "reversedOnDisable": false
+      },
+      "shapeChildren": [
+        {
+          "id": "ebba66d71c73c19c",
+          "name": "静态法阵层1",
+          "type": "single",
+          "bindMode": "builder",
+          "point": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "builderState": {
+            "root": {
+              "id": "root",
+              "kind": "ROOT",
+              "children": [
+                {
+                  "id": "64227299a9d0819c",
+                  "kind": "add_polygon",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "r": 18,
+                    "sideCount": 4,
+                    "count": "150"
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "e706f0b570b0419c",
+                  "kind": "rotate_as_axis",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "deg": 45,
+                    "degUnit": "deg",
+                    "useCustomAxis": false,
+                    "ax": 0,
+                    "ay": 1,
+                    "az": 0
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "cbc7ee7e53967819",
+                  "kind": "add_polygon",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "r": 18,
+                    "sideCount": 4,
+                    "count": "150"
+                  },
+                  "children": [],
+                  "terms": []
+                },
+                {
+                  "id": "dbbbfe3ce621d819",
+                  "kind": "scale",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "factor": "3"
+                  },
+                  "children": [],
+                  "terms": []
+                }
+              ]
+            }
+          },
+          "axisPreset": "RelativeLocation.yAxis()",
+          "axisExpr": "RelativeLocation.yAxis()",
+          "axisManualCtor": "RelativeLocation",
+          "axisManualX": 0,
+          "axisManualY": 1,
+          "axisManualZ": 0,
+          "displayActions": [],
+          "angleOffsetEnabled": false,
+          "angleOffsetCount": 1,
+          "angleOffsetGlowTick": 20,
+          "angleOffsetEase": "outCubic",
+          "angleOffsetEaseOvershoot": 1.70158,
+          "angleOffsetEasePeriod": 2.0943951023931953,
+          "angleOffsetEaseDecay": 10,
+          "angleOffsetEaseShift": 0.75,
+          "angleOffsetEaseN1": 7.5625,
+          "angleOffsetEaseD1": 2.75,
+          "angleOffsetEaseBezierStartX": 0.17106,
+          "angleOffsetEaseBezierStartY": 0.49026,
+          "angleOffsetEaseBezierEndX": -0.771523,
+          "angleOffsetEaseBezierEndY": -0.116883,
+          "angleOffsetReverseOnDisable": false,
+          "angleOffsetAngleMode": "numeric",
+          "angleOffsetAngleValue": 360,
+          "angleOffsetAngleUnit": "deg",
+          "angleOffsetAngleExpr": "PI * 2",
+          "angleOffsetAnglePreset": "PI * 2",
+          "scale": {
+            "type": "bezier",
+            "runMode": "auto",
+            "min": 0.01,
+            "max": 1,
+            "tick": 10,
+            "c1x": 2.3549107142857144,
+            "c1y": 1.2658723987067353,
+            "c1z": 0,
+            "c2x": 2.388392857142857,
+            "c2y": 1.2815526130887214,
+            "c2z": 0,
+            "reversedOnDisable": false
+          },
+          "growthAnimates": [],
+          "effectClass": "ControlableEndRodEffect",
+          "useTexture": true,
+          "particleInit": [
+            {
+              "id": "dd83e7b05975519c",
+              "target": "color",
+              "expr": "this@MeteoriteMagicComposition.color",
+              "exprPreset": "this@MeteoriteMagicComposition.color"
+            }
+          ],
+          "controllerVars": [],
+          "controllerActions": [],
+          "children": []
+        }
+      ],
+      "sectionCollapse": {
+        "base": true,
+        "source": true,
+        "single_particle_init": true,
+        "single_controller_init": true,
+        "shape_base": true,
+        "shape_child_params": true,
+        "shape_axis": true,
+        "shape_display": true,
+        "shape_scale": true,
+        "growth": true
+      },
+      "id": "9dae1d785faf0819",
+      "folded": true,
+      "builderKotlinOverride": "",
+      "rotateToManualCtor": "RelativeLocation",
+      "rotateToManualX": 0,
+      "rotateToManualY": 1,
+      "rotateToManualZ": 0,
+      "viewPath": [
+        0
+      ],
+      "angleOffsetEaseOvershoot": 1.70158,
+      "angleOffsetEasePeriod": 2.0943951023931953,
+      "angleOffsetEaseDecay": 10,
+      "angleOffsetEaseShift": 0.75,
+      "angleOffsetEaseN1": 7.5625,
+      "angleOffsetEaseD1": 2.75,
+      "angleOffsetEaseBezierStartX": 0.17106,
+      "angleOffsetEaseBezierStartY": 0.49026,
+      "angleOffsetEaseBezierEndX": -0.771523,
+      "angleOffsetEaseBezierEndY": -0.116883
+    },
+    {
+      "name": "最下面的阵法1",
+      "bindMode": "point",
+      "point": {
+        "x": 0,
+        "y": -25,
+        "z": 0
+      },
+      "builderState": {
+        "root": {
+          "id": "root",
+          "kind": "ROOT",
+          "children": []
+        }
+      },
+      "dataType": "particle_shape",
+      "singleEffectClass": "ControlableEndRodEffect",
+      "singleUseTexture": true,
+      "particleInit": [],
+      "controllerVars": [],
+      "controllerActions": [],
+      "controllerInitScript": "",
+      "controllerTickScript": "",
+      "rotateToWithAngle": false,
+      "rotateToUsePreset": false,
+      "rotateToPreset": "RelativeLocation.yAxis()",
+      "rotateToExpr": "RelativeLocation.yAxis()",
+      "rotateAngleMode": "numeric",
+      "rotateAngleValue": 0.05,
+      "rotateAngleUnit": "rad",
+      "rotateAnglePreset": "speed / 180 * PI",
+      "rotateAngleExpr": "speed / 180 * PI",
+      "angleOffsetEnabled": false,
+      "angleOffsetCount": 1,
+      "angleOffsetGlowTick": 20,
+      "angleOffsetEase": "outCubic",
+      "angleOffsetReverseOnDisable": false,
+      "angleOffsetAngleMode": "numeric",
+      "angleOffsetAngleValue": 360,
+      "angleOffsetAngleUnit": "deg",
+      "angleOffsetAnglePreset": "PI * 2",
+      "angleOffsetAngleExpr": "PI * 2",
+      "growthAnimates": [],
+      "sequencedAnimates": [],
+      "shapeAxisPreset": "RelativeLocation.yAxis()",
+      "shapeAxisExpr": "RelativeLocation.yAxis()",
+      "shapeAxisManualCtor": "RelativeLocation",
+      "shapeAxisManualX": 0,
+      "shapeAxisManualY": 1,
+      "shapeAxisManualZ": 0,
+      "shapeDisplayActions": [],
+      "shapeScale": {
+        "type": "none",
+        "runMode": "auto",
+        "min": 0.01,
+        "max": 1,
+        "tick": 18,
+        "c1x": 0.17106,
+        "c1y": 0.49026,
+        "c1z": 0,
+        "c2x": -0.771523,
+        "c2y": -0.116883,
+        "c2z": 0,
+        "reversedOnDisable": false
+      },
+      "shapeChildren": [
+        {
+          "type": "single",
+          "id": "9d34a195f2d0f19c",
+          "name": "阵法内容",
+          "bindMode": "builder",
+          "point": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "builderState": {
+            "root": {
+              "id": "root",
+              "kind": "ROOT",
+              "children": [
+                {
+                  "id": "c757ba7b7ee2719c",
+                  "kind": "add_fourier_series",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "count": "180*option",
+                    "scale": "12/5.0",
+                    "folded": false,
+                    "angleUnit": "deg"
+                  },
+                  "children": [],
+                  "terms": [
+                    {
+                      "id": "856b1c2fbbe3919c",
+                      "r": "2",
+                      "w": "3",
+                      "startAngle": 0,
+                      "startAngleUnit": "deg",
+                      "collapsed": false,
+                      "bodyHeight": null
+                    },
+                    {
+                      "id": "d06e059aa04ad819",
+                      "r": "3",
+                      "w": "-2",
+                      "startAngle": 0,
+                      "startAngleUnit": "deg",
+                      "collapsed": false,
+                      "bodyHeight": null
+                    }
+                  ]
+                },
+                {
+                  "id": "d660c85cf5381819",
+                  "kind": "add_discrete_circle_xz",
+                  "folded": false,
+                  "collapsed": false,
+                  "bodyHeight": null,
+                  "subWidth": null,
+                  "subHeight": null,
+                  "params": {
+                    "r": "12",
+                    "count": 120,
+                    "discrete": 0.4,
+                    "seedEnabled": false,
+                    "seed": 1
+                  },
+                  "children": [],
+                  "terms": []
+                }
+              ]
+            }
+          },
+          "axisPreset": "RelativeLocation.yAxis()",
+          "axisExpr": "RelativeLocation.yAxis()",
+          "axisManualCtor": "RelativeLocation",
+          "axisManualX": 0,
+          "axisManualY": 1,
+          "axisManualZ": 0,
+          "displayActions": [
+            {
+              "id": "687c3be9fa80519c",
+              "type": "expression",
+              "toUsePreset": false,
+              "toPreset": "RelativeLocation.yAxis()",
+              "toExpr": "Vec3(0, 1, 0)",
+              "toManualCtor": "Vec3",
+              "toManualX": 0,
+              "toManualY": 1,
+              "toManualZ": 0,
+              "angleMode": "numeric",
+              "angleValue": 0.05,
+              "angleUnit": "rad",
+              "angleExpr": "speed / 180 * PI",
+              "angleExprPreset": "speed / 180 * PI",
+              "expression": "rotateToWithAngle(direction, PI/64)"
+            }
+          ],
+          "angleOffsetEnabled": false,
+          "angleOffsetCount": 1,
+          "angleOffsetGlowTick": 20,
+          "angleOffsetEase": "outCubic",
+          "angleOffsetEaseOvershoot": 1.70158,
+          "angleOffsetEasePeriod": 2.0943951023931953,
+          "angleOffsetEaseDecay": 10,
+          "angleOffsetEaseShift": 0.75,
+          "angleOffsetEaseN1": 7.5625,
+          "angleOffsetEaseD1": 2.75,
+          "angleOffsetEaseBezierStartX": 0.17106,
+          "angleOffsetEaseBezierStartY": 0.49026,
+          "angleOffsetEaseBezierEndX": -0.771523,
+          "angleOffsetEaseBezierEndY": -0.116883,
+          "angleOffsetReverseOnDisable": false,
+          "angleOffsetAngleMode": "numeric",
+          "angleOffsetAngleValue": 360,
+          "angleOffsetAngleUnit": "deg",
+          "angleOffsetAngleExpr": "PI * 2",
+          "angleOffsetAnglePreset": "PI * 2",
+          "scale": {
+            "type": "none",
+            "runMode": "auto",
+            "min": 0.01,
+            "max": 1,
+            "tick": 18,
+            "c1x": 0.17106,
+            "c1y": 0.49026,
+            "c1z": 0,
+            "c2x": -0.771523,
+            "c2y": -0.116883,
+            "c2z": 0,
+            "reversedOnDisable": false
+          },
+          "growthAnimates": [],
+          "effectClass": "ControlableEndRodEffect",
+          "useTexture": true,
+          "particleInit": [
+            {
+              "id": "e6c4cfeb09fec19c",
+              "target": "size",
+              "expr": "0.3",
+              "exprPreset": ""
+            },
+            {
+              "id": "160da1297c746819",
+              "target": "color",
+              "expr": "this@MeteoriteMagicComposition.color",
+              "exprPreset": "this@MeteoriteMagicComposition.color"
+            }
+          ],
+          "controllerVars": [],
+          "controllerActions": [],
+          "children": []
+        }
+      ],
+      "sectionCollapse": {
+        "base": true,
+        "source": true,
+        "single_particle_init": true,
+        "single_controller_init": true,
+        "shape_base": true,
+        "shape_child_params": true,
+        "shape_axis": true,
+        "shape_display": true,
+        "shape_scale": true,
+        "growth": true
+      },
+      "id": "77185c1d1db2d819",
+      "folded": true,
+      "builderKotlinOverride": "",
+      "rotateToManualCtor": "RelativeLocation",
+      "rotateToManualX": 0,
+      "rotateToManualY": 1,
+      "rotateToManualZ": 0,
+      "angleOffsetEaseOvershoot": 1.70158,
+      "angleOffsetEasePeriod": 2.0943951023931953,
+      "angleOffsetEaseDecay": 10,
+      "angleOffsetEaseShift": 0.75,
+      "angleOffsetEaseN1": 7.5625,
+      "angleOffsetEaseD1": 2.75,
+      "angleOffsetEaseBezierStartX": 0.17106,
+      "angleOffsetEaseBezierStartY": 0.49026,
+      "angleOffsetEaseBezierEndX": -0.771523,
+      "angleOffsetEaseBezierEndY": -0.116883,
+      "viewPath": [
+        0
+      ]
+    },
+    {
+      "name": "上面的阵法1",
+      "bindMode": "builder",
+      "point": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "builderState": {
+        "root": {
+          "id": "root",
+          "kind": "ROOT",
+          "children": []
+        }
+      },
+      "dataType": "single",
+      "singleEffectClass": "ControlableEndRodEffect",
+      "singleUseTexture": true,
+      "particleInit": [],
+      "controllerVars": [],
+      "controllerActions": [],
+      "controllerInitScript": "",
+      "controllerTickScript": "",
+      "rotateToWithAngle": false,
+      "rotateToUsePreset": false,
+      "rotateToPreset": "RelativeLocation.yAxis()",
+      "rotateToExpr": "RelativeLocation.yAxis()",
+      "rotateAngleMode": "numeric",
+      "rotateAngleValue": 0.05,
+      "rotateAngleUnit": "rad",
+      "rotateAnglePreset": "speed / 180 * PI",
+      "rotateAngleExpr": "speed / 180 * PI",
+      "angleOffsetEnabled": false,
+      "angleOffsetCount": 1,
+      "angleOffsetGlowTick": 20,
+      "angleOffsetEase": "outCubic",
+      "angleOffsetReverseOnDisable": false,
+      "angleOffsetAngleMode": "numeric",
+      "angleOffsetAngleValue": 360,
+      "angleOffsetAngleUnit": "deg",
+      "angleOffsetAnglePreset": "PI * 2",
+      "angleOffsetAngleExpr": "PI * 2",
+      "growthAnimates": [],
+      "sequencedAnimates": [],
+      "shapeAxisPreset": "RelativeLocation.yAxis()",
+      "shapeAxisExpr": "RelativeLocation.yAxis()",
+      "shapeAxisManualCtor": "RelativeLocation",
+      "shapeAxisManualX": 0,
+      "shapeAxisManualY": 1,
+      "shapeAxisManualZ": 0,
+      "shapeDisplayActions": [],
+      "shapeScale": {
+        "type": "none",
+        "runMode": "auto",
+        "min": 0.01,
+        "max": 1,
+        "tick": 18,
+        "c1x": 0.17106,
+        "c1y": 0.49026,
+        "c1z": 0,
+        "c2x": -0.771523,
+        "c2y": -0.116883,
+        "c2z": 0,
+        "reversedOnDisable": false
+      },
+      "shapeChildren": [],
+      "sectionCollapse": {
+        "base": true,
+        "source": true,
+        "single_particle_init": true,
+        "single_controller_init": true,
+        "shape_base": true,
+        "shape_child_params": true,
+        "shape_axis": true,
+        "shape_display": true,
+        "shape_scale": true,
+        "growth": true
+      },
+      "id": "3141b050377ac819",
+      "folded": true,
+      "builderKotlinOverride": "",
+      "rotateToManualCtor": "RelativeLocation",
+      "rotateToManualX": 0,
+      "rotateToManualY": 1,
+      "rotateToManualZ": 0,
+      "angleOffsetEaseOvershoot": 1.70158,
+      "angleOffsetEasePeriod": 2.0943951023931953,
+      "angleOffsetEaseDecay": 10,
+      "angleOffsetEaseShift": 0.75,
+      "angleOffsetEaseN1": 7.5625,
+      "angleOffsetEaseD1": 2.75,
+      "angleOffsetEaseBezierStartX": 0.17106,
+      "angleOffsetEaseBezierStartY": 0.49026,
+      "angleOffsetEaseBezierEndX": -0.771523,
+      "angleOffsetEaseBezierEndY": -0.116883,
+      "viewPath": []
+    }
+  ]
+}

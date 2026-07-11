@@ -1,0 +1,22 @@
+{
+  "name": "ControlableSonicBoomEffect",
+  "displayName": "SonicBoom",
+  "textures": [
+    "assets/particles/sonic_boom/sonic_boom_0.png",
+    "assets/particles/sonic_boom/sonic_boom_1.png",
+    "assets/particles/sonic_boom/sonic_boom_2.png",
+    "assets/particles/sonic_boom/sonic_boom_3.png",
+    "assets/particles/sonic_boom/sonic_boom_4.png",
+    "assets/particles/sonic_boom/sonic_boom_5.png",
+    "assets/particles/sonic_boom/sonic_boom_6.png",
+    "assets/particles/sonic_boom/sonic_boom_7.png",
+    "assets/particles/sonic_boom/sonic_boom_8.png",
+    "assets/particles/sonic_boom/sonic_boom_9.png",
+    "assets/particles/sonic_boom/sonic_boom_10.png",
+    "assets/particles/sonic_boom/sonic_boom_11.png",
+    "assets/particles/sonic_boom/sonic_boom_12.png",
+    "assets/particles/sonic_boom/sonic_boom_13.png",
+    "assets/particles/sonic_boom/sonic_boom_14.png",
+    "assets/particles/sonic_boom/sonic_boom_15.png"
+  ]
+}

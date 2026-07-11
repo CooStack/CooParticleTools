@@ -1,0 +1,14 @@
+{
+  "name": "ControlablePoofEffect",
+  "displayName": "Poof",
+  "textures": [
+    "assets/particles/poof/generic_7.png",
+    "assets/particles/poof/generic_6.png",
+    "assets/particles/poof/generic_5.png",
+    "assets/particles/poof/generic_4.png",
+    "assets/particles/poof/generic_3.png",
+    "assets/particles/poof/generic_2.png",
+    "assets/particles/poof/generic_1.png",
+    "assets/particles/poof/generic_0.png"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "ControlableFishingEffect",
+  "displayName": "Fishing",
+  "textures": [
+    "assets/particles/fishing/splash_0.png",
+    "assets/particles/fishing/splash_1.png",
+    "assets/particles/fishing/splash_2.png",
+    "assets/particles/fishing/splash_3.png"
+  ]
+}

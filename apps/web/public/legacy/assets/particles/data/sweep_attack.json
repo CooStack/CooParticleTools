@@ -1,0 +1,14 @@
+{
+  "name": "ControlableSweepAttackEffect",
+  "displayName": "SweepAttack",
+  "textures": [
+    "assets/particles/sweep_attack/sweep_0.png",
+    "assets/particles/sweep_attack/sweep_1.png",
+    "assets/particles/sweep_attack/sweep_2.png",
+    "assets/particles/sweep_attack/sweep_3.png",
+    "assets/particles/sweep_attack/sweep_4.png",
+    "assets/particles/sweep_attack/sweep_5.png",
+    "assets/particles/sweep_attack/sweep_6.png",
+    "assets/particles/sweep_attack/sweep_7.png"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "ControlableTotemOfUndyingEffect",
+  "displayName": "TotemOfUndying",
+  "textures": [
+    "assets/particles/totem_of_undying/glitter_7.png",
+    "assets/particles/totem_of_undying/glitter_6.png",
+    "assets/particles/totem_of_undying/glitter_5.png",
+    "assets/particles/totem_of_undying/glitter_4.png",
+    "assets/particles/totem_of_undying/glitter_3.png",
+    "assets/particles/totem_of_undying/glitter_2.png",
+    "assets/particles/totem_of_undying/glitter_1.png",
+    "assets/particles/totem_of_undying/glitter_0.png"
+  ]
+}
