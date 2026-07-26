@@ -1,6 +1,15 @@
-import { curveToKotlin } from './curves.js';
+import { curveToKotlin, sampleLifecycleCurve } from './curves.js';
 import { TEXTURE_SHEET_OPTIONS, normalizeGeneratorProject } from './defaults.js';
-import { normalizeGeneratorLongValue, normalizeGeneratorVectorValue } from './parameter-values.js';
+import {
+  createGeneratorBindingResolver,
+  formatGeneratorKotlinLiteral,
+  isGeneratorValueName
+} from './bindings.js';
+import {
+  analyzeGeneratorDoTick,
+  analyzeGeneratorExpression,
+  generatorExpressionToKotlin
+} from './expression-runtime.js';
 import { generatePointsBuilderKotlin } from '../pointsbuilder/codegen.js';
 
 function safeIdent(raw, fallback = 'GeneratedEmitter') {
@@ -55,63 +64,98 @@ function vec3(value = {}) {
   return `Vec3(${fmtD(value.x)}, ${fmtD(value.y)}, ${fmtD(value.z)})`;
 }
 
-function isIdent(raw) {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(raw || '').trim());
+function resolveBindingRef(bindingResolver, card, path, expectedType = '') {
+  const binding = bindingResolver.resolve(card?.bindings, path, expectedType);
+  if (binding.status !== 'resolved' && binding.status !== 'expression') return null;
+  return {
+    name: binding.status === 'expression'
+      ? (binding.kotlin || generatorExpressionToKotlin(binding.expression))
+      : binding.name,
+    value: binding.value,
+    type: binding.type,
+    expression: binding.status === 'expression'
+  };
 }
 
-function projectValueMap(project) {
-  const values = [
-    ...(Array.isArray(project?.parameters?.variables) ? project.parameters.variables : []),
-    ...(Array.isArray(project?.parameters?.constants) ? project.parameters.constants : [])
-  ];
-  return new Map(values.filter((item) => isIdent(item?.name)).map((item) => [item.name, item]));
+function resolveBinding(bindingResolver, card, path, expectedType = '') {
+  return resolveBindingRef(bindingResolver, card, path, expectedType)?.name || '';
 }
 
-function resolveBindingRef(project, card, path, expectedType = '') {
-  const name = String(card?.bindings?.[path] || '').trim();
-  if (!name) return null;
-  const value = projectValueMap(project).get(name);
-  if (!value || (expectedType && value.type !== expectedType)) return null;
-  return { name, value };
+function numberExpr(bindingResolver, card, path, value, fallback = 0) {
+  const binding = resolveBindingRef(bindingResolver, card, path, 'Double');
+  if (binding?.expression) return `(${binding.name}).toDouble()`;
+  return binding?.name || fmtD(value, fallback);
 }
 
-function resolveBinding(project, card, path, expectedType = '') {
-  return resolveBindingRef(project, card, path, expectedType)?.name || '';
+function intExpr(bindingResolver, card, path, value, fallback = 0) {
+  const binding = resolveBindingRef(bindingResolver, card, path, 'Int');
+  if (binding?.expression) return `(${binding.name}).toInt()`;
+  return binding?.name || fmtI(value, fallback);
 }
 
-function numberExpr(project, card, path, value, fallback = 0) {
-  const binding = resolveBinding(project, card, path, 'Double');
-  return binding || fmtD(value, fallback);
+function floatExpr(bindingResolver, card, path, value, fallback = 0) {
+  const binding = resolveBindingRef(bindingResolver, card, path, 'Float');
+  if (binding?.expression) return `(${binding.name}).toFloat()`;
+  return binding?.name || fmtF(value, fallback);
 }
 
-function intExpr(project, card, path, value, fallback = 0) {
-  const binding = resolveBinding(project, card, path, 'Int');
-  return binding || fmtI(value, fallback);
+function vectorExpr(bindingResolver, card, path, value = {}, vec3Type = 'Vec3') {
+  const binding = resolveBindingRef(bindingResolver, card, path, 'Vec3');
+  if (binding?.value?.type === 'Vec3') return mapVec3Expression(binding.name, vec3Type);
+  return `${vec3Type}(${numberExpr(bindingResolver, card, `${path}.x`, value.x)}, ${numberExpr(bindingResolver, card, `${path}.y`, value.y)}, ${numberExpr(bindingResolver, card, `${path}.z`, value.z)})`;
 }
 
-function floatExpr(project, card, path, value, fallback = 0) {
-  const binding = resolveBinding(project, card, path, 'Float');
-  return binding || fmtF(value, fallback);
-}
-
-function vectorExpr(project, card, path, value = {}) {
-  const binding = resolveBindingRef(project, card, path, 'Vec3');
-  if (binding?.value?.type === 'Vec3') return binding.name;
-  return `Vec3(${numberExpr(project, card, `${path}.x`, value.x)}, ${numberExpr(project, card, `${path}.y`, value.y)}, ${numberExpr(project, card, `${path}.z`, value.z)})`;
-}
-
-function relativeExpr(project, card, path, value = {}) {
-  const binding = resolveBindingRef(project, card, path, 'RelativeLocation');
+function relativeExpr(bindingResolver, card, path, value = {}) {
+  const binding = resolveBindingRef(bindingResolver, card, path, 'RelativeLocation');
   if (binding?.value?.type === 'RelativeLocation') return binding.name;
-  return `RelativeLocation(${numberExpr(project, card, `${path}.x`, value.x)}, ${numberExpr(project, card, `${path}.y`, value.y)}, ${numberExpr(project, card, `${path}.z`, value.z)})`;
+  return `RelativeLocation(${numberExpr(bindingResolver, card, `${path}.x`, value.x)}, ${numberExpr(bindingResolver, card, `${path}.y`, value.y)}, ${numberExpr(bindingResolver, card, `${path}.z`, value.z)})`;
 }
 
-function vec3Params(params = {}, prefix = '') {
-  return `Vec3(${fmtD(params[`${prefix}X`])}, ${fmtD(params[`${prefix}Y`])}, ${fmtD(params[`${prefix}Z`])})`;
+function mapVec3Expression(expression, vec3Type = 'Vec3') {
+  const source = String(expression || '');
+  if (vec3Type === 'Vec3') return source;
+  let result = '';
+  let quote = '';
+  let escaped = false;
+  for (let index = 0; index < source.length;) {
+    const char = source[index];
+    if (quote) {
+      result += char;
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = '';
+      index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      result += char;
+      index += 1;
+      continue;
+    }
+    if (source.startsWith('//', index)) {
+      result += source.slice(index);
+      break;
+    }
+    if (source.startsWith('Vec3', index)
+      && !/[A-Za-z0-9_]/.test(source[index - 1] || '')
+      && /^\s*\(/.test(source.slice(index + 4))) {
+      result += vec3Type;
+      index += 4;
+      continue;
+    }
+    result += char;
+    index += 1;
+  }
+  return result;
 }
 
-function supplierVec3(params = {}, prefix = '') {
-  return `java.util.function.Supplier { ${vec3Params(params, prefix)} }`;
+function vec3Params(params = {}, prefix = '', vec3Type = 'Vec3') {
+  return `${vec3Type}(${fmtD(params[`${prefix}X`])}, ${fmtD(params[`${prefix}Y`])}, ${fmtD(params[`${prefix}Z`])})`;
+}
+
+function supplierVec3(params = {}, prefix = '', vec3Type = 'Vec3') {
+  return `java.util.function.Supplier { ${vec3Params(params, prefix, vec3Type)} }`;
 }
 
 function rel(value = {}) {
@@ -126,8 +170,8 @@ function cameraOptionConstant(mode) {
 
 const textureSheetIds = new Set(TEXTURE_SHEET_OPTIONS.map((item) => item.id));
 
-function textureSheetStatement(project, card, sheet) {
-  const binding = resolveBinding(project, card, 'render.textureSheet', 'String');
+function textureSheetStatement(bindingResolver, card, sheet) {
+  const binding = resolveBinding(bindingResolver, card, 'render.textureSheet', 'String');
   if (binding) return `setTextureSheet(${binding})`;
   const value = String(sheet || 'PARTICLE_SHEET_TRANSLUCENT').trim();
   if (textureSheetIds.has(value)) {
@@ -180,18 +224,19 @@ function vector3fExprFromHex(hex) {
 
 function colorVectorBindingExpr(binding) {
   if (binding.value?.type === 'Vector3f') {
-    return `Vector3f(${binding.name}.x.coerceIn(0f, 1f), ${binding.name}.y.coerceIn(0f, 1f), ${binding.name}.z.coerceIn(0f, 1f))`;
+    const source = binding.expression ? `(${binding.name})` : binding.name;
+    return `Vector3f(${source}.x.coerceIn(0f, 1f), ${source}.y.coerceIn(0f, 1f), ${source}.z.coerceIn(0f, 1f))`;
   }
   return '';
 }
 
-function colorChannelExpr(project, card, paths, fallback01) {
-  const binding = paths.map((item) => resolveBinding(project, card, item, 'Double')).find(Boolean);
+function colorChannelExpr(bindingResolver, card, paths, fallback01) {
+  const binding = paths.map((item) => resolveBinding(bindingResolver, card, item, 'Double')).find(Boolean);
   return binding ? `((${binding}.toDouble()) / 255.0).coerceIn(0.0, 1.0).toFloat()` : fmtF(fallback01);
 }
 
-function colorExpr(project, card, path, hex) {
-  const binding = resolveBindingRef(project, card, path, 'Vector3f');
+function colorExpr(bindingResolver, card, path, hex) {
+  const binding = resolveBindingRef(bindingResolver, card, path, 'Vector3f');
   const vectorBinding = binding ? colorVectorBindingExpr(binding) : '';
   if (vectorBinding) return vectorBinding;
   const color = vector3fFromHex(hex);
@@ -200,23 +245,26 @@ function colorExpr(project, card, path, hex) {
     [`${path}.g`, `${path}.y`],
     [`${path}.b`, `${path}.z`]
   ];
-  if (channelPaths.some((paths) => paths.some((item) => resolveBinding(project, card, item, 'Double')))) {
-    return `Vector3f(${colorChannelExpr(project, card, channelPaths[0], color.x)}, ${colorChannelExpr(project, card, channelPaths[1], color.y)}, ${colorChannelExpr(project, card, channelPaths[2], color.z)})`;
+  if (channelPaths.some((paths) => paths.some((item) => resolveBinding(bindingResolver, card, item, 'Double')))) {
+    return `Vector3f(${colorChannelExpr(bindingResolver, card, channelPaths[0], color.x)}, ${colorChannelExpr(bindingResolver, card, channelPaths[1], color.y)}, ${colorChannelExpr(bindingResolver, card, channelPaths[2], color.z)})`;
   }
   return vector3fExprFromHex(hex);
 }
 
-function emitEmitterPointBuilder(project, card, dataVar) {
+function emitEmitterPointBuilder(bindingResolver, card, dataVar) {
   const type = card.emitter.type;
   const offset = card.emitter.offset;
   const lines = [];
   lines.push('PointsBuilder()');
   if (type === 'point') {
-    lines.push(`    .addWith { List(${dataVar}.getRandomCount()) { ${relativeExpr(project, card, 'emitter.offset', offset)} } }`);
+    lines.push(`    .addWith { List(${dataVar}.getRandomCount()) { ${relativeExpr(bindingResolver, card, 'emitter.offset', offset)} } }`);
     return lines.join('\n');
   }
   if (type === 'points_builder') {
-    const builderExpr = generatePointsBuilderKotlin(card.emitter.builderState || {})
+    const builderExpr = generatePointsBuilderKotlin({
+      ...(card.emitter.builderState || {}),
+      kotlinEndMode: 'builder'
+    })
       .split('\n')
       .map((line) => line.trimEnd())
       .filter((line) => line.trim());
@@ -231,12 +279,12 @@ function emitEmitterPointBuilder(project, card, dataVar) {
     }
     lines.push(`        val count = ${dataVar}.getRandomCount().coerceAtLeast(1)`);
     lines.push('        if (source.isEmpty()) {');
-    lines.push(`            repeat(count) { locs.add(${relativeExpr(project, card, 'emitter.offset', offset)}) }`);
+    lines.push(`            repeat(count) { locs.add(${relativeExpr(bindingResolver, card, 'emitter.offset', offset)}) }`);
     lines.push('        } else {');
     lines.push('            val rand = Random.Default');
     lines.push('            repeat(count) {');
     lines.push('                val base = source[rand.nextInt(source.size)]');
-    lines.push(`                locs.add(RelativeLocation(base.x + ${numberExpr(project, card, 'emitter.offset.x', offset.x)}, base.y + ${numberExpr(project, card, 'emitter.offset.y', offset.y)}, base.z + ${numberExpr(project, card, 'emitter.offset.z', offset.z)}))`);
+    lines.push(`                locs.add(RelativeLocation(base.x + ${numberExpr(bindingResolver, card, 'emitter.offset.x', offset.x)}, base.y + ${numberExpr(bindingResolver, card, 'emitter.offset.y', offset.y)}, base.z + ${numberExpr(bindingResolver, card, 'emitter.offset.z', offset.z)}))`);
     lines.push('            }');
     lines.push('        }');
     lines.push('        locs');
@@ -249,17 +297,17 @@ function emitEmitterPointBuilder(project, card, dataVar) {
     lines.push('        val rand = Random.Default');
     lines.push('        val locs = arrayListOf<RelativeLocation>()');
     lines.push(`        repeat(${dataVar}.getRandomCount()) {`);
-    lines.push(`            var x = (rand.nextDouble() - 0.5) * ${numberExpr(project, card, 'emitter.box.x', box.x)}`);
-    lines.push(`            var y = (rand.nextDouble() - 0.5) * ${numberExpr(project, card, 'emitter.box.y', box.y)}`);
-    lines.push(`            var z = (rand.nextDouble() - 0.5) * ${numberExpr(project, card, 'emitter.box.z', box.z)}`);
+    lines.push(`            var x = (rand.nextDouble() - 0.5) * ${numberExpr(bindingResolver, card, 'emitter.box.x', box.x)}`);
+    lines.push(`            var y = (rand.nextDouble() - 0.5) * ${numberExpr(bindingResolver, card, 'emitter.box.y', box.y)}`);
+    lines.push(`            var z = (rand.nextDouble() - 0.5) * ${numberExpr(bindingResolver, card, 'emitter.box.z', box.z)}`);
     if (box.surface) {
       lines.push('            when (rand.nextInt(3)) {');
-      lines.push(`                0 -> x = (if (rand.nextBoolean()) -0.5 else 0.5) * ${numberExpr(project, card, 'emitter.box.x', box.x)}`);
-      lines.push(`                1 -> y = (if (rand.nextBoolean()) -0.5 else 0.5) * ${numberExpr(project, card, 'emitter.box.y', box.y)}`);
-      lines.push(`                else -> z = (if (rand.nextBoolean()) -0.5 else 0.5) * ${numberExpr(project, card, 'emitter.box.z', box.z)}`);
+      lines.push(`                0 -> x = (if (rand.nextBoolean()) -0.5 else 0.5) * ${numberExpr(bindingResolver, card, 'emitter.box.x', box.x)}`);
+      lines.push(`                1 -> y = (if (rand.nextBoolean()) -0.5 else 0.5) * ${numberExpr(bindingResolver, card, 'emitter.box.y', box.y)}`);
+      lines.push(`                else -> z = (if (rand.nextBoolean()) -0.5 else 0.5) * ${numberExpr(bindingResolver, card, 'emitter.box.z', box.z)}`);
       lines.push('            }');
     }
-    lines.push(`            locs.add(RelativeLocation(x + ${numberExpr(project, card, 'emitter.offset.x', offset.x)}, y + ${numberExpr(project, card, 'emitter.offset.y', offset.y)}, z + ${numberExpr(project, card, 'emitter.offset.z', offset.z)}))`);
+    lines.push(`            locs.add(RelativeLocation(x + ${numberExpr(bindingResolver, card, 'emitter.offset.x', offset.x)}, y + ${numberExpr(bindingResolver, card, 'emitter.offset.y', offset.y)}, z + ${numberExpr(bindingResolver, card, 'emitter.offset.z', offset.z)}))`);
     lines.push('        }');
     lines.push('        locs');
     lines.push('    }');
@@ -280,53 +328,55 @@ function emitEmitterPointBuilder(project, card, dataVar) {
     lines.push('            val dy = cos(phi)');
     lines.push('            val dz = sin(phi) * sin(theta)');
     lines.push(type === 'sphere'
-      ? `            val rr = ${numberExpr(project, card, radiusPath, radius)} * cbrt(rand.nextDouble())`
-      : `            val rr = ${numberExpr(project, card, radiusPath, radius)}`);
-    lines.push(`            locs.add(RelativeLocation(dx * rr + ${numberExpr(project, card, 'emitter.offset.x', offset.x)}, dy * rr + ${numberExpr(project, card, 'emitter.offset.y', offset.y)}, dz * rr + ${numberExpr(project, card, 'emitter.offset.z', offset.z)}))`);
+      ? `            val rr = ${numberExpr(bindingResolver, card, radiusPath, radius)} * cbrt(rand.nextDouble())`
+      : `            val rr = ${numberExpr(bindingResolver, card, radiusPath, radius)}`);
+    lines.push(`            locs.add(RelativeLocation(dx * rr + ${numberExpr(bindingResolver, card, 'emitter.offset.x', offset.x)}, dy * rr + ${numberExpr(bindingResolver, card, 'emitter.offset.y', offset.y)}, dz * rr + ${numberExpr(bindingResolver, card, 'emitter.offset.z', offset.z)}))`);
     lines.push('        }');
     lines.push('        locs');
     lines.push('    }');
     return lines.join('\n');
   }
   if (type === 'line') {
-    lines.push(`    .addLine(${relativeExpr(project, card, 'emitter.line.dir', card.emitter.line.dir)}, ${numberExpr(project, card, 'emitter.line.step', card.emitter.line.step)}, ${dataVar}.getRandomCount())`);
-    lines.push(`    .pointsOnEach { it.add(${relativeExpr(project, card, 'emitter.offset', offset)}) }`);
+    lines.push(`    .addLine(${relativeExpr(bindingResolver, card, 'emitter.line.dir', card.emitter.line.dir)}, ${numberExpr(bindingResolver, card, 'emitter.line.step', card.emitter.line.step)}, ${dataVar}.getRandomCount())`);
+    lines.push(`    .pointsOnEach { it.add(${relativeExpr(bindingResolver, card, 'emitter.offset', offset)}) }`);
     return lines.join('\n');
   }
   if (type === 'circle') {
-    lines.push(`    .addCircle(${numberExpr(project, card, 'emitter.circle.r', card.emitter.circle.r)}, ${dataVar}.getRandomCount())`);
-    lines.push(`    .rotateTo(${relativeExpr(project, card, 'emitter.circle.axis', card.emitter.circle.axis)})`);
-    lines.push(`    .pointsOnEach { it.add(${relativeExpr(project, card, 'emitter.offset', offset)}) }`);
+    lines.push(`    .addCircle(${numberExpr(bindingResolver, card, 'emitter.circle.r', card.emitter.circle.r)}, ${dataVar}.getRandomCount())`);
+    lines.push(`    .rotateTo(${relativeExpr(bindingResolver, card, 'emitter.circle.axis', card.emitter.circle.axis)})`);
+    lines.push(`    .pointsOnEach { it.add(${relativeExpr(bindingResolver, card, 'emitter.offset', offset)}) }`);
     return lines.join('\n');
   }
   if (type === 'ring') {
-    lines.push(`    .addDiscreteCircleXZ(${numberExpr(project, card, 'emitter.ring.r', card.emitter.ring.r)}, ${dataVar}.getRandomCount(), ${numberExpr(project, card, 'emitter.ring.thickness', card.emitter.ring.thickness)})`);
-    lines.push(`    .rotateTo(${relativeExpr(project, card, 'emitter.ring.axis', card.emitter.ring.axis)})`);
-    lines.push(`    .pointsOnEach { it.add(${relativeExpr(project, card, 'emitter.offset', offset)}) }`);
+    lines.push(`    .addDiscreteCircleXZ(${numberExpr(bindingResolver, card, 'emitter.ring.r', card.emitter.ring.r)}, ${dataVar}.getRandomCount(), ${numberExpr(bindingResolver, card, 'emitter.ring.thickness', card.emitter.ring.thickness)})`);
+    lines.push(`    .rotateTo(${relativeExpr(bindingResolver, card, 'emitter.ring.axis', card.emitter.ring.axis)})`);
+    lines.push(`    .pointsOnEach { it.add(${relativeExpr(bindingResolver, card, 'emitter.offset', offset)}) }`);
     return lines.join('\n');
   }
   if (type === 'arc') {
     const arc = card.emitter.arc;
-    lines.push(`    .addRadian(${numberExpr(project, card, 'emitter.arc.r', arc.r)}, ${dataVar}.getRandomCount(), ${numberExpr(project, card, 'emitter.arc.start', arc.start)} * PI / 180.0, ${numberExpr(project, card, 'emitter.arc.end', arc.end)} * PI / 180.0, ${numberExpr(project, card, 'emitter.arc.rotate', arc.rotate)} * PI / 180.0)`);
-    lines.push(`    .rotateTo(${relativeExpr(project, card, 'emitter.arc.axis', arc.axis)})`);
-    lines.push(`    .pointsOnEach { it.add(${relativeExpr(project, card, 'emitter.offset', offset)}) }`);
+    lines.push(`    .addRadian(${numberExpr(bindingResolver, card, 'emitter.arc.r', arc.r)}, ${dataVar}.getRandomCount(), ${numberExpr(bindingResolver, card, 'emitter.arc.start', arc.start)} * PI / 180.0, ${numberExpr(bindingResolver, card, 'emitter.arc.end', arc.end)} * PI / 180.0, ${numberExpr(bindingResolver, card, 'emitter.arc.rotate', arc.rotate)} * PI / 180.0)`);
+    lines.push(`    .rotateTo(${relativeExpr(bindingResolver, card, 'emitter.arc.axis', arc.axis)})`);
+    lines.push(`    .pointsOnEach { it.add(${relativeExpr(bindingResolver, card, 'emitter.offset', offset)}) }`);
     return lines.join('\n');
   }
   if (type === 'spiral') {
     const spiral = card.emitter.spiral;
-    lines.push(`    .addSpiral(${numberExpr(project, card, 'emitter.spiral.startR', spiral.startR)}, ${numberExpr(project, card, 'emitter.spiral.endR', spiral.endR)}, ${numberExpr(project, card, 'emitter.spiral.height', spiral.height)}, ${dataVar}.getRandomCount().coerceAtLeast(2), ${numberExpr(project, card, 'emitter.spiral.rotateSpeed', spiral.rotateSpeed)}, ${numberExpr(project, card, 'emitter.spiral.rBias', spiral.rBias)}, ${numberExpr(project, card, 'emitter.spiral.hBias', spiral.hBias)})`);
-    lines.push(`    .rotateTo(${relativeExpr(project, card, 'emitter.spiral.axis', spiral.axis)})`);
-    lines.push(`    .pointsOnEach { it.add(${relativeExpr(project, card, 'emitter.offset', offset)}) }`);
+    lines.push(`    .addSpiral(${numberExpr(bindingResolver, card, 'emitter.spiral.startR', spiral.startR)}, ${numberExpr(bindingResolver, card, 'emitter.spiral.endR', spiral.endR)}, ${numberExpr(bindingResolver, card, 'emitter.spiral.height', spiral.height)}, ${dataVar}.getRandomCount().coerceAtLeast(2), ${numberExpr(bindingResolver, card, 'emitter.spiral.rotateSpeed', spiral.rotateSpeed)}, ${numberExpr(bindingResolver, card, 'emitter.spiral.rBias', spiral.rBias)}, ${numberExpr(bindingResolver, card, 'emitter.spiral.hBias', spiral.hBias)})`);
+    lines.push(`    .rotateTo(${relativeExpr(bindingResolver, card, 'emitter.spiral.axis', spiral.axis)})`);
+    lines.push(`    .pointsOnEach { it.add(${relativeExpr(bindingResolver, card, 'emitter.offset', offset)}) }`);
     return lines.join('\n');
   }
-  lines.push(`    .addWith { List(${dataVar}.getRandomCount()) { ${relativeExpr(project, card, 'emitter.offset', offset)} } }`);
+  lines.push(`    .addWith { List(${dataVar}.getRandomCount()) { ${relativeExpr(bindingResolver, card, 'emitter.offset', offset)} } }`);
   return lines.join('\n');
 }
 
-function emitCurveDeclarations(card, index) {
+function emitCurveDeclarations(bindingResolver, card, index) {
   const n = index + 1;
   const lines = [];
   const prefix = `emitter${n}`;
+  const hasAlphaBinding = Boolean(resolveBindingRef(bindingResolver, card, 'render.alpha', 'Double'));
+  const opacityScale = hasAlphaBinding ? 0.01 : Number(card.render.alpha || 0) / 10000;
   lines.push(`private val ${prefix}SizeX = ${curveToKotlin(card.curves.size.x, 1)}`);
   if (!card.curves.size.syncAxes && usesIndependentScale(card)) {
     lines.push(`private val ${prefix}SizeY = ${curveToKotlin(card.curves.size.y, 1)}`);
@@ -335,7 +385,7 @@ function emitCurveDeclarations(card, index) {
     lines.push(`private val ${prefix}SizeZ = ${curveToKotlin(card.curves.size.z, 1)}`);
   }
   lines.push(`private val ${prefix}Brightness = ${curveToKotlin(card.curves.brightness, 15)}`);
-  lines.push(`private val ${prefix}Opacity = ${curveToKotlin(scaleCurveValues(card.curves.opacity, 0.01), 1)}`);
+  lines.push(`private val ${prefix}Opacity = ${curveToKotlin(scaleCurveValues(card.curves.opacity, opacityScale), 1)}`);
   lines.push(`private val ${prefix}Roll = ${curveToKotlin(card.curves.rotation.roll, 0)}`);
   if (card.render.billboardMode === 'none' && !card.curves.rotation.syncAxes) {
     lines.push(`private val ${prefix}Yaw = ${curveToKotlin(card.curves.rotation.yaw, 0)}`);
@@ -344,7 +394,7 @@ function emitCurveDeclarations(card, index) {
   return lines.join('\n');
 }
 
-function emitCommandQueueDeclarations(project) {
+function emitCommandQueueDeclarations(project, vec3Type) {
   const queues = project.commandQueues
     .map((queue, index) => ({ queue, index }))
     .filter(({ queue }) => Array.isArray(queue.commands) && queue.commands.some((command) => command.enabled !== false));
@@ -353,14 +403,14 @@ function emitCommandQueueDeclarations(project) {
   queues.forEach(({ queue, index }) => {
     lines.push(`private val commandQueue${index + 1} = ParticleCommandQueue()`);
     queue.commands.filter((command) => command.enabled !== false).forEach((command) => {
-      lines.push(`    .add(${commandToKotlin(command)}) { _, particle -> particle.currentAge >= ${fmtI(command.tick)} }`);
+      lines.push(`    .add(${commandToKotlin(command, vec3Type)}) { _, particle -> particle.currentAge >= ${fmtI(command.tick)} }`);
     });
     lines.push('');
   });
   return lines.join('\n').trimEnd();
 }
 
-function commandToKotlin(command) {
+function commandToKotlin(command, vec3Type = 'Vec3') {
   const params = command.params || {};
   const p = (key, fallback = 0) => params[key] ?? fallback;
   const enumValue = (key, fallback, allowed) => {
@@ -375,34 +425,34 @@ function commandToKotlin(command) {
     return 'ParticleGravityCommand(this)';
   }
   if (command.type === 'attraction') {
-    return `ParticleAttractionCommand(target = ${supplierVec3(params, 'target')}, strength = ${fmtD(p('strength', 0.8))}, range = ${fmtD(p('range', 8))}, falloffPower = ${fmtD(p('falloffPower', 2))}, minDistance = ${fmtD(p('minDistance', 0.25))})`;
+    return `ParticleAttractionCommand(target = ${supplierVec3(params, 'target', vec3Type)}, strength = ${fmtD(p('strength', 0.8))}, range = ${fmtD(p('range', 8))}, falloffPower = ${fmtD(p('falloffPower', 2))}, minDistance = ${fmtD(p('minDistance', 0.25))})`;
   }
   if (command.type === 'orbit') {
     const mode = enumValue('mode', 'PHYSICAL', ['PHYSICAL', 'SPRING', 'SNAP']);
-    return `ParticleOrbitCommand(center = ${supplierVec3(params, 'center')}, axis = ${vec3Params(params, 'axis')}, radius = ${fmtD(p('radius', 3))}, angularSpeed = ${fmtD(p('angularSpeed', 0.35))}, radialCorrect = ${fmtD(p('radialCorrect', 0.25))}, minDistance = ${fmtD(p('minDistance', 0.2))}, mode = OrbitMode.${mode}).maxRadialStep(${fmtD(p('maxRadialStep', 0.5))})`;
+    return `ParticleOrbitCommand(center = ${supplierVec3(params, 'center', vec3Type)}, axis = ${vec3Params(params, 'axis', vec3Type)}, radius = ${fmtD(p('radius', 3))}, angularSpeed = ${fmtD(p('angularSpeed', 0.35))}, radialCorrect = ${fmtD(p('radialCorrect', 0.25))}, minDistance = ${fmtD(p('minDistance', 0.2))}, mode = OrbitMode.${mode}).maxRadialStep(${fmtD(p('maxRadialStep', 0.5))})`;
   }
   if (command.type === 'noise') {
     return `ParticleNoiseCommand(strength = ${fmtD(p('strength', 0.03))}, frequency = ${fmtD(p('frequency', 0.15))}, speed = ${fmtD(p('speed', 0.12))}, affectY = ${fmtD(p('affectY', 1))}, clampSpeed = ${fmtD(p('clampSpeed', 0.8))}, useLifeCurve = ${fmtBool(params.useLifeCurve !== false)})`;
   }
   if (command.type === 'flow_field') {
-    return `ParticleFlowFieldCommand(amplitude = ${fmtD(p('amplitude', 0.15))}, frequency = ${fmtD(p('frequency', 0.25))}, timeScale = ${fmtD(p('timeScale', 0.06))}, phaseOffset = ${fmtD(p('phaseOffset'))}, worldOffset = ${vec3Params(params, 'worldOffset')})`;
+    return `ParticleFlowFieldCommand(amplitude = ${fmtD(p('amplitude', 0.15))}, frequency = ${fmtD(p('frequency', 0.25))}, timeScale = ${fmtD(p('timeScale', 0.06))}, phaseOffset = ${fmtD(p('phaseOffset'))}, worldOffset = ${vec3Params(params, 'worldOffset', vec3Type)})`;
   }
   if (command.type === 'vortex') {
-    return `ParticleVortexCommand(center = ${supplierVec3(params, 'center')}, axis = ${vec3Params(params, 'axis')}, swirlStrength = ${fmtD(p('swirlStrength', 0.8))}, radialPull = ${fmtD(p('radialPull', 0.35))}, axialLift = ${fmtD(p('axialLift'))}, range = ${fmtD(p('range', 10))}, falloffPower = ${fmtD(p('falloffPower', 2))}, minDistance = ${fmtD(p('minDistance', 0.2))})`;
+    return `ParticleVortexCommand(center = ${supplierVec3(params, 'center', vec3Type)}, axis = ${vec3Params(params, 'axis', vec3Type)}, swirlStrength = ${fmtD(p('swirlStrength', 0.8))}, radialPull = ${fmtD(p('radialPull', 0.35))}, axialLift = ${fmtD(p('axialLift'))}, range = ${fmtD(p('range', 10))}, falloffPower = ${fmtD(p('falloffPower', 2))}, minDistance = ${fmtD(p('minDistance', 0.2))})`;
   }
   if (command.type === 'rotation_force') {
-    return `ParticleRotationForceCommand(center = ${supplierVec3(params, 'center')}, axis = ${vec3Params(params, 'axis')}, strength = ${fmtD(p('strength', 0.35))}, range = ${fmtD(p('range', 8))}, falloffPower = ${fmtD(p('falloffPower', 2))})`;
+    return `ParticleRotationForceCommand(center = ${supplierVec3(params, 'center', vec3Type)}, axis = ${vec3Params(params, 'axis', vec3Type)}, strength = ${fmtD(p('strength', 0.35))}, range = ${fmtD(p('range', 8))}, falloffPower = ${fmtD(p('falloffPower', 2))})`;
   }
   if (command.type === 'toroidal_circulation') {
-    return `ParticleToroidalCirculationCommand(center = ${supplierVec3(params, 'center')}, axis = ${vec3Params(params, 'axis')}, ringRadius = ${fmtD(p('ringRadius', 3))}, radialThickness = ${fmtD(p('radialThickness', 1.2))}, axialThickness = ${fmtD(p('axialThickness', 0.8))}, circulationStrength = ${fmtD(p('circulationStrength', 0.35))}, outwardStrength = ${fmtD(p('outwardStrength'))}, upwardStrength = ${fmtD(p('upwardStrength'))}, followStrength = ${fmtD(p('followStrength', 0.12))}, maxStep = ${fmtD(p('maxStep', 0.6))}, useLifeCurve = ${fmtBool(params.useLifeCurve === true)})`;
+    return `ParticleToroidalCirculationCommand(center = ${supplierVec3(params, 'center', vec3Type)}, axis = ${vec3Params(params, 'axis', vec3Type)}, ringRadius = ${fmtD(p('ringRadius', 3))}, radialThickness = ${fmtD(p('radialThickness', 1.2))}, axialThickness = ${fmtD(p('axialThickness', 0.8))}, circulationStrength = ${fmtD(p('circulationStrength', 0.35))}, outwardStrength = ${fmtD(p('outwardStrength'))}, upwardStrength = ${fmtD(p('upwardStrength'))}, followStrength = ${fmtD(p('followStrength', 0.12))}, maxStep = ${fmtD(p('maxStep', 0.6))}, useLifeCurve = ${fmtBool(params.useLifeCurve === true)})`;
   }
   if (command.type === 'distortion') {
-    return `ParticleDistortionCommand(center = ${supplierVec3(params, 'center')}, axis = ${vec3Params(params, 'axis')}, radius = ${fmtD(p('radius', 3))}, radialStrength = ${fmtD(p('radialStrength', 0.35))}, axialStrength = ${fmtD(p('axialStrength', 0.25))}, tangentialStrength = ${fmtD(p('tangentialStrength'))}, frequency = ${fmtD(p('frequency', 0.25))}, timeScale = ${fmtD(p('timeScale', 0.1))}, phaseOffset = ${fmtD(p('phaseOffset'))}, followStrength = ${fmtD(p('followStrength', 0.35))}, maxStep = ${fmtD(p('maxStep', 0.6))}, baseAxial = ${fmtD(p('baseAxial'))}, seedOffset = ${fmtI(p('seedOffset'))}, useLifeCurve = ${fmtBool(params.useLifeCurve === true)})`;
+    return `ParticleDistortionCommand(center = ${supplierVec3(params, 'center', vec3Type)}, axis = ${vec3Params(params, 'axis', vec3Type)}, radius = ${fmtD(p('radius', 3))}, radialStrength = ${fmtD(p('radialStrength', 0.35))}, axialStrength = ${fmtD(p('axialStrength', 0.25))}, tangentialStrength = ${fmtD(p('tangentialStrength'))}, frequency = ${fmtD(p('frequency', 0.25))}, timeScale = ${fmtD(p('timeScale', 0.1))}, phaseOffset = ${fmtD(p('phaseOffset'))}, followStrength = ${fmtD(p('followStrength', 0.35))}, maxStep = ${fmtD(p('maxStep', 0.6))}, baseAxial = ${fmtD(p('baseAxial'))}, seedOffset = ${fmtI(p('seedOffset'))}, useLifeCurve = ${fmtBool(params.useLifeCurve === true)})`;
   }
   if (command.type === 'inherit_velocity') {
     const mode = enumValue('mode', 'INITIAL', ['INITIAL', 'CURRENT']);
     const space = enumValue('space', 'WORLD', ['WORLD', 'LOCAL']);
-    const base = `ParticleInheritVelocityCommand(source = ${supplierVec3(params, 'source')}, mode = ParticleInheritMode.${mode}, multiplier = ${fmtD(p('multiplier', 1))}, axisMask = ${vec3Params(params, 'axisMask')}, overLifetime = ${constantCurve(p('overLifetime', 1), 1)}, damping = ${fmtD(p('damping'))}, maxContributionSpeed = ${fmtD(p('maxContributionSpeed'))}, space = ParticleMotionSpace.${space})`;
+    const base = `ParticleInheritVelocityCommand(source = ${supplierVec3(params, 'source', vec3Type)}, mode = ParticleInheritMode.${mode}, multiplier = ${fmtD(p('multiplier', 1))}, axisMask = ${vec3Params(params, 'axisMask', vec3Type)}, overLifetime = ${constantCurve(p('overLifetime', 1), 1)}, damping = ${fmtD(p('damping'))}, maxContributionSpeed = ${fmtD(p('maxContributionSpeed'))}, space = ParticleMotionSpace.${space})`;
     return `${base}.randomizePerParticle(${fmtBool(params.randomizePerParticle === true)}).randomScale(${fmtD(p('randomScaleMin', 1))}, ${fmtD(p('randomScaleMax', 1))}).randomSeedOffset(${fmtI(p('randomSeedOffset'))})`;
   }
   if (command.type === 'lifetime_motion') {
@@ -413,7 +463,7 @@ function commandToKotlin(command) {
     return `${base}.randomizePerParticle(${fmtBool(params.randomizePerParticle === true)}).randomScale(${fmtD(p('randomScaleMin', 1))}, ${fmtD(p('randomScaleMax', 1))}).randomSeedOffset(${fmtI(p('randomSeedOffset'))}).maxVelocityDeltaPerTick(${fmtD(p('maxVelocityDeltaPerTick'))})`;
   }
   if (command.type === 'velocity_scale') {
-    return `ParticleCommand { data, _ -> data.velocity = Vec3(data.velocity.x * ${fmtD(p('scaleX', 1))}, data.velocity.y * ${fmtD(p('scaleY', 1))}, data.velocity.z * ${fmtD(p('scaleZ', 1))}) }`;
+    return `ParticleCommand { data, _ -> data.velocity = ${vec3Type}(data.velocity.x * ${fmtD(p('scaleX', 1))}, data.velocity.y * ${fmtD(p('scaleY', 1))}, data.velocity.z * ${fmtD(p('scaleZ', 1))}) }`;
   }
   return `ParticleCommand { data, _ -> data.velocity = data.velocity.add(${fmtD(p('deltaX'))}, ${fmtD(p('deltaY'))}, ${fmtD(p('deltaZ'))}) }`;
 }
@@ -425,43 +475,41 @@ function emitCommandQueueApplication(project) {
   if (!queues.length) return [];
   const lines = [];
   queues.forEach(({ queue, index }) => {
-    const signs = Array.isArray(queue.signs) ? queue.signs : [];
-    const condition = signs.length ? `data.sign in setOf(${signs.map((value) => fmtI(value)).join(', ')})` : 'true';
+    const signs = Array.from(new Set(
+      (Array.isArray(queue.signs) ? queue.signs : []).map((value) => fmtI(value))
+    ));
+    if (!signs.length) {
+      lines.push(`        commandQueue${index + 1}.applyVelocity(data, this)`);
+      return;
+    }
+    const condition = signs.map((value) => `data.sign == ${value}`).join(' || ');
     lines.push(`        if (${condition}) commandQueue${index + 1}.applyVelocity(data, this)`);
   });
   return lines;
 }
 
-function defaultLiteralForType(type, value) {
-  const normalized = String(type || 'Double');
-  if (normalized === 'Int') return fmtI(value);
-  if (normalized === 'Long') return `${normalizeGeneratorLongValue(value)}L`;
-  if (normalized === 'Float') return fmtF(value);
-  if (normalized === 'Double') return fmtD(value);
-  if (normalized === 'Boolean') return value === true || value === 'true' ? 'true' : 'false';
-  if (normalized === 'String') return fmtString(value);
-  if (['Vec3', 'RelativeLocation', 'Vector3f'].includes(normalized)) {
-    return normalizeGeneratorVectorValue(normalized, value);
-  }
-  return fmtD(value);
-}
-
-function emitProjectParameterDeclarations(project) {
+function emitProjectParameterDeclarations(project, vec3Type) {
   const lines = [];
   const seen = new Set();
   const variables = Array.isArray(project?.parameters?.variables) ? project.parameters.variables : [];
   const constants = Array.isArray(project?.parameters?.constants) ? project.parameters.constants : [];
   variables.forEach((item) => {
-    if (!isIdent(item?.name) || seen.has(item.name)) return;
+    if (!isGeneratorValueName(item?.name) || seen.has(item.name)) return;
     seen.add(item.name);
     if (item.codec !== false) lines.push('@CodecField');
-    lines.push(`var ${item.name}: ${item.type || 'Double'} = ${defaultLiteralForType(item.type, item.value)}`);
+    const type = item.type === 'Vec3' ? vec3Type : (item.type || 'Double');
+    const literal = formatGeneratorKotlinLiteral(item.type, item.value);
+    const mappedLiteral = item.type === 'Vec3' ? literal.replace(/^Vec3(?=\s*\()/, vec3Type) : literal;
+    lines.push(`var ${item.name}: ${type} = ${mappedLiteral}`);
     lines.push('');
   });
   constants.forEach((item) => {
-    if (!isIdent(item?.name) || seen.has(item.name)) return;
+    if (!isGeneratorValueName(item?.name) || seen.has(item.name)) return;
     seen.add(item.name);
-    lines.push(`private val ${item.name}: ${item.type || 'Double'} = ${defaultLiteralForType(item.type, item.value)}`);
+    const type = item.type === 'Vec3' ? vec3Type : (item.type || 'Double');
+    const literal = formatGeneratorKotlinLiteral(item.type, item.value);
+    const mappedLiteral = item.type === 'Vec3' ? literal.replace(/^Vec3(?=\s*\()/, vec3Type) : literal;
+    lines.push(`private val ${item.name}: ${type} = ${mappedLiteral}`);
     lines.push('');
   });
   return lines.join('\n').trimEnd();
@@ -478,76 +526,454 @@ function resolveGlobalGravity(project) {
   return null;
 }
 
-function emitEmitterBlock(project, card, index) {
+function emitExpressionHelpers(project) {
+  const sources = [String(project?.doTick?.source || '')];
+  for (const card of Array.isArray(project?.emitters) ? project.emitters : []) {
+    sources.push(...Object.values(card?.bindings || {}).map(String));
+  }
+  const joined = sources.join('\n');
+  const lines = [];
+  if (/\bclamp\s*\(/.test(joined)) {
+    lines.push('private fun clamp(value: Number, min: Number, max: Number): Double = value.toDouble().coerceIn(min.toDouble(), max.toDouble())');
+  }
+  if (/\blerp\s*\(/.test(joined)) {
+    lines.push('private fun lerp(a: Number, b: Number, progress: Number): Double = a.toDouble() + (b.toDouble() - a.toDouble()) * progress.toDouble()');
+  }
+  if (/\b(?:Math\.)?pow\s*\(/.test(joined)) {
+    lines.push('private fun pow(a: Number, b: Number): Double = a.toDouble().pow(b.toDouble())');
+  }
+  return lines.join('\n');
+}
+
+function usesVectorOperatorExtensions(project) {
+  const symbols = [
+    ...(Array.isArray(project?.parameters?.variables) ? project.parameters.variables : []),
+    ...(Array.isArray(project?.parameters?.constants) ? project.parameters.constants : [])
+  ];
+  const doTick = analyzeGeneratorDoTick(project?.doTick?.source, project?.parameters, {
+    context: { tick: 0, progress: 0 }
+  });
+  if (doTick.handled && doTick.valid
+    && doTick.statements.some((statement) => expressionAstUsesVectorOperator(statement.ast))) return true;
+  if (!doTick.handled && doTick.fallbackSafe === true) {
+    const source = String(project?.doTick?.source || '');
+    const vectorNames = symbols
+      .filter((item) => ['Vec3', 'RelativeLocation', 'Vector3f'].includes(item?.type))
+      .map((item) => String(item.name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .filter(Boolean);
+    if (vectorNames.some((name) => new RegExp(`\\b${name}\\b`).test(source)) && /[+\-*/]/.test(source)) return true;
+  }
+  return (Array.isArray(project?.emitters) ? project.emitters : []).some((card) => (
+    Object.values(card?.bindings || {}).some((source) => {
+      const raw = String(source || '').trim();
+      if (!raw || symbols.some((item) => item?.name === raw)) return false;
+      const analysis = analyzeGeneratorExpression(raw, symbols);
+      return analysis.valid && expressionAstUsesVectorOperator(analysis.ast);
+    })
+  ));
+}
+
+function expressionAstUsesVectorOperator(node) {
+  if (!node || typeof node !== 'object') return false;
+  if ((node.kind === 'binary' || node.kind === 'unary')
+    && ['Vec3', 'RelativeLocation', 'Vector3f'].includes(node.type)) return true;
+  return Object.values(node).some((value) => (
+    Array.isArray(value)
+      ? value.some(expressionAstUsesVectorOperator)
+      : value && typeof value === 'object' && expressionAstUsesVectorOperator(value)
+  ));
+}
+
+function emitVariableAutomationDeclarations(project) {
+  const lines = [];
+  const seen = new Set();
+  const variables = Array.isArray(project?.parameters?.variables) ? project.parameters.variables : [];
+  variables.forEach((item) => {
+    const automation = item?.automation;
+    if (!automation?.enabled || !['Int', 'Long', 'Float', 'Double'].includes(item?.type) || !isGeneratorValueName(item?.name) || seen.has(item.name)) return;
+    seen.add(item.name);
+    lines.push(`private val ${safeIdent(`automation_${item.name}`)} = ${curveToKotlin(automation.curve, 0)}`);
+  });
+  return lines.join('\n');
+}
+
+function automationValueExpr(item, automation) {
+  const target = safeIdent(item.name);
+  const curve = safeIdent(`automation_${item.name}`);
+  const min = fmtD(automation.targetMin, 0);
+  const max = fmtD(automation.targetMax, 0);
+  const progress = automation.source === 'variable' && isGeneratorValueName(automation.sourceVariable)
+    ? `(((${automation.sourceVariable}).toDouble() - ${fmtD(automation.sourceMin, 0)}) / (${fmtD(automation.sourceMax, 1)} - ${fmtD(automation.sourceMin, 0)})).coerceIn(0.0, 1.0)`
+    : 'emitterProgress';
+  const sampled = `(${min} + (${max} - ${min}) * ${curve}.sample(${progress}).toDouble())`;
+  if (item.type === 'Int') return `${target} = ${sampled}.roundToInt()`;
+  if (item.type === 'Long') return `${target} = ${sampled}.roundToLong()`;
+  if (item.type === 'Float') return `${target} = ${sampled}.toFloat()`;
+  return `${target} = ${sampled}`;
+}
+
+function emitDoTick(project, vec3Type = 'Vec3') {
+  const source = String(project?.doTick?.source || '').trim();
+  const variables = Array.isArray(project?.parameters?.variables) ? project.parameters.variables : [];
+  const automations = variables.filter((item) => item?.automation?.enabled && ['Int', 'Long', 'Float', 'Double'].includes(item?.type) && isGeneratorValueName(item?.name));
+  if (!source && !automations.length) return ['    override fun doTick() {', '    }'];
+  const lines = ['    override fun doTick() {'];
+  const needsLifecycleProgress = /\bprogress\b/.test(source)
+    || automations.some((item) => item.automation.source !== 'variable' || !isGeneratorValueName(item.automation.sourceVariable));
+  if (needsLifecycleProgress) {
+    const maxTick = Number(project?.rootLifecycle?.maxTick || 0);
+    const duration = maxTick > 0 ? fmtD(maxTick, 1) : '1.0';
+    lines.push(`        val emitterProgress = (tick.toDouble() / ${duration}).coerceIn(0.0, 1.0)`);
+    if (/\bprogress\b/.test(source)) lines.push('        val progress = emitterProgress');
+  }
+  if (source) {
+    const typed = analyzeGeneratorDoTick(source, project.parameters, {
+      context: { tick: 0, progress: 0 }
+    });
+    if (typed.handled && typed.valid) {
+      typed.statements.forEach((statement) => {
+        let text;
+        if (statement.declaration) {
+          const keyword = statement.declarationKeyword === 'val' ? 'val' : 'var';
+          text = `${keyword} ${statement.name} = ${statement.kotlin}`;
+        } else if (statement.operator !== '='
+          && ['Int', 'Long', 'Float', 'Double'].includes(statement.type)
+          && statement.rhsKotlin === statement.rhs) {
+          text = `${statement.name} ${statement.operator} ${statement.rhs}`;
+        } else {
+          text = `${statement.name} = ${statement.kotlin}`;
+        }
+        lines.push(`        ${mapVec3Expression(text, vec3Type)}`);
+      });
+    } else if (!typed.handled && typed.fallbackSafe !== true) {
+      lines.push(`        // doTick 未生成：${typed.message || '复杂 doTick 无法可靠转换为 Kotlin'}`);
+    } else if (!typed.valid && typed.message) {
+      lines.push(`        // doTick 未生成：${typed.message}`);
+    } else {
+      generatorExpressionToKotlin(source).split('\n').forEach((line) => {
+        const text = line.trimEnd();
+        if (text.trim()) lines.push(`        ${text}`);
+      });
+    }
+  }
+  automations.forEach((item) => lines.push(`        ${automationValueExpr(item, item.automation)}`));
+  lines.push('    }');
+  return lines;
+}
+
+function projectBindingsUseProgress(project) {
+  return (Array.isArray(project?.emitters) ? project.emitters : []).some((card) => (
+    Object.values(card?.bindings || {}).some((source) => /\bprogress\b/.test(String(source || '')))
+  ));
+}
+
+function emitterProgressKotlin(project, indentSize = 8) {
+  const maxTick = Number(project?.rootLifecycle?.maxTick || 0);
+  const duration = maxTick > 0 ? fmtD(maxTick, 1) : '1.0';
+  const pad = ' '.repeat(indentSize);
+  return [
+    `${pad}val emitterProgress = (tick.toDouble() / ${duration}).coerceIn(0.0, 1.0)`,
+    `${pad}val progress = emitterProgress`
+  ];
+}
+
+function emitEmitterGravityApplication(project, bindingResolver) {
+  const physicsCards = project.emitters
+    .filter((card) => card.enabled !== false)
+    .map((card) => {
+      const gravityBinding = resolveBindingRef(bindingResolver, card, 'physics.gravity', 'Double');
+      return {
+        gravity: Number(card.physics?.gravity || 0),
+        gravityBinding: gravityBinding?.expression ? `(${gravityBinding.name}).toDouble()` : gravityBinding?.name || '',
+        signExpr: intExpr(bindingResolver, card, 'render.sign', card.render.sign)
+      };
+    });
+  if (!physicsCards.some(({ gravity, gravityBinding }) => gravityBinding || gravity > 0)) return [];
+
+  const lines = [];
+  const seenSigns = new Set();
+  physicsCards.forEach(({ gravity, gravityBinding, signExpr }) => {
+    if (seenSigns.has(signExpr)) return;
+    const branch = seenSigns.size === 0 ? 'if' : 'else if';
+    seenSigns.add(signExpr);
+    lines.push(`        ${branch} (data.sign == ${signExpr}) {`);
+    if (!gravityBinding && gravity <= 0) {
+      lines.push('            Unit');
+      lines.push('        }');
+      return;
+    }
+    const gravityExpr = gravityBinding
+      ? `(${gravityBinding}).coerceAtLeast(0.0)`
+      : fmtD(gravity);
+    lines.push(`            data.velocity = data.velocity.add(0.0, -${gravityExpr}, 0.0)`);
+    lines.push('        }');
+  });
+  return lines;
+}
+
+function resolveCollisionTargets(project) {
+  const collisionCards = project.emitters
+    .filter((card) => card.enabled !== false && card.physics?.collision === true);
+  if (!collisionCards.length) return null;
+  if (collisionCards.some((card) => !card.physics.collisionTargets.length)) return [];
+  return Array.from(new Set(
+    collisionCards.flatMap((card) => card.physics.collisionTargets.map((value) => fmtI(value)))
+  ));
+}
+
+function emitCollisionMovementOverride(project, target) {
+  const collisionTargets = resolveCollisionTargets(project);
+  if (collisionTargets === null) return '';
+  let targetCondition = '';
+  if (collisionTargets.length === 1) {
+    targetCondition = ` || data.sign != ${collisionTargets[0]}`;
+  } else if (collisionTargets.length > 1) {
+    targetCondition = ` || data.sign !in setOf(${collisionTargets.join(', ')})`;
+  }
+  return [
+    'override fun moveSingleParticleWithVelocity(',
+    '    particle: ControlableParticle,',
+    '    data: ControlableParticleData,',
+    `    to: ${target.vec3Type},`,
+    '    collide: BlockHitResult',
+    ') {',
+    `    if (collide.type == HitResult.Type.MISS${targetCondition}) {`,
+    '        particle.teleportTo(to)',
+    '        return',
+    '    }',
+    '    data.velocity = PhysicsUtil.collideMovement(collide, data.velocity)',
+    '    particle.teleportTo(PhysicsUtil.fixBeforeCollidePosition(collide))',
+    '}'
+  ].join('\n');
+}
+
+const emitterReservedNames = new Set([
+  'as', 'break', 'class', 'continue', 'do', 'else', 'false', 'for', 'fun', 'if', 'in',
+  'interface', 'is', 'null', 'object', 'package', 'return', 'super', 'this', 'throw', 'true',
+  'try', 'typealias', 'typeof', 'val', 'var', 'when', 'while',
+  'baseDir', 'controler', 'count', 'data', 'delay', 'dir', 'doTick', 'genParticles', 'gravity',
+  'init', 'lerpProgress', 'lifeProgress', 'locs', 'maxTick', 'moveSingleParticleWithVelocity',
+  'particleLerpProgress', 'particleSize', 'pos', 'posLerpProgress', 'rand', 'rel', 'res',
+  'singleParticleAction', 'source', 'spawnPos', 'spawnWorld', 'speed', 'tick', 'uuid',
+  'velocity', 'velocityJitter', 'world'
+]);
+
+function createEmitterVariablePlan(project, cards) {
+  const baseName = (card, index, kind) => safeIdent(
+    card.vars?.[kind],
+    `${kind}${index + 1}`
+  );
+  const usedClassNames = new Set(emitterReservedNames);
+  for (const item of [
+    ...(project.parameters?.variables || []),
+    ...(project.parameters?.constants || [])
+  ]) {
+    if (isGeneratorValueName(item?.name)) usedClassNames.add(item.name);
+  }
+  cards.forEach((_, index) => {
+    const prefix = `emitter${index + 1}`;
+    ['SizeX', 'SizeY', 'SizeZ', 'Brightness', 'Opacity', 'Roll', 'Yaw', 'Pitch']
+      .forEach((suffix) => usedClassNames.add(`${prefix}${suffix}`));
+  });
+  (project.commandQueues || []).forEach((_, index) => usedClassNames.add(`commandQueue${index + 1}`));
+  (project.parameters?.variables || []).forEach((item) => {
+    if (isGeneratorValueName(item?.name)) usedClassNames.add(safeIdent(`automation_${item.name}`));
+  });
+
+  function resolveSharedNames(kind, enabledKey) {
+    const resolved = new Map();
+    cards.forEach((card, index) => {
+      if (!card[enabledKey]) return;
+      const raw = baseName(card, index, kind);
+      if (resolved.has(raw)) return;
+      let name = raw;
+      let suffix = 2;
+      while (usedClassNames.has(name)) {
+        name = `${raw}_${suffix}`;
+        suffix += 1;
+      }
+      resolved.set(raw, name);
+      usedClassNames.add(name);
+    });
+    return resolved;
+  }
+
+  const externalTemplateNames = resolveSharedNames('template', 'externalTemplate');
+  const externalDataNames = resolveSharedNames('data', 'externalData');
+  const entries = cards.map((card, index) => {
+    const rawData = baseName(card, index, 'data');
+    const rawTemplate = baseName(card, index, 'template');
+    const data = card.externalData ? externalDataNames.get(rawData) : rawData;
+    const template = card.externalTemplate ? externalTemplateNames.get(rawTemplate) : rawTemplate;
+    return { card, data, template };
+  });
+
+  entries.forEach((entry, index) => {
+    if (!entry.card.externalData) {
+      const base = `data${index + 1}`;
+      let name = base;
+      let suffix = 2;
+      while (usedClassNames.has(name)) {
+        name = `${base}_${suffix}`;
+        suffix += 1;
+      }
+      entry.data = name;
+      usedClassNames.add(name);
+    }
+    if (!entry.card.externalTemplate && entry.template === entry.data) {
+      entry.template = `${entry.template}_template`;
+    }
+    if (!entry.card.externalTemplate) {
+      const raw = entry.template;
+      let name = raw;
+      let suffix = 2;
+      while (emitterReservedNames.has(name) || name === entry.data) {
+        name = `${raw}_${suffix}`;
+        suffix += 1;
+      }
+      entry.template = name;
+    }
+  });
+  return entries;
+}
+
+function emitterDataAssignments(bindingResolver, card) {
+  return [
+    `minAge = ${intExpr(bindingResolver, card, 'particle.lifeMin', card.particle.lifeMin)}`,
+    `maxAge = ${intExpr(bindingResolver, card, 'particle.lifeMax', card.particle.lifeMax)}`,
+    `minCount = ${intExpr(bindingResolver, card, 'particle.countMin', card.particle.countMin)}`,
+    `maxCount = ${intExpr(bindingResolver, card, 'particle.countMax', card.particle.countMax)}`,
+    `minSize = ${numberExpr(bindingResolver, card, 'particle.sizeMin', card.particle.sizeMin)}`,
+    `maxSize = ${numberExpr(bindingResolver, card, 'particle.sizeMax', card.particle.sizeMax)}`,
+    `minSpeed = ${numberExpr(bindingResolver, card, 'particle.speedMin', card.particle.speedMin)}`,
+    `maxSpeed = ${numberExpr(bindingResolver, card, 'particle.speedMax', card.particle.speedMax)}`,
+    `leftColor = ${colorExpr(bindingResolver, card, 'particle.colorStart', card.particle.colorStart)}`,
+    `rightColor = ${colorExpr(bindingResolver, card, 'particle.colorEnd', card.particle.colorEnd)}`
+  ];
+}
+
+function emitterTemplateAssignments(bindingResolver, card, dataVar, target) {
+  const lines = [];
+  const initialOpacity = sampleLifecycleCurve(card.curves.opacity, 0);
+  const hasAlphaBinding = Boolean(resolveBindingRef(bindingResolver, card, 'render.alpha', 'Double'));
+  lines.push(`velocity = ${vectorExpr(bindingResolver, card, 'particle.velocity', card.particle.velocity, target.vec3Type)}`);
+  lines.push(`uniformSize = ${usesIndependentScale(card) ? 'false' : 'true'}`);
+  lines.push(`weightSize = ${floatExpr(bindingResolver, card, 'render.baseScale.x', card.render.baseScale.x)}`);
+  lines.push(`heightSize = ${usesIndependentScale(card)
+    ? floatExpr(bindingResolver, card, 'render.baseScale.y', card.render.baseScale.y)
+    : floatExpr(bindingResolver, card, 'render.baseScale.x', card.render.baseScale.x)}`);
+  if (usesDepthScale(card)) {
+    lines.push(`depthSize = ${floatExpr(bindingResolver, card, 'render.baseScale.z', card.render.baseScale.z)}`);
+  }
+  lines.push(`visibleRange = ${floatExpr(bindingResolver, card, 'particle.visibleRange', card.particle.visibleRange)}`);
+  lines.push(`color = ${dataVar}.getInterpolatedColor(0.0)`);
+  lines.push(hasAlphaBinding
+    ? `alpha = (${numberExpr(bindingResolver, card, 'render.alpha', card.render.alpha)} * ${fmtD(initialOpacity)} / 10000.0).toFloat()`
+    : `alpha = (${fmtD(initialOpacity * Number(card.render.alpha || 0) / 100)} / 100.0).toFloat()`);
+  lines.push(`light = ${intExpr(bindingResolver, card, 'render.light', card.render.light)}`);
+  lines.push(textureSheetStatement(bindingResolver, card, card.render.textureSheet));
+  lines.push(`cameraOption = ${cameraOptionConstant(card.render.billboardMode)}`);
+  if (card.render.billboardMode === 'axis_billboard') {
+    lines.push(`axis = ${vectorExpr(bindingResolver, card, 'render.axis', card.render.axis, target.vec3Type)}`);
+  }
+  lines.push(`roll = (${numberExpr(bindingResolver, card, 'render.roll', card.render.roll)} * PI / 180.0).toFloat()`);
+  if (card.render.billboardMode === 'none') {
+    lines.push(`yaw = (${numberExpr(bindingResolver, card, 'render.yaw', card.render.yaw)} * PI / 180.0).toFloat()`);
+    lines.push(`pitch = (${numberExpr(bindingResolver, card, 'render.pitch', card.render.pitch)} * PI / 180.0).toFloat()`);
+  }
+  lines.push(`speedLimit = ${numberExpr(bindingResolver, card, 'render.speedLimit', card.render.speedLimit)}`);
+  lines.push(`sign = ${intExpr(bindingResolver, card, 'render.sign', card.render.sign)}`);
+  lines.push(`effect = ${safeKotlinReference(card.render.effectClass, 'ControlableEndRodEffect')}(uuid)`);
+  return lines;
+}
+
+function emitEmitterParameterDeclarations(bindingResolver, variablePlan, target) {
+  const lines = [];
+  const declaredData = new Set();
+  variablePlan.forEach(({ card, data }) => {
+    if (declaredData.has(data)) return;
+    if (card.externalData) {
+      lines.push('@CodecField');
+      lines.push(`var ${data} = SimpleRandomParticleData().apply {`);
+      emitterDataAssignments(bindingResolver, card)
+        .map(classInitializerExpression)
+        .forEach((line) => lines.push(`    ${line}`));
+      lines.push('}');
+    } else {
+      lines.push(`private val ${data} = SimpleRandomParticleData()`);
+    }
+    lines.push('');
+    declaredData.add(data);
+  });
+
+  const declaredTemplates = new Set();
+  variablePlan.forEach(({ card, data, template }) => {
+    if (!card.externalTemplate || declaredTemplates.has(template)) return;
+    lines.push('@CodecField');
+    lines.push(`var ${template} = ControlableParticleData().apply {`);
+    emitterTemplateAssignments(bindingResolver, card, data, target)
+      .map(classInitializerExpression)
+      .forEach((line) => lines.push(`    ${line}`));
+    lines.push('}');
+    lines.push('');
+    declaredTemplates.add(template);
+  });
+  return lines.join('\n').trimEnd();
+}
+
+function classInitializerExpression(line) {
+  return line.replace(/\bprogress\b/g, '0.0');
+}
+
+function emitEmitterBlock(bindingResolver, card, index, target, variables) {
   const n = index + 1;
-  const templateVar = `template${n}`;
-  const dataVar = `data${n}`;
+  const templateVar = variables.template;
+  const dataVar = variables.data;
   const lines = [];
   lines.push(`// 发射器 #${n}: ${card.name}`);
   lines.push(`if (${buildEmitterActiveExpr(card)}) {`);
-  lines.push(`    val ${dataVar} = SimpleRandomParticleData().apply {`);
-  lines.push(`        minAge = ${intExpr(project, card, 'particle.lifeMin', card.particle.lifeMin)}`);
-  lines.push(`        maxAge = ${intExpr(project, card, 'particle.lifeMax', card.particle.lifeMax)}`);
-  lines.push(`        minCount = ${intExpr(project, card, 'particle.countMin', card.particle.countMin)}`);
-  lines.push(`        maxCount = ${intExpr(project, card, 'particle.countMax', card.particle.countMax)}`);
-  lines.push(`        minSize = ${numberExpr(project, card, 'particle.sizeMin', card.particle.sizeMin)}`);
-  lines.push(`        maxSize = ${numberExpr(project, card, 'particle.sizeMax', card.particle.sizeMax)}`);
-  lines.push(`        minSpeed = ${numberExpr(project, card, 'particle.speedMin', card.particle.speedMin)}`);
-  lines.push(`        maxSpeed = ${numberExpr(project, card, 'particle.speedMax', card.particle.speedMax)}`);
-  lines.push('    }');
-  lines.push(`    val ${templateVar} = ControlableParticleData().apply {`);
-  lines.push(`        velocity = ${vectorExpr(project, card, 'particle.velocity', card.particle.velocity)}`);
-  lines.push(`        uniformSize = ${usesIndependentScale(card) ? 'false' : 'true'}`);
-  lines.push(`        weightSize = ${floatExpr(project, card, 'render.baseScale.x', card.render.baseScale.x)}`);
-  lines.push(`        heightSize = ${usesIndependentScale(card)
-    ? floatExpr(project, card, 'render.baseScale.y', card.render.baseScale.y)
-    : floatExpr(project, card, 'render.baseScale.x', card.render.baseScale.x)}`);
-  if (usesDepthScale(card)) {
-    lines.push(`        depthSize = ${floatExpr(project, card, 'render.baseScale.z', card.render.baseScale.z)}`);
+  if (!card.externalData) {
+    lines.push(`    ${dataVar}.apply {`);
+    emitterDataAssignments(bindingResolver, card).forEach((line) => lines.push(`        ${line}`));
+    lines.push('    }');
   }
-  lines.push(`        visibleRange = ${floatExpr(project, card, 'particle.visibleRange', card.particle.visibleRange)}`);
-  lines.push(`        color = ${colorExpr(project, card, 'particle.colorStart', card.particle.colorStart)}`);
-  lines.push(`        alpha = (${numberExpr(project, card, 'render.alpha', card.render.alpha)} / 100.0).toFloat()`);
-  lines.push(`        light = ${intExpr(project, card, 'render.light', card.render.light)}`);
-  lines.push(`        ${textureSheetStatement(project, card, card.render.textureSheet)}`);
-  lines.push(`        cameraOption = ${cameraOptionConstant(card.render.billboardMode)}`);
-  if (card.render.billboardMode === 'axis_billboard') {
-    lines.push(`        axis = ${vectorExpr(project, card, 'render.axis', card.render.axis)}`);
+  if (!card.externalTemplate) {
+    lines.push(`    val ${templateVar} = ControlableParticleData().apply {`);
+    emitterTemplateAssignments(bindingResolver, card, dataVar, target).forEach((line) => lines.push(`        ${line}`));
+    lines.push('    }');
   }
-  lines.push(`        roll = (${numberExpr(project, card, 'render.roll', card.render.roll)} * PI / 180.0).toFloat()`);
-  if (card.render.billboardMode === 'none') {
-    lines.push(`        yaw = (${numberExpr(project, card, 'render.yaw', card.render.yaw)} * PI / 180.0).toFloat()`);
-    lines.push(`        pitch = (${numberExpr(project, card, 'render.pitch', card.render.pitch)} * PI / 180.0).toFloat()`);
-  }
-  lines.push(`        speedLimit = ${numberExpr(project, card, 'render.speedLimit', card.render.speedLimit)}`);
-  lines.push(`        sign = ${intExpr(project, card, 'render.sign', card.render.sign)}`);
-  lines.push(`        effect = ${safeKotlinReference(card.render.effectClass, 'ControlableEndRodEffect')}(uuid)`);
-  lines.push('    }');
   lines.push('    res.addAll(');
-  lines.push(indent(emitEmitterPointBuilder(project, card, dataVar), 8));
+  lines.push(indent(emitEmitterPointBuilder(bindingResolver, card, dataVar), 8));
   lines.push('            .createWithoutClone()');
   lines.push('            .map { rel ->');
   lines.push(`                val speed = ${dataVar}.getRandomSpeed()`);
   lines.push(`                val particleSize = ${dataVar}.getRandomSize()`);
-  lines.push(`                val velocityJitter = Vec3((Random.nextDouble() * 2.0 - 1.0) * ${numberExpr(project, card, 'particle.velocityRandom.x', card.particle.velocityRandom.x)}, (Random.nextDouble() * 2.0 - 1.0) * ${numberExpr(project, card, 'particle.velocityRandom.y', card.particle.velocityRandom.y)}, (Random.nextDouble() * 2.0 - 1.0) * ${numberExpr(project, card, 'particle.velocityRandom.z', card.particle.velocityRandom.z)})`);
+  lines.push(`                val velocityJitter = ${target.vec3Type}((Random.nextDouble() * 2.0 - 1.0) * ${numberExpr(bindingResolver, card, 'particle.velocityRandom.x', card.particle.velocityRandom.x)}, (Random.nextDouble() * 2.0 - 1.0) * ${numberExpr(bindingResolver, card, 'particle.velocityRandom.y', card.particle.velocityRandom.y)}, (Random.nextDouble() * 2.0 - 1.0) * ${numberExpr(bindingResolver, card, 'particle.velocityRandom.z', card.particle.velocityRandom.z)})`);
   if (card.particle.velocityMode === 'spawn_relative') {
     lines.push('                val dir = rel.toVector().add(velocityJitter)');
-    lines.push('                val velocity = if (dir.lengthSqr() < 1e-8) Vec3.ZERO else dir.normalize().scale(speed)');
+    lines.push(`                val velocity = if (dir.${target.lengthSquaredMethod}() < 1e-8) ${target.vec3Type}.ZERO else dir.normalize().${target.multiplyMethod}(speed)`);
   } else {
-    lines.push(`                val baseDir = ${vectorExpr(project, card, 'particle.velocity', card.particle.velocity)}.add(velocityJitter)`);
-    lines.push('                val velocity = if (baseDir.lengthSqr() < 1e-8) Vec3.ZERO else baseDir.normalize().scale(speed)');
+    lines.push(`                val baseDir = ${templateVar}.velocity.add(velocityJitter)`);
+    lines.push(`                val velocity = if (baseDir.${target.lengthSquaredMethod}() < 1e-8) ${target.vec3Type}.ZERO else baseDir.normalize().${target.multiplyMethod}(speed)`);
   }
   lines.push(`                ${templateVar}.clone().apply {`);
   lines.push(`                    maxAge = ${dataVar}.getRandomParticleMaxAge()`);
+  if (resolveBindingRef(bindingResolver, card, 'render.alpha', 'Double')) {
+    const initialOpacity = sampleLifecycleCurve(card.curves.opacity, 0);
+    lines.push(`                    this.alpha = (${numberExpr(bindingResolver, card, 'render.alpha', card.render.alpha)} * ${fmtD(initialOpacity)} / 10000.0).toFloat()`);
+  }
+  lines.push(`                    this.color = ${card.particle.colorOverLifeEnabled
+    ? `${dataVar}.getInterpolatedColor(0.0)`
+    : `${dataVar}.getRandomColor()`}`);
   if (usesIndependentScale(card)) {
     lines.push('                    uniformSize = false');
-    lines.push(`                    weightSize = (particleSize * (${floatExpr(project, card, 'render.baseScale.x', card.render.baseScale.x)}).toDouble()).toFloat()`);
-    lines.push(`                    heightSize = (particleSize * (${floatExpr(project, card, 'render.baseScale.y', card.render.baseScale.y)}).toDouble()).toFloat()`);
+    lines.push(`                    weightSize = (particleSize * ${templateVar}.weightSize).toFloat()`);
+    lines.push(`                    heightSize = (particleSize * ${templateVar}.heightSize).toFloat()`);
     if (usesDepthScale(card)) {
-      lines.push(`                    depthSize = (particleSize * (${floatExpr(project, card, 'render.baseScale.z', card.render.baseScale.z)}).toDouble()).toFloat()`);
+      lines.push(`                    depthSize = (particleSize * ${templateVar}.depthSize).toFloat()`);
     }
   } else {
-    lines.push(`                    size = (particleSize * (${floatExpr(project, card, 'render.baseScale.x', card.render.baseScale.x)}).toDouble()).toFloat()`);
+    lines.push(`                    size = (particleSize * ${templateVar}.weightSize).toFloat()`);
   }
   lines.push('                    this.velocity = velocity');
   lines.push('                } to rel');
@@ -574,30 +1000,51 @@ function buildEmitterActiveExpr(card) {
   return base;
 }
 
-function emitLifecycleAction(project) {
+function emitLifecycleAction(project, bindingResolver, target, variablePlan) {
   const enabled = project.emitters.filter((card) => card.enabled !== false);
   const lines = [];
   lines.push('override fun singleParticleAction(');
   lines.push('    controler: ParticleControler,');
   lines.push('    data: ControlableParticleData,');
   lines.push('    spawnPos: RelativeLocation,');
-  lines.push('    spawnWorld: Level,');
+  lines.push(`    spawnWorld: ${target.worldType},`);
   lines.push('    particleLerpProgress: Float,');
   lines.push('    posLerpProgress: Float');
   lines.push(') {');
+  const alphaBindings = enabled.map((card, index) => ({
+    card,
+    index,
+    binding: resolveBindingRef(bindingResolver, card, 'render.alpha', 'Double')
+  })).filter((item) => item.binding);
+  if (alphaBindings.some(({ binding }) => /\bprogress\b/.test(binding.name))) {
+    const maxTick = Number(project?.rootLifecycle?.maxTick || 0);
+    const duration = maxTick > 0 ? fmtD(maxTick, 1) : '1.0';
+    lines.push(`    val particleSpawnProgress = (tick.toDouble() / ${duration}).coerceIn(0.0, 1.0)`);
+  }
+  alphaBindings.forEach(({ card, index }) => {
+    const alpha = numberExpr(bindingResolver, card, 'render.alpha', card.render.alpha)
+      .replace(/\bprogress\b/g, 'particleSpawnProgress');
+    lines.push(`    val emitter${index + 1}BaseAlpha = (${alpha} / 100.0)`);
+  });
   lines.push('    controler.addPreTickAction {');
-  lines.push('        val lifeProgress = if (this.lifetime <= 0) 1.0 else (this.currentAge.toDouble() / this.lifetime.toDouble()).coerceIn(0.0, 1.0)');
+  lines.push(`        val lifeProgress = if (this.${target.lifetimeProperty} <= 0) 1.0 else (this.currentAge.toDouble() / this.${target.lifetimeProperty}.toDouble()).coerceIn(0.0, 1.0)`);
+  if (projectBindingsUseProgress(project)) lines.push(...emitterProgressKotlin(project, 8));
+  lines.push(...emitEmitterGravityApplication(project, bindingResolver));
   lines.push(...emitCommandQueueApplication(project));
   lines.push('        when (data.sign) {');
+  const emittedSigns = new Set();
   enabled.forEach((card, index) => {
     const n = index + 1;
     const prefix = `emitter${n}`;
-    lines.push(`            ${intExpr(project, card, 'render.sign', card.render.sign)} -> {`);
+    const dataVar = variablePlan[index].data;
+    const sign = card.externalTemplate
+      ? `${variablePlan[index].template}.sign`
+      : intExpr(bindingResolver, card, 'render.sign', card.render.sign);
+    if (emittedSigns.has(sign)) return;
+    emittedSigns.add(sign);
+    lines.push(`            ${sign} -> {`);
     if (card.particle.colorOverLifeEnabled) {
-      lines.push('                val cp = lifeProgress.toFloat()');
-      lines.push(`                val startColor = ${colorExpr(project, card, 'particle.colorStart', card.particle.colorStart)}`);
-      lines.push(`                val endColor = ${colorExpr(project, card, 'particle.colorEnd', card.particle.colorEnd)}`);
-      lines.push('                this.color = Vector3f(startColor.x + (endColor.x - startColor.x) * cp, startColor.y + (endColor.y - startColor.y) * cp, startColor.z + (endColor.z - startColor.z) * cp)');
+      lines.push(`                this.color = ${dataVar}.getInterpolatedColor(lifeProgress)`);
     }
     if (usesIndependentScale(card)) {
       lines.push('                this.uniformSize = false');
@@ -612,14 +1059,18 @@ function emitLifecycleAction(project) {
       lines.push('                this.uniformSize = true');
       lines.push(`                this.size = (data.size * ${prefix}SizeX.sample(lifeProgress)).toFloat()`);
     }
-    lines.push(`                this.alpha = (${prefix}Opacity.sample(lifeProgress)).toFloat().coerceIn(0f, 1f)`);
+    const alphaBinding = resolveBindingRef(bindingResolver, card, 'render.alpha', 'Double');
+    const opacity = alphaBinding
+      ? `${prefix}BaseAlpha * ${prefix}Opacity.sample(lifeProgress)`
+      : `${prefix}Opacity.sample(lifeProgress)`;
+    lines.push(`                this.particleAlpha = (${opacity}).toFloat().coerceIn(0f, 1f)`);
     lines.push(`                this.light = ${prefix}Brightness.sample(lifeProgress).toInt().coerceIn(-1, 15)`);
-    lines.push(`                this.roll = ${curveDegToRad(card.render.roll, `${prefix}Roll`)}`);
+    lines.push(`                this.currentRoll = ${curveDegToRad(card.render.roll, `${prefix}Roll`)}`);
     if (card.render.billboardMode === 'none') {
       const yawCurve = card.curves.rotation.syncAxes ? `${prefix}Roll` : `${prefix}Yaw`;
       const pitchCurve = card.curves.rotation.syncAxes ? `${prefix}Roll` : `${prefix}Pitch`;
-      lines.push(`                this.yaw = ${curveDegToRad(card.render.yaw, yawCurve)}`);
-      lines.push(`                this.pitch = ${curveDegToRad(card.render.pitch, pitchCurve)}`);
+      lines.push(`                this.currentYaw = ${curveDegToRad(card.render.yaw, yawCurve)}`);
+      lines.push(`                this.currentPitch = ${curveDegToRad(card.render.pitch, pitchCurve)}`);
     }
     lines.push('            }');
   });
@@ -635,9 +1086,31 @@ export function generateEmitterScript(project) {
 
 export function generateEmitterKotlin(rawProject) {
   const project = normalizeGeneratorProject(rawProject);
+  const bindingResolver = createGeneratorBindingResolver(project.parameters);
+  const target = project.kotlin.mapping === 'yarn'
+    ? {
+        vec3Type: 'Vec3d',
+        worldType: 'World',
+        lengthSquaredMethod: 'lengthSquared',
+        multiplyMethod: 'multiply',
+        lifetimeProperty: 'maxAge',
+        blockHitResultImport: 'net.minecraft.util.hit.BlockHitResult',
+        hitResultImport: 'net.minecraft.util.hit.HitResult'
+      }
+    : {
+        vec3Type: 'Vec3',
+        worldType: 'Level',
+        lengthSquaredMethod: 'lengthSqr',
+        multiplyMethod: 'scale',
+        lifetimeProperty: 'lifetime',
+        blockHitResultImport: 'net.minecraft.world.phys.BlockHitResult',
+        hitResultImport: 'net.minecraft.world.phys.HitResult'
+      };
   const className = safeIdent(project.kotlin.className, 'GeneratedEmitter');
   const packageName = safePackage(project.kotlin.packageName);
   const baseClass = safeIdent(project.kotlin.baseClass, 'AutoParticleEmitters');
+  const enabledEmitters = project.emitters.filter((card) => card.enabled !== false);
+  const emitterVariablePlan = createEmitterVariablePlan(project, enabledEmitters);
   const lines = [];
   if (packageName) {
     lines.push(`package ${packageName}`);
@@ -645,6 +1118,7 @@ export function generateEmitterKotlin(rawProject) {
   }
   lines.push('import cn.coostack.cooparticlesapi.annotations.CooAutoRegister');
   lines.push('import cn.coostack.cooparticlesapi.annotations.CodecField');
+  if (usesVectorOperatorExtensions(project)) lines.push('import cn.coostack.cooparticlesapi.extend.*');
   lines.push('import cn.coostack.cooparticlesapi.network.particle.emitters.*');
   lines.push('import cn.coostack.cooparticlesapi.network.particle.emitters.command.*');
   lines.push('import cn.coostack.cooparticlesapi.network.particle.emitters.command.curve.*');
@@ -653,25 +1127,50 @@ export function generateEmitterKotlin(rawProject) {
   lines.push('import cn.coostack.cooparticlesapi.particles.impl.*');
   lines.push('import cn.coostack.cooparticlesapi.supports.TextureSheetsEnum');
   lines.push('import cn.coostack.cooparticlesapi.utils.RelativeLocation');
+  const collisionEnabled = resolveCollisionTargets(project) !== null;
+  if (collisionEnabled) lines.push('import cn.coostack.cooparticlesapi.utils.PhysicsUtil');
   lines.push('import cn.coostack.cooparticlesapi.utils.builder.PointsBuilder');
-  lines.push('import net.minecraft.world.level.Level');
-  lines.push('import net.minecraft.world.phys.Vec3');
+  lines.push(project.kotlin.mapping === 'yarn'
+    ? 'import net.minecraft.world.World'
+    : 'import net.minecraft.world.level.Level');
+  lines.push(project.kotlin.mapping === 'yarn'
+    ? 'import net.minecraft.util.math.Vec3d'
+    : 'import net.minecraft.world.phys.Vec3');
+  if (collisionEnabled) {
+    lines.push(`import ${target.blockHitResultImport}`);
+    lines.push(`import ${target.hitResultImport}`);
+  }
   lines.push('import org.joml.Vector3f');
   lines.push('import kotlin.math.*');
   lines.push('import kotlin.random.Random');
   lines.push('');
   lines.push('@CooAutoRegister');
-  lines.push(`class ${className}(pos: Vec3, world: Level?) : ${baseClass}(pos, world) {`);
-  const parameterDeclarations = emitProjectParameterDeclarations(project);
+  lines.push(`class ${className}(pos: ${target.vec3Type}, world: ${target.worldType}?) : ${baseClass}(pos, world) {`);
+  const parameterDeclarations = emitProjectParameterDeclarations(project, target.vec3Type);
   if (parameterDeclarations) {
     lines.push(indent(parameterDeclarations, 4));
     lines.push('');
   }
-  project.emitters.filter((card) => card.enabled !== false).forEach((card, index) => {
-    lines.push(indent(emitCurveDeclarations(card, index), 4));
+  const emitterParameterDeclarations = emitEmitterParameterDeclarations(bindingResolver, emitterVariablePlan, target);
+  if (emitterParameterDeclarations) {
+    lines.push(indent(emitterParameterDeclarations, 4));
+    lines.push('');
+  }
+  enabledEmitters.forEach((card, index) => {
+    lines.push(indent(emitCurveDeclarations(bindingResolver, card, index), 4));
     lines.push('');
   });
-  const commandQueues = emitCommandQueueDeclarations(project);
+  const variableAutomationDeclarations = emitVariableAutomationDeclarations(project);
+  if (variableAutomationDeclarations) {
+    lines.push(indent(variableAutomationDeclarations, 4));
+    lines.push('');
+  }
+  const expressionHelpers = emitExpressionHelpers(project);
+  if (expressionHelpers) {
+    lines.push(indent(expressionHelpers, 4));
+    lines.push('');
+  }
+  const commandQueues = emitCommandQueueDeclarations(project, target.vec3Type);
   if (commandQueues) {
     lines.push(indent(commandQueues, 4));
     lines.push('');
@@ -693,17 +1192,25 @@ export function generateEmitterKotlin(rawProject) {
   }
   lines.push('    }');
   lines.push('');
+  lines.push(...emitDoTick(project, target.vec3Type));
+  const collisionMovementOverride = emitCollisionMovementOverride(project, target);
+  if (collisionMovementOverride) {
+    lines.push('');
+    lines.push(indent(collisionMovementOverride, 4));
+  }
+  lines.push('');
   lines.push('    override fun genParticles(lerpProgress: Float): List<Pair<ControlableParticleData, RelativeLocation>> {');
   lines.push('        val res = mutableListOf<Pair<ControlableParticleData, RelativeLocation>>()');
+  if (projectBindingsUseProgress(project)) lines.push(...emitterProgressKotlin(project, 8));
   lines.push('');
-  project.emitters.filter((card) => card.enabled !== false).forEach((card, index) => {
-    lines.push(indent(emitEmitterBlock(project, card, index), 8));
+  enabledEmitters.forEach((card, index) => {
+    lines.push(indent(emitEmitterBlock(bindingResolver, card, index, target, emitterVariablePlan[index]), 8));
     lines.push('');
   });
   lines.push('        return res');
   lines.push('    }');
   lines.push('');
-  lines.push(indent(emitLifecycleAction(project), 4));
+  lines.push(indent(emitLifecycleAction(project, bindingResolver, target, emitterVariablePlan), 4));
   lines.push('}');
   return lines.join('\n').replace(/\n{3,}/g, '\n\n');
 }

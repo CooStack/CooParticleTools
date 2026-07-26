@@ -1,4 +1,14 @@
 import { evaluatePointsProject } from '../pointsbuilder/evaluator.js';
+import {
+  createGeneratorBindingResolver,
+  parseGeneratorVectorLiteral
+} from './bindings.js';
+import {
+  evaluateGeneratorExpressionDetailed,
+  executeGeneratorDoTick,
+  createGeneratorExpressionScope
+} from './expression-runtime.js';
+import { sampleLifecycleCurve } from './curves.js';
 
 const MAX_SIM_PARTICLES = 65536;
 const MAX_PREWARM_VISUAL_SAMPLES = 16384;
@@ -21,7 +31,6 @@ const COMMAND_ALIASES = {
   acceleration: 'velocity_add'
 };
 
-const VECTOR_VALUE_TYPES = new Set(['Vec3', 'RelativeLocation', 'Vector3f']);
 const BINDING_PATH_LABELS = {
   'emitter.offset': '世界偏移',
   'emitter.box.x': '盒体 X',
@@ -61,6 +70,7 @@ const BINDING_PATH_LABELS = {
   'particle.velocityRandom': '速度随机量',
   'particle.speedMin': '最小速度',
   'particle.speedMax': '最大速度',
+  'physics.gravity': '重力强度',
   'render.axis': '渲染轴',
   'render.baseScale': '基础缩放',
   'render.alpha': '透明度',
@@ -71,29 +81,33 @@ const BINDING_PATH_LABELS = {
   'render.sign': 'Sign',
   'render.speedLimit': '速度限制'
 };
+const BIRTH_RENDER_CONTEXT_BINDING_PATHS = [
+  'particle.colorStart',
+  'particle.colorEnd',
+  'render.axis',
+  'render.baseScale',
+  'render.alpha',
+  'render.light',
+  'render.roll',
+  'render.yaw',
+  'render.pitch'
+];
 
 function createBindingResolver(project = {}, options = {}) {
   return {
-    values: createProjectValueMap(project),
+    bindings: createGeneratorBindingResolver(project.parameters),
+    parameters: project.parameters || {},
     collectErrors: options.collectErrors === true,
     errors: [],
-    seenErrors: new Set()
+    seenErrors: new Set(),
+    expressionScope: options.expressionScope || createGeneratorExpressionScope(project.parameters)
   };
-}
-
-function createProjectValueMap(project = {}) {
-  const values = [
-    ...(Array.isArray(project?.parameters?.variables) ? project.parameters.variables : []),
-    ...(Array.isArray(project?.parameters?.constants) ? project.parameters.constants : [])
-  ];
-  return new Map(values
-    .filter((item) => isIdent(item?.name))
-    .map((item) => [String(item.name), item]));
 }
 
 function resolveEmitterCard(project, card, resolver, index = 0) {
   const emitter = card?.emitter || {};
   const particle = card?.particle || {};
+  const physics = card?.physics || {};
   const render = card?.render || {};
   return {
     ...card,
@@ -165,6 +179,10 @@ function resolveEmitterCard(project, card, resolver, index = 0) {
       speedMax: resolveNumberPath(resolver, card, 'particle.speedMax', particle.speedMax ?? particle.velSpeedMax, 0),
       visibleRange: resolveNumberPath(resolver, card, 'particle.visibleRange', particle.visibleRange, 128, 'Float')
     },
+    physics: {
+      ...physics,
+      gravity: resolveNumberPath(resolver, card, 'physics.gravity', physics.gravity, 0)
+    },
     render: {
       ...render,
       axis: resolveVectorPath(resolver, card, 'render.axis', render.axis, ['Vec3']),
@@ -189,7 +207,7 @@ function resolveNumberPath(resolver, card, path, value, fallback = 0, expectedTy
 function resolveVectorPath(resolver, card, path, value = {}, allowedTypes = ['Vec3', 'RelativeLocation'], componentType = 'Double') {
   const fallback = vectorFrom(value);
   const binding = resolveBindingValue(resolver, card, path, allowedTypes);
-  if (binding) return parseVectorLiteral(binding.value?.value, fallback);
+  if (binding) return parseGeneratorVectorLiteral(binding.value?.value, fallback);
   return vec(
     resolveNumberPath(resolver, card, `${path}.x`, fallback.x, fallback.x, componentType),
     resolveNumberPath(resolver, card, `${path}.y`, fallback.y, fallback.y, componentType),
@@ -201,7 +219,7 @@ function resolveColorPath(resolver, card, path, hex) {
   const fallback = hexToRgb(hex);
   const binding = resolveBindingValue(resolver, card, path, ['Vector3f']);
   if (binding) {
-    const vector = parseVectorLiteral(binding.value?.value, vec(255, 255, 255));
+    const vector = parseGeneratorVectorLiteral(binding.value?.value, vec(255, 255, 255));
     return {
       r: clamp(vector.x, 0, 1) * 255,
       g: clamp(vector.y, 0, 1) * 255,
@@ -222,20 +240,79 @@ function resolveNumberFromPaths(resolver, card, paths, fallback = 0) {
 }
 
 function resolveBindingValue(resolver, card, path, expectedTypes) {
-  const name = String(card?.bindings?.[path] || '').trim();
-  if (!name) return null;
-  const value = resolver.values.get(name);
-  if (!value) {
-    reportBindingError(resolver, card, path, name, `未找到变量 ${name}`);
+  const binding = resolver.bindings.resolve(card?.bindings, path, expectedTypes);
+  if (binding.status === 'unbound') return null;
+  if (binding.status === 'missing') {
+    reportBindingError(resolver, card, path, binding.name, `未找到变量 ${binding.name}`);
     return null;
   }
-  const type = String(value.type || '');
-  const accepts = expectedTypes instanceof Set ? expectedTypes.has(type) : expectedTypes.includes(type);
-  if (!accepts) {
-    reportBindingError(resolver, card, path, name, `${name} 类型是 ${type || '未知'}，不适用于这里`);
+  if (binding.status === 'type_mismatch') {
+    reportBindingError(
+      resolver,
+      card,
+      path,
+      binding.name,
+      binding.message || `${binding.name} 类型是 ${binding.type || '未知'}，不适用于这里`
+    );
     return null;
   }
-  return { name, value };
+  if (binding.status === 'invalid_expression') {
+    reportBindingError(resolver, card, path, binding.name, binding.message || '表达式无效');
+    return null;
+  }
+  if (binding.status === 'expression') {
+    const analysis = evaluateGeneratorExpressionDetailed(
+      binding.expression,
+      resolver.expressionScope,
+      resolver.parameters,
+      { expectedTypes }
+    );
+    if (!analysis.valid) {
+      reportBindingError(resolver, card, path, binding.name, analysis.message || '表达式无效');
+      return null;
+    }
+    const value = analysis.value;
+    if (isNumericType(analysis.type) && !Number.isFinite(Number(value))) {
+      reportBindingError(resolver, card, path, binding.name, '表达式未得到数值');
+      return null;
+    }
+    if (isVectorType(analysis.type) && !isVectorLike(value)) {
+      reportBindingError(resolver, card, path, binding.name, '表达式未得到向量');
+      return null;
+    }
+    return {
+      name: binding.name,
+      value: { type: analysis.type, value },
+      expression: true,
+      type: analysis.type,
+      kotlin: analysis.kotlin
+    };
+  }
+  const scope = resolver.expressionScope || {};
+  const hasRuntimeValue = Object.prototype.hasOwnProperty.call(scope, binding.name);
+  if (hasRuntimeValue && binding.value && typeof binding.value === 'object') {
+    return {
+      name: binding.name,
+      type: binding.type,
+      value: { ...binding.value, value: scope[binding.name] }
+    };
+  }
+  return { name: binding.name, value: binding.value, type: binding.type };
+}
+
+function isNumericType(type) {
+  return ['Int', 'Long', 'Float', 'Double'].includes(String(type || ''));
+}
+
+function isVectorType(type) {
+  return ['Vec3', 'RelativeLocation', 'Vector3f'].includes(String(type || ''));
+}
+
+function isVectorLike(value) {
+  return Boolean(value && typeof value === 'object'
+    && Number.isFinite(Number(value.x))
+    && Number.isFinite(Number(value.y))
+    && Number.isFinite(Number(value.z)));
 }
 
 function reportBindingError(resolver, card, path, name, reason) {
@@ -256,24 +333,6 @@ function formatBindingPath(path) {
   return `${BINDING_PATH_LABELS[base] || base}${axis ? `.${axis}` : ''}`;
 }
 
-function parseVectorLiteral(rawValue, fallback = vec()) {
-  if (Array.isArray(rawValue)) return vec(
-    toFiniteNumber(rawValue[0], fallback.x),
-    toFiniteNumber(rawValue[1], fallback.y),
-    toFiniteNumber(rawValue[2], fallback.z)
-  );
-  if (rawValue && typeof rawValue === 'object') return vectorFrom(rawValue, fallback);
-  const text = String(rawValue || '').trim();
-  const match = text.match(/^[A-Za-z0-9_]+\s*\(([^)]+)\)$/);
-  if (!match) return { ...fallback };
-  const parts = match[1].split(',').map((item) => item.trim().replace(/[fFdDlL]$/g, ''));
-  return vec(
-    toFiniteNumber(parts[0], fallback.x),
-    toFiniteNumber(parts[1], fallback.y),
-    toFiniteNumber(parts[2], fallback.z)
-  );
-}
-
 function rgbToHexObject(rgb) {
   return rgbToHex(rgb.r, rgb.g, rgb.b);
 }
@@ -281,10 +340,6 @@ function rgbToHexObject(rgb) {
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
-}
-
-function isIdent(raw) {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(raw || '').trim());
 }
 
 function attachPreviewErrors(target, errors) {
@@ -305,7 +360,11 @@ export function createGeneratorPreviewRuntime() {
     shapeCache: new Map(),
     snapshotPoints: [],
     renderBuffers: createRenderBuffers(256),
-    renderPlan: null
+    renderPlan: null,
+    variables: {},
+    constants: {},
+    parameterSignature: '',
+    expressionError: ''
   };
 
   function reset() {
@@ -315,6 +374,10 @@ export function createGeneratorPreviewRuntime() {
     runtime.emitters.clear();
     runtime.shapeCache.clear();
     runtime.renderPlan = null;
+    runtime.variables = {};
+    runtime.constants = {};
+    runtime.parameterSignature = '';
+    runtime.expressionError = '';
   }
 
   function clearParticles() {
@@ -328,15 +391,48 @@ export function createGeneratorPreviewRuntime() {
   }
 
   function tickOnce(project) {
-    const resolver = createBindingResolver(project);
+    syncParameterRuntime(runtime, project.parameters);
+    const lifecycleProgress = getLifecycleProgress(project.rootLifecycle, runtime.tick);
+    runtime.expressionError = '';
+    const scriptResult = executeGeneratorDoTick(
+      project.doTick?.source,
+      runtime.variables,
+      runtime.constants,
+      { tick: runtime.tick, progress: lifecycleProgress },
+      project.parameters
+    );
+    if (!scriptResult.ok) runtime.expressionError = scriptResult.message;
+    applyVariableAutomations(runtime, project.parameters, lifecycleProgress);
+    const resolver = createBindingResolver(project, {
+      expressionScope: createGeneratorExpressionScope(project.parameters, runtime.variables, {
+        tick: runtime.tick,
+        progress: lifecycleProgress
+      })
+    });
     const emitters = (Array.isArray(project.emitters) ? project.emitters : [])
       .map((card, index) => resolveEmitterCard(project, card, resolver, index));
+    const emitterById = new Map(emitters.map((card) => [String(card.id || ''), card]));
+    const birthContextsByEmitter = new Map();
+    const birthContextFor = (card) => {
+      if (!hasBirthRenderContextBinding(card)) return null;
+      const id = String(card?.id || '');
+      if (!birthContextsByEmitter.has(id)) {
+        birthContextsByEmitter.set(id, createEmitterSnapshotContext(card));
+      }
+      return birthContextsByEmitter.get(id);
+    };
     const builderPointsByEmitter = new Map();
     const builderPointsFor = (card) => getBuilderPointsForTick(
       card,
       builderPointsByEmitter,
       runtime.shapeCache,
-      project.parameters
+      {
+        ...project.parameters,
+        variables: project.parameters?.variables?.map((item) => ({
+          ...item,
+          value: serializeRuntimeParameterValue(item.type, runtime.variables[item.name])
+        }))
+      }
     );
     syncEmitterRuntime(runtime, emitters);
     const tick = runtime.tick;
@@ -349,25 +445,29 @@ export function createGeneratorPreviewRuntime() {
         const mode = card.emission?.mode || 'continuous';
         if (mode === 'once') {
           if (state.emittedOnce) return;
-          spawnFor(card, builderPointsFor(card));
+          spawnFor(card, builderPointsFor(card), birthContextFor(card));
           state.emittedOnce = true;
           return;
         }
         if (mode === 'burst') {
           const interval = Math.max(1, Math.trunc(Number(card.emission?.burstInterval || 1)));
-          if (state.burstTick % interval === 0) spawnFor(card, builderPointsFor(card));
+          if (state.burstTick % interval === 0) {
+            spawnFor(card, builderPointsFor(card), birthContextFor(card));
+          }
           state.burstTick += 1;
           return;
         }
-        spawnFor(card, builderPointsFor(card));
+        spawnFor(card, builderPointsFor(card), birthContextFor(card));
       });
     }
 
     const queues = collectCommandQueues(project.commandQueues);
+    const gravityBySign = collectEmitterGravityBySign(emitters);
     const hasCommands = queues.length > 0;
     for (let index = runtime.particles.length - 1; index >= 0; index -= 1) {
       const particle = runtime.particles[index];
       particle.age += 1;
+      applyEmitterPhysics(particle, gravityBySign);
       if (hasCommands) applyCommandQueues(queues, particle, tick);
       particle.prev.x = particle.pos.x;
       particle.prev.y = particle.pos.y;
@@ -378,7 +478,13 @@ export function createGeneratorPreviewRuntime() {
 
       if (particle.age >= particle.life) {
         if (project.deathBehavior?.enabled && project.deathBehavior?.mode === 'respawn') {
-          respawnParticle(particle, builderPointsFor(particle.card || {}));
+          const currentCard = emitterById.get(particle.cardId) || particle.card || {};
+          respawnParticle(
+            particle,
+            currentCard,
+            builderPointsFor(currentCard),
+            birthContextFor(currentCard)
+          );
         } else {
           removeParticleAt(runtime, index);
         }
@@ -387,12 +493,12 @@ export function createGeneratorPreviewRuntime() {
     runtime.tick += 1;
   }
 
-  function spawnFor(card, builderPoints) {
+  function spawnFor(card, builderPoints, birthRenderContext) {
     const countMin = Math.max(0, Math.trunc(Number(card.particle?.countMin || 0)));
     const countMax = Math.max(countMin, Math.trunc(Number(card.particle?.countMax || countMin)));
     const count = randomInt(countMin, countMax);
     for (let i = 0; i < count && runtime.particles.length < MAX_SIM_PARTICLES; i += 1) {
-      runtime.particles.push(createParticle(card, builderPoints));
+      runtime.particles.push(createParticle(card, builderPoints, birthRenderContext));
     }
   }
 
@@ -453,9 +559,15 @@ export function createGeneratorPreviewRuntime() {
   }
 
   function getRenderPlan(project) {
-    const signature = makeRenderPlanSignature(project);
+    const signature = makeRenderPlanSignature(project, runtime.variables, runtime.tick);
     if (runtime.renderPlan?.signature === signature) return runtime.renderPlan;
-    const resolver = createBindingResolver(project, { collectErrors: true });
+    const resolver = createBindingResolver(project, {
+      collectErrors: true,
+      expressionScope: createGeneratorExpressionScope(project.parameters, runtime.variables, {
+        tick: runtime.tick,
+        progress: getLifecycleProgress(project.rootLifecycle, runtime.tick)
+      })
+    });
     const emitters = (Array.isArray(project?.emitters) ? project.emitters : [])
       .map((card, index) => resolveEmitterCard(project, card, resolver, index));
     const contexts = new Map(emitters
@@ -465,7 +577,9 @@ export function createGeneratorPreviewRuntime() {
       contexts,
       effectSignature: resolveEffectSignature(contexts),
       canUseBillboardBuffers: canUseBillboardBuffers(contexts),
-      errors: resolver.errors
+      errors: runtime.expressionError
+        ? [...resolver.errors, { key: 'doTick', message: `doTick：${runtime.expressionError}` }]
+        : resolver.errors
     };
     return runtime.renderPlan;
   }
@@ -477,8 +591,71 @@ export function createGeneratorPreviewRuntime() {
     snapshot,
     snapshotRenderData,
     getTick: () => runtime.tick,
-    getParticleCount: () => runtime.particles.length
+    getParticleCount: () => runtime.particles.length,
+    getVariables: () => ({ ...runtime.variables })
   };
+}
+
+function syncParameterRuntime(runtime, parameters = {}) {
+  const signature = JSON.stringify({
+    variables: Array.isArray(parameters?.variables) ? parameters.variables : [],
+    constants: Array.isArray(parameters?.constants) ? parameters.constants : []
+  });
+  if (signature === runtime.parameterSignature) return;
+  runtime.parameterSignature = signature;
+  runtime.variables = {};
+  runtime.constants = {};
+  for (const item of Array.isArray(parameters?.variables) ? parameters.variables : []) {
+    if (item?.name && !Object.prototype.hasOwnProperty.call(runtime.variables, item.name)) {
+      runtime.variables[item.name] = item.value;
+    }
+  }
+  for (const item of Array.isArray(parameters?.constants) ? parameters.constants : []) {
+    if (item?.name
+      && !Object.prototype.hasOwnProperty.call(runtime.variables, item.name)
+      && !Object.prototype.hasOwnProperty.call(runtime.constants, item.name)) {
+      runtime.constants[item.name] = item.value;
+    }
+  }
+}
+
+function serializeRuntimeParameterValue(type, value) {
+  if (!['Vec3', 'RelativeLocation', 'Vector3f'].includes(type)
+    || !value || typeof value !== 'object') return value;
+  const suffix = type === 'Vector3f' ? 'f' : '';
+  const component = (axis) => {
+    const numeric = Number(value[axis]);
+    const safe = Number.isFinite(numeric) ? numeric : 0;
+    const literal = Number.isInteger(safe) ? `${safe}.0` : String(safe);
+    return `${literal}${suffix}`;
+  };
+  return `${type}(${component('x')}, ${component('y')}, ${component('z')})`;
+}
+
+function getLifecycleProgress(lifecycle = {}, tick = 0) {
+  const maxTick = Number(lifecycle?.maxTick || 0);
+  return maxTick > 0 ? clamp(Number(tick) / maxTick, 0, 1) : 0;
+}
+
+function applyVariableAutomations(runtime, parameters = {}, lifecycleProgress = 0) {
+  for (const item of Array.isArray(parameters?.variables) ? parameters.variables : []) {
+    const automation = item?.automation;
+    if (!automation?.enabled || !Object.prototype.hasOwnProperty.call(runtime.variables, item.name)) continue;
+    const sourceValue = automation.source === 'variable'
+      ? Number(runtime.variables[automation.sourceVariable])
+      : lifecycleProgress;
+    const sourceMin = Number(automation.sourceMin);
+    const sourceMax = Number(automation.sourceMax);
+    const denominator = Math.abs(sourceMax - sourceMin) < EPSILON ? 1 : sourceMax - sourceMin;
+    const progress = clamp((sourceValue - sourceMin) / denominator, 0, 1);
+    const sampled = sampleLifecycleCurve(automation.curve, progress * 100);
+    const targetMin = Number(automation.targetMin);
+    const targetMax = Number(automation.targetMax);
+    const next = targetMin + (targetMax - targetMin) * sampled;
+    if (item.type === 'Int') runtime.variables[item.name] = Math.round(next);
+    else if (item.type === 'Long') runtime.variables[item.name] = Math.round(next).toString();
+    else if (item.type === 'Float' || item.type === 'Double') runtime.variables[item.name] = next;
+  }
 }
 
 function syncEmitterRuntime(runtime, emitters) {
@@ -535,7 +712,7 @@ function isEmitterActive(card, tick) {
   return tick >= start && (end < 0 || tick <= end);
 }
 
-function createParticle(card, builderPoints) {
+function createParticle(card, builderPoints, birthRenderContext = null) {
   const pos = sampleEmitterPoint(card, builderPoints);
   const velocity = sampleVelocity(card, pos);
   const lifeMin = Math.max(1, Math.trunc(Number(card.particle?.lifeMin || 1)));
@@ -554,19 +731,26 @@ function createParticle(card, builderPoints) {
     sign: Math.trunc(Number(card.render?.sign || 0)),
     seed: Math.trunc(Math.random() * 0x7fffffff),
     respawnCount: 0,
+    previewSpawnRenderContext: birthRenderContext,
     previewPoint: {}
   };
 }
 
-function respawnParticle(particle, builderPoints) {
-  const next = createParticle(particle.card || {}, builderPoints);
+function respawnParticle(particle, card, builderPoints, birthRenderContext = null) {
+  const next = createParticle(card, builderPoints, birthRenderContext);
+  particle.cardId = next.cardId;
+  particle.card = next.card;
   particle.pos = next.pos;
   particle.prev = { ...next.pos };
   particle.vel = next.vel;
   particle.age = 0;
   particle.life = next.life;
   particle.baseSize = next.baseSize;
+  particle.sign = next.sign;
   particle.seed = next.seed;
+  particle.previewSpawnRenderContext = next.previewSpawnRenderContext;
+  particle.previewRenderPlan = null;
+  particle.previewRenderContext = null;
   particle.respawnCount += 1;
 }
 
@@ -574,6 +758,22 @@ function removeParticleAt(runtime, index) {
   const last = runtime.particles.length - 1;
   if (index !== last) runtime.particles[index] = runtime.particles[last];
   runtime.particles.pop();
+}
+
+function collectEmitterGravityBySign(emitters) {
+  const gravityBySign = new Map();
+  emitters.forEach((card) => {
+    if (card?.enabled === false) return;
+    const sign = Math.trunc(Number(card.render?.sign || 0));
+    if (gravityBySign.has(sign)) return;
+    gravityBySign.set(sign, Math.max(0, Number(card.physics?.gravity || 0)));
+  });
+  return gravityBySign;
+}
+
+function applyEmitterPhysics(particle, gravityBySign) {
+  const gravity = gravityBySign.get(particle.sign) || 0;
+  if (gravity > 0) particle.vel.y -= gravity;
 }
 
 function collectCommandQueues(rawQueues) {
@@ -866,14 +1066,27 @@ function createEmitterSnapshotContext(card) {
   return context;
 }
 
-function makeRenderPlanSignature(project) {
+function hasBirthRenderContextBinding(card) {
+  return Object.entries(card?.bindings || {}).some(([path, source]) => (
+    String(source || '').trim()
+      && BIRTH_RENDER_CONTEXT_BINDING_PATHS.some((root) => path === root || path.startsWith(`${root}.`))
+  ));
+}
+
+function makeRenderPlanSignature(project, variables = {}, tick = 0) {
+  const dynamicContext = (Array.isArray(project?.emitters) ? project.emitters : []).some((card) => (
+    Object.values(card?.bindings || {}).some((source) => /\b(?:tick|progress|random)\b/.test(String(source || '')))
+  ));
   return JSON.stringify({
     parameters: project?.parameters || {},
+    runtimeVariables: variables,
+    runtimeTick: dynamicContext ? tick : 0,
     emitters: Array.isArray(project?.emitters) ? project.emitters : []
   });
 }
 
 function resolveParticleRenderContext(particle, plan) {
+  if (particle.previewSpawnRenderContext) return particle.previewSpawnRenderContext;
   if (particle.previewRenderPlan !== plan) {
     particle.previewRenderPlan = plan;
     particle.previewRenderContext = plan.contexts.get(particle.cardId) || null;

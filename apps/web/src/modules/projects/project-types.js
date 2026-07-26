@@ -1,109 +1,262 @@
 import { createGeneratorProject } from '../generator/defaults.js';
 
-export const PROJECT_TYPES = Object.freeze([
-  {
-    id: 'generator',
+function safeProjectName(rawName, fallback) {
+  return String(rawName || '').trim() || String(fallback || '').trim();
+}
+
+function unwrapCompositionState(payload) {
+  return payload?.state || payload;
+}
+
+function withoutCompositionPreferences(payload) {
+  const state = unwrapCompositionState(payload);
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return state;
+  const { settings, hotkeys, ...project } = state;
+  return project;
+}
+
+function compositionPreferencesFromDraft(payload) {
+  const state = unwrapCompositionState(payload);
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return null;
+  const preferences = {};
+  if (state.settings && typeof state.settings === 'object' && !Array.isArray(state.settings)) {
+    preferences.settings = state.settings;
+  }
+  if (state.hotkeys && typeof state.hotkeys === 'object' && !Array.isArray(state.hotkeys)) {
+    preferences.hotkeys = state.hotkeys;
+  }
+  return Object.keys(preferences).length ? preferences : null;
+}
+
+function defineProject(definition) {
+  return Object.freeze({
+    ...definition,
+    id: definition.type,
+    aliases: Object.freeze([...(definition.aliases || [])]),
+    legacy: definition.legacy ? Object.freeze({ ...definition.legacy }) : null
+  });
+}
+
+export const PROJECT_DEFINITIONS = Object.freeze([
+  defineProject({
+    type: 'generator',
     route: 'generator',
+    aliases: ['emitter', 'emitter-generator'],
+    defaultName: 'EmitterGenerator',
+    initial: 'G',
     label: '粒子发射器',
     shortLabel: 'Generator',
-    description: '编辑发射器、命令队列和生命周期参数。'
-  },
-  {
-    id: 'composition',
+    description: '编辑发射器、命令队列和生命周期参数。',
+    create(rawName, config = {}) {
+      const name = safeProjectName(rawName, 'EmitterGenerator');
+      return createGeneratorProject({
+        name,
+        kotlin: {
+          className: name.replace(/[^a-zA-Z0-9_]/g, '') || 'GeneratedEmitter',
+          packageName: String(config.packageName || '').trim(),
+          baseClass: 'AutoParticleEmitters',
+          mapping: config.mapping === 'mojmap' ? 'mojmap' : 'yarn'
+        }
+      });
+    },
+    nameOf(payload, fallback = 'EmitterGenerator') {
+      return safeProjectName(payload?.name, fallback);
+    },
+    detect(payload) {
+      return Array.isArray(payload?.emitters)
+        && Boolean(payload?.kotlin || payload?.rootLifecycle || payload?.commandQueues);
+    }
+  }),
+  defineProject({
+    type: 'composition',
     route: 'composition',
+    defaultName: 'NewComposition',
+    initial: 'C',
     label: 'Composition',
     shortLabel: 'Composition',
-    description: '组合粒子卡片并生成 Composition 代码。'
-  },
-  {
-    id: 'pointsbuilder',
+    description: '组合粒子卡片并生成 Composition 代码。',
+    create(rawName, config = {}) {
+      return {
+        tool: 'composition',
+        schemaVersion: 1,
+        projectName: safeProjectName(rawName, 'NewComposition'),
+        packageName: String(config.packageName || '').trim() || 'cn.coostack.compositions',
+        mapping: config.mapping === 'mojmap' ? 'mojmap' : 'yarn',
+        compositionType: 'particle',
+        cards: []
+      };
+    },
+    nameOf(payload, fallback = 'NewComposition') {
+      return safeProjectName(payload?.projectName, fallback);
+    },
+    detect(payload, fileName = '') {
+      if (String(fileName || '').toLowerCase().endsWith('.composition.json')) return true;
+      return Array.isArray(payload?.cards)
+        && Boolean(payload?.compositionType || payload?.projectName || payload?.compositionAxisExpr);
+    },
+    legacy: {
+      page: 'composition_builder.html',
+      storageKey: 'cb_state_v1',
+      preferencesStorageKey: 'cb_preferences_v1',
+      preferencesFromDraft: compositionPreferencesFromDraft,
+      toDraft(payload) {
+        return withoutCompositionPreferences(payload);
+      },
+      fromDraft(draft) {
+        return withoutCompositionPreferences(draft);
+      },
+      toFile(payload, projectName) {
+        return {
+          ...withoutCompositionPreferences(payload),
+          tool: 'composition',
+          projectName
+        };
+      }
+    }
+  }),
+  defineProject({
+    type: 'pointsbuilder',
     route: 'pointsbuilder',
+    aliases: ['points-builder'],
+    defaultName: 'PointsBuilderProject',
+    initial: 'P',
     label: 'PointsBuilder',
     shortLabel: 'PointsBuilder',
-    description: '构建路径、曲线和点阵。'
-  },
-  {
-    id: 'shader-builder',
+    description: '构建路径、曲线和点阵。',
+    create(rawName) {
+      return {
+        tool: 'pointsbuilder',
+        schemaVersion: 1,
+        projectName: safeProjectName(rawName, 'PointsBuilderProject'),
+        root: {
+          id: 'root',
+          kind: 'ROOT',
+          children: []
+        }
+      };
+    },
+    nameOf(payload, fallback = 'PointsBuilderProject') {
+      return safeProjectName(payload?.projectName, fallback);
+    },
+    detect(payload) {
+      const state = payload?.state?.root ? payload.state : payload;
+      return Boolean(state?.root && Array.isArray(state.root.children));
+    },
+    legacy: {
+      page: 'pointsbuilder.html',
+      storageKey: 'pb_state_v1',
+      nameStorageKey: 'pb_project_name_v1',
+      toDraft(payload) {
+        const state = payload?.state?.root ? payload.state : payload;
+        return { state, ts: Date.now() };
+      },
+      fromDraft(draft) {
+        return draft?.state?.root ? draft.state : draft;
+      },
+      toFile(payload, projectName) {
+        return {
+          ...payload,
+          tool: 'pointsbuilder',
+          schemaVersion: 1,
+          projectName
+        };
+      }
+    }
+  }),
+  defineProject({
+    type: 'shader-builder',
     route: 'shader-builder',
+    aliases: ['shader', 'shaderbuilder'],
+    defaultName: 'shader-workbench',
+    initial: 'S',
     label: 'Shader Builder',
     shortLabel: 'Shader',
-    description: '编辑 RendererAPI 着色器与后处理链。'
-  }
+    description: '编辑 RendererAPI 着色器与后处理链。',
+    create(rawName) {
+      return {
+        tool: 'shader-builder',
+        schema: 'shader_builder_project_v1',
+        projectName: safeProjectName(rawName, 'shader-workbench')
+      };
+    },
+    nameOf(payload, fallback = 'shader-workbench') {
+      return safeProjectName(payload?.projectName, fallback);
+    },
+    detect(payload) {
+      return String(payload?.schema || '') === 'shader_builder_project_v1'
+        || Boolean(payload?.model?.shader && payload?.post && Array.isArray(payload.post.nodes));
+    },
+    legacy: {
+      page: 'shader_builder.html',
+      storageKey: 'sb_project_v1',
+      toDraft(payload) {
+        return payload;
+      },
+      fromDraft(draft) {
+        return draft;
+      },
+      toFile(payload, projectName) {
+        return {
+          ...payload,
+          tool: 'shader-builder',
+          schema: 'shader_builder_project_v1',
+          projectName
+        };
+      }
+    }
+  })
 ]);
 
-const PROJECT_TYPE_MAP = new Map(PROJECT_TYPES.map((item) => [item.id, item]));
-const PROJECT_TYPE_ALIASES = Object.freeze({
-  emitter: 'generator',
-  'emitter-generator': 'generator',
-  shader: 'shader-builder',
-  shaderbuilder: 'shader-builder',
-  'points-builder': 'pointsbuilder'
-});
+export const PROJECT_TYPES = PROJECT_DEFINITIONS;
+
+const PROJECT_DEFINITION_MAP = new Map(
+  PROJECT_DEFINITIONS.map((definition) => [definition.type, definition])
+);
+const PROJECT_TYPE_ALIASES = new Map(
+  PROJECT_DEFINITIONS.flatMap((definition) => (
+    definition.aliases.map((alias) => [alias, definition.type])
+  ))
+);
+const LEGACY_PROJECT_DEFINITION_MAP = new Map(
+  PROJECT_DEFINITIONS
+    .filter((definition) => definition.legacy)
+    .map((definition) => [definition.legacy.page, definition])
+);
 
 export function normalizeProjectType(rawType) {
   const text = String(rawType || '').trim().toLowerCase();
-  const normalized = PROJECT_TYPE_ALIASES[text] || text;
-  return PROJECT_TYPE_MAP.has(normalized) ? normalized : '';
+  const normalized = PROJECT_TYPE_ALIASES.get(text) || text;
+  return PROJECT_DEFINITION_MAP.has(normalized) ? normalized : '';
+}
+
+export function getProjectDefinition(rawType) {
+  return PROJECT_DEFINITION_MAP.get(normalizeProjectType(rawType)) || null;
+}
+
+export function getLegacyProjectDefinition(rawPage) {
+  return LEGACY_PROJECT_DEFINITION_MAP.get(String(rawPage || '').trim()) || null;
 }
 
 export function getProjectType(rawType) {
-  return PROJECT_TYPE_MAP.get(normalizeProjectType(rawType)) || null;
+  return getProjectDefinition(rawType);
+}
+
+export function projectNameForTypeChange(rawName, nextType, edited = false) {
+  const currentName = String(rawName ?? '');
+  const nextDefault = getProjectDefinition(nextType)?.defaultName || 'NewProject';
+  return edited ? currentName : nextDefault;
 }
 
 export function getProjectRoute(rawType) {
-  return getProjectType(rawType)?.route || '';
+  return getProjectDefinition(rawType)?.route || '';
 }
 
-function safeProjectName(rawName, fallback) {
-  return String(rawName || '').trim() || fallback;
-}
-
-export function createProjectPayload(rawType, rawName) {
-  const type = normalizeProjectType(rawType);
-  if (!type) {
+export function createProjectPayload(rawType, rawName, config = {}) {
+  const definition = getProjectDefinition(rawType);
+  if (!definition) {
     throw new Error('请选择项目类型。');
   }
-
-  if (type === 'generator') {
-    const name = safeProjectName(rawName, 'EmitterGenerator');
-    return createGeneratorProject({
-      name,
-      kotlin: {
-        className: name.replace(/[^a-zA-Z0-9_]/g, '') || 'GeneratedEmitter',
-        packageName: '',
-        baseClass: 'AutoParticleEmitters'
-      }
-    });
-  }
-
-  if (type === 'composition') {
-    return {
-      tool: type,
-      schemaVersion: 1,
-      projectName: safeProjectName(rawName, 'NewComposition'),
-      compositionType: 'particle',
-      cards: []
-    };
-  }
-
-  if (type === 'pointsbuilder') {
-    return {
-      tool: type,
-      schemaVersion: 1,
-      projectName: safeProjectName(rawName, 'PointsBuilderProject'),
-      root: {
-        id: 'root',
-        kind: 'ROOT',
-        children: []
-      }
-    };
-  }
-
-  return {
-    tool: type,
-    schema: 'shader_builder_project_v1',
-    projectName: safeProjectName(rawName, 'shader-workbench')
-  };
+  return definition.create(rawName, config);
 }
 
 function unwrapProjectRecord(raw) {
@@ -126,40 +279,14 @@ function unwrapProjectRecord(raw) {
 }
 
 function detectByStructure(payload, fileName) {
-  const candidates = new Set();
-  if (String(payload?.schema || '') === 'shader_builder_project_v1') {
-    candidates.add('shader-builder');
-  }
+  const candidates = PROJECT_DEFINITIONS
+    .filter((definition) => definition.detect(payload, fileName))
+    .map((definition) => definition.type);
 
-  const lowerName = String(fileName || '').toLowerCase();
-  if (lowerName.endsWith('.composition.json')) {
-    candidates.add('composition');
+  if (candidates.length > 1) {
+    throw new Error(`项目类型冲突：同时匹配 ${candidates.join('、')}。`);
   }
-
-  if (Array.isArray(payload?.emitters) && (payload?.kotlin || payload?.rootLifecycle || payload?.commandQueues)) {
-    candidates.add('generator');
-  }
-
-  if (
-    Array.isArray(payload?.cards)
-    && (payload?.compositionType || payload?.projectName || payload?.compositionAxisExpr)
-  ) {
-    candidates.add('composition');
-  }
-
-  const pointsState = payload?.state?.root ? payload.state : payload;
-  if (pointsState?.root && Array.isArray(pointsState.root.children)) {
-    candidates.add('pointsbuilder');
-  }
-
-  if (payload?.model?.shader && payload?.post && Array.isArray(payload.post.nodes)) {
-    candidates.add('shader-builder');
-  }
-
-  if (candidates.size > 1) {
-    throw new Error(`项目类型冲突：同时匹配 ${Array.from(candidates).join('、')}。`);
-  }
-  return Array.from(candidates)[0] || '';
+  return candidates[0] || '';
 }
 
 export function classifyProjectData(raw, fileName = '') {

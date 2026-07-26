@@ -1,4 +1,4 @@
-export const VECTOR_LITERAL_TYPES = ["Vec3", "RelativeLocation", "Vector3f"];
+export const VECTOR_LITERAL_TYPES = ["Vec3", "Vec3d", "RelativeLocation", "Vector3f"];
 
 export function isVectorLiteralType(typeName) {
     return VECTOR_LITERAL_TYPES.includes(String(typeName || "").trim());
@@ -29,7 +29,7 @@ export function formatVectorLiteral(ctorRaw, x, y, z) {
 
 export function parseCtorInLiteral(rawExpr, fallback = "RelativeLocation") {
     const text = String(rawExpr || "").trim();
-    const m = text.match(/^(Vec3|RelativeLocation|Vector3f)\s*\(/i);
+    const m = text.match(/^(Vec3|Vec3d|RelativeLocation|Vector3f)\s*\(/i);
     if (!m) return normalizeVectorCtor(fallback);
     return normalizeVectorCtor(m[1]);
 }

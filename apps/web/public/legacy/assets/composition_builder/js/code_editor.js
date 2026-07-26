@@ -5,7 +5,13 @@ const MONACO_UI_FIX_STYLE_ID = "codetip-inline-monaco-ui-fix";
 let INLINE_CODE_EDITOR_SEQ = 0;
 const INLINE_RUNTIME_IDENTIFIER_SET = new Set([
     "PI",
+    "Random",
     "age",
+    "currentAge",
+    "lifetime",
+    "lifeTime",
+    "maxAge",
+    "textureSheet",
     "tick",
     "tickCount",
     "index",
@@ -163,6 +169,131 @@ function toSnippetInsertText(rawInsertText, cursorOffset = null) {
     };
 }
 
+export function isJavaScriptCodeCompletionContext(rawSource, rawOffset) {
+    const source = String(rawSource || "");
+    const offset = Math.max(0, Math.min(source.length, Number(rawOffset) || 0));
+    let state = "code";
+    let regexCharacterClass = false;
+    const templateExpressionDepths = [];
+    const controlParenStack = [];
+    let lastClosedControlParenIndex = -1;
+
+    const isRegexLiteralStart = (index) => {
+        let cursor = index - 1;
+        while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+        if (cursor < 0) return true;
+
+        const previous = source[cursor];
+        if ("([{:;,=!?&|+-*%^~<>".includes(previous)) return true;
+        if (previous === ")" && cursor === lastClosedControlParenIndex) return true;
+
+        const prefix = source.slice(0, index).trimEnd();
+        const keyword = prefix.match(/([A-Za-z_$][A-Za-z0-9_$]*)$/)?.[1] || "";
+        return /^(?:await|case|delete|do|else|in|instanceof|new|of|return|throw|typeof|void|yield)$/.test(keyword);
+    };
+
+    for (let i = 0; i < offset; i += 1) {
+        const char = source[i];
+        const next = source[i + 1];
+
+        if (state === "line-comment") {
+            if (char === "\n" || char === "\r") state = "code";
+            continue;
+        }
+        if (state === "block-comment") {
+            if (char === "*" && next === "/") {
+                state = "code";
+                i += 1;
+            }
+            continue;
+        }
+        if (state === "regex") {
+            if (char === "\\") {
+                i += 1;
+                continue;
+            }
+            if (char === "[") regexCharacterClass = true;
+            else if (char === "]") regexCharacterClass = false;
+            else if (char === "/" && !regexCharacterClass) state = "code";
+            continue;
+        }
+        if (state === "template") {
+            if (char === "\\") {
+                i += 1;
+            } else if (char === "`") {
+                state = "code";
+            } else if (char === "$" && next === "{") {
+                templateExpressionDepths.push(0);
+                state = "code";
+                i += 1;
+            }
+            continue;
+        }
+        if (state !== "code") {
+            if (char === "\\") {
+                i += 1;
+            } else if (
+                (state === "single-quote" && char === "'")
+                || (state === "double-quote" && char === '"')
+            ) {
+                state = "code";
+            }
+            continue;
+        }
+
+        if (char === "/" && next === "/") {
+            state = "line-comment";
+            i += 1;
+        } else if (char === "/" && next === "*") {
+            state = "block-comment";
+            i += 1;
+        } else if (char === "/" && isRegexLiteralStart(i)) {
+            state = "regex";
+            regexCharacterClass = false;
+        } else if (char === "'") {
+            state = "single-quote";
+        } else if (char === '"') {
+            state = "double-quote";
+        } else if (char === "`") {
+            state = "template";
+        } else if (char === "(") {
+            const prefix = source.slice(0, i).trimEnd();
+            const keyword = prefix.match(/([A-Za-z_$][A-Za-z0-9_$]*)$/)?.[1] || "";
+            controlParenStack.push(/^(?:catch|for|if|switch|while|with)$/.test(keyword));
+        } else if (char === ")") {
+            lastClosedControlParenIndex = controlParenStack.pop() === true ? i : -1;
+        } else if (char === "{" && templateExpressionDepths.length) {
+            const depthIndex = templateExpressionDepths.length - 1;
+            templateExpressionDepths[depthIndex] += 1;
+        } else if (char === "}" && templateExpressionDepths.length) {
+            const depthIndex = templateExpressionDepths.length - 1;
+            if (templateExpressionDepths[depthIndex] === 0) {
+                templateExpressionDepths.pop();
+                state = "template";
+            } else {
+                templateExpressionDepths[depthIndex] -= 1;
+            }
+        }
+    }
+
+    return state === "code";
+}
+
+export function shouldTriggerJavaScriptCodeCompletion(rawSource, rawOffset, rawInsertedText) {
+    const insertedText = String(rawInsertedText || "");
+    return insertedText.length === 1
+        && /[A-Za-z_]/.test(insertedText)
+        && isJavaScriptCodeCompletionContext(rawSource, rawOffset);
+}
+
+function isModelCodeCompletionContext(model, position) {
+    const source = String(model?.getValue?.() || "");
+    const offset = typeof model?.getOffsetAt === "function"
+        ? model.getOffsetAt(position)
+        : source.length;
+    return isJavaScriptCodeCompletionContext(source, offset);
+}
+
 function getCompletionFilterContext(model, position) {
     const lineNumber = Math.max(1, Number(position?.lineNumber) || 1);
     const column = Math.max(1, Number(position?.column) || 1);
@@ -290,8 +421,14 @@ function buildApiDtsFromCompletions(completions) {
         if (labelCall && labelCall[1]) fns.add(labelCall[1]);
     }
     const lines = [];
+    lines.push("declare const Random: { nextInt(): number; nextInt(until: number): number; nextInt(from: number, until: number): number; nextLong(): number; nextLong(until: number): number; nextLong(from: number, until: number): number; nextDouble(): number; nextDouble(until: number): number; nextDouble(from: number, until: number): number; nextFloat(): number; nextBoolean(): boolean; };");
     lines.push("declare const PI: number;");
     lines.push("declare let age: number;");
+    lines.push("declare let currentAge: number;");
+    lines.push("declare let lifetime: number;");
+    lines.push("declare let lifeTime: number;");
+    lines.push("declare let maxAge: number;");
+    lines.push("declare let textureSheet: number;");
     lines.push("declare let tick: number;");
     lines.push("declare let tickCount: number;");
     lines.push("declare let index: number;");
@@ -305,7 +442,7 @@ function buildApiDtsFromCompletions(completions) {
     lines.push("declare let thisAt: any;");
     for (const name of Array.from(vars).sort((a, b) => a.localeCompare(b))) {
         if (reserved.has(name)) continue;
-        if (/^(Math|PI|age|tick|tickCount|index|status|particle|thisAt|rel|order|axis|alphaHelper|scaleHelper)$/.test(name)) continue;
+        if (/^(Math|Random|PI|age|currentAge|lifetime|lifeTime|maxAge|textureSheet|tick|tickCount|index|status|particle|thisAt|rel|order|axis|alphaHelper|scaleHelper)$/.test(name)) continue;
         // Use let to avoid false "assignment to constant" diagnostics for project symbols.
         lines.push(`declare let ${name}: any;`);
     }
@@ -356,6 +493,7 @@ export class InlineCodeEditor {
         this.syncingFromModel = false;
         this.syncingFromSource = false;
         this.changeLock = false;
+        this.autoCompletionTimer = null;
         this.disposables = [];
         this.monacoReady = false;
         this.monacoLoadError = null;
@@ -481,8 +619,8 @@ export class InlineCodeEditor {
             },
             smoothScrolling: true,
             quickSuggestions: {
-                comments: true,
-                strings: true,
+                comments: false,
+                strings: false,
                 other: true
             },
             suggestOnTriggerCharacters: true,
@@ -493,13 +631,15 @@ export class InlineCodeEditor {
             folding: !this.compact,
             lineDecorationsWidth: this.compact ? 0 : 10,
             overviewRulerLanes: this.compact ? 0 : 2,
-            scrollbar: this.compact
-                ? {
+            scrollbar: {
+                alwaysConsumeMouseWheel: false,
+                ...(this.compact
+                    ? {
                     vertical: "hidden",
                     horizontal: "hidden",
-                    alwaysConsumeMouseWheel: false
-                }
-                : undefined,
+                    }
+                    : {})
+            },
             padding: this.compact
                 ? { top: 7, bottom: 7 }
                 : undefined
@@ -521,6 +661,9 @@ export class InlineCodeEditor {
 
         this.completionRegistration = this.languageService.registerCompletionProvider({
             provideCompletionItems: ({ model, position }) => {
+                if (!isModelCodeCompletionContext(model, position)) {
+                    return { suggestions: [] };
+                }
                 const context = getCompletionFilterContext(model, position);
                 const range = {
                     startLineNumber: context.lineNumber,
@@ -553,7 +696,7 @@ export class InlineCodeEditor {
         this.disposables.push(diagnosticsSubscription);
 
         this.disposables.push(
-            this.editor.onDidChangeModelContent(() => {
+            this.editor.onDidChangeModelContent((event) => {
                 if (this.changeLock) return;
                 this.changeLock = true;
                 try {
@@ -563,6 +706,7 @@ export class InlineCodeEditor {
                     dispatchBubbledEvent(this.textarea, "input");
                     this.onChange(value);
                     this.runValidation();
+                    this.queueAutomaticCompletion(event);
                 } finally {
                     this.syncingFromModel = false;
                     this.changeLock = false;
@@ -597,6 +741,27 @@ export class InlineCodeEditor {
                 dispatchBubbledEvent(this.textarea, "focusin");
             })
         );
+    }
+
+    queueAutomaticCompletion(event) {
+        if (!this.editor || !this.model || this.disposed) return;
+        const changes = Array.isArray(event?.changes) ? event.changes : [];
+        if (changes.length !== 1) return;
+
+        const position = this.editor.getPosition?.();
+        if (!position) return;
+        const source = String(this.model.getValue?.() || "");
+        const offset = this.model.getOffsetAt?.(position) ?? source.length;
+        if (!shouldTriggerJavaScriptCodeCompletion(source, offset, changes[0]?.text)) return;
+
+        if (this.autoCompletionTimer !== null) clearTimeout(this.autoCompletionTimer);
+        this.autoCompletionTimer = setTimeout(() => {
+            this.autoCompletionTimer = null;
+            if (!this.editor || this.disposed || !this.editor.hasTextFocus?.()) return;
+            const currentPosition = this.editor.getPosition?.();
+            if (!currentPosition || !isModelCodeCompletionContext(this.model, currentPosition)) return;
+            this.editor.trigger("keyboard", "editor.action.triggerSuggest", {});
+        }, 0);
     }
 
     enablePlainTextareaFallback() {
@@ -741,6 +906,11 @@ export class InlineCodeEditor {
     dispose() {
         if (this.disposed) return;
         this.disposed = true;
+
+        if (this.autoCompletionTimer !== null) {
+            clearTimeout(this.autoCompletionTimer);
+            this.autoCompletionTimer = null;
+        }
 
         this.textarea.removeEventListener("input", this.sourceInputHandler);
 

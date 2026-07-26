@@ -5,6 +5,8 @@ import {
   num,
   int,
   fmt,
+  fmtDouble,
+  fmtFloat,
   relExpr,
   getPolygonInCircleVertices,
   rotatePointsToPointUpright
@@ -273,5 +275,7 @@ export function emitKotlin(project) {
 
 export const builderFormatters = {
   fmt,
+  fmtDouble,
+  fmtFloat,
   relExpr
 };

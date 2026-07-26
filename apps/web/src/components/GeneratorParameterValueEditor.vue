@@ -58,9 +58,8 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import {
-  createDeferredGeneratorValueCommit,
   generatorHexToVectorValue,
   generatorVectorValueToHex,
   isGeneratorVectorType,
@@ -75,10 +74,6 @@ const props = defineProps({
 });
 
 const draftColorHex = ref(generatorVectorValueToHex(props.item.value));
-const colorCommit = createDeferredGeneratorValueCommit((value, target) => {
-  if (props.item !== target) return;
-  target.value = value;
-});
 const vectorType = computed(() => isGeneratorVectorType(props.item.type));
 const numericType = computed(() => ['Int', 'Long', 'Float', 'Double'].includes(props.item.type));
 const integerType = computed(() => ['Int', 'Long'].includes(props.item.type));
@@ -95,7 +90,6 @@ const axes = computed(() => colorMode.value
   : [{ key: 'x', label: 'X' }, { key: 'y', label: 'Y' }, { key: 'z', label: 'Z' }]);
 
 function setColorMode(enabled) {
-  colorCommit.flush();
   props.item.colorMode = enabled === true;
   if (!enabled) return;
   axes.value.forEach((axis) => {
@@ -110,7 +104,6 @@ function setColorMode(enabled) {
 }
 
 function updateAxis(axis, value) {
-  colorCommit.flush();
   props.item.value = updateGeneratorVectorComponent(
     props.item.type,
     props.item.value,
@@ -123,11 +116,10 @@ function updateAxis(axis, value) {
 
 function updateColor(hex) {
   draftColorHex.value = hex;
-  colorCommit.schedule(generatorHexToVectorValue(hex), props.item);
 }
 
 function commitColor() {
-  colorCommit.flush();
+  props.item.value = generatorHexToVectorValue(draftColorHex.value);
 }
 
 function updateScalarValue(value) {
@@ -150,7 +142,6 @@ function commitScalarValue() {
 watch(
   () => props.item,
   () => {
-    colorCommit.cancel();
     draftColorHex.value = generatorVectorValueToHex(props.item.value);
   },
   { flush: 'sync' }
@@ -158,22 +149,13 @@ watch(
 
 watch(
   () => props.item.type,
-  (type) => {
-    if (type !== 'Vector3f') colorCommit.cancel();
-    draftColorHex.value = generatorVectorValueToHex(props.item.value);
-  }
+  () => { draftColorHex.value = generatorVectorValueToHex(props.item.value); }
 );
 
 watch(
   () => [props.item.value, props.item.colorMode],
-  () => {
-    if (!colorCommit.isPending()) {
-      draftColorHex.value = generatorVectorValueToHex(props.item.value);
-    }
-  }
+  () => { draftColorHex.value = generatorVectorValueToHex(props.item.value); }
 );
-
-onBeforeUnmount(colorCommit.cancel);
 </script>
 
 <style scoped>

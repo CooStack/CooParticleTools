@@ -43,7 +43,7 @@
         <div class="section-head">
           <div>
             <h2 id="project-index-title">项目索引</h2>
-            <small>本机项目仓库</small>
+            <small>项目文件与旧版本机项目</small>
           </div>
           <button type="button" class="text-button" @click="loadProjectIndex">刷新</button>
         </div>
@@ -55,9 +55,12 @@
               <span class="project-copy">
                 <strong>{{ item.name }}</strong>
                 <small>{{ typeLabel(item.tool) }} · {{ formatDateTime(item.updatedAt) }}</small>
+                <small v-if="item.filePath" class="project-path">{{ item.filePath }}</small>
               </span>
             </button>
-            <button class="row-action danger-action" type="button" @click="deleteIndexedProject(item)">删除</button>
+            <button class="row-action danger-action" type="button" @click="deleteIndexedProject(item)">
+              {{ item.filePath ? '移除' : '删除' }}
+            </button>
           </article>
         </div>
         <div v-else class="empty-state">
@@ -66,7 +69,7 @@
         </div>
       </section>
 
-      <section v-if="recentFiles.length" class="project-section" aria-labelledby="recent-files-title">
+      <section v-if="unindexedRecentFiles.length" class="project-section" aria-labelledby="recent-files-title">
         <div class="section-head">
           <div>
             <h2 id="recent-files-title">最近文件</h2>
@@ -77,7 +80,7 @@
 
         <div class="recent-list">
           <button
-            v-for="item in recentFiles"
+            v-for="item in unindexedRecentFiles"
             :key="item.filePath"
             type="button"
             class="recent-row"
@@ -124,8 +127,38 @@
 
         <label class="name-field">
           <span>项目名称</span>
-          <input ref="nameInputRef" v-model.trim="projectName" type="text" @keydown.enter="createProject" />
+          <input ref="nameInputRef" v-model.trim="projectName" type="text" @input="projectNameDirty = true" @keydown.enter="createProject" />
         </label>
+
+        <label v-if="shellAvailable" class="name-field">
+          <span>项目位置</span>
+          <span class="project-location-control">
+            <input
+              :value="projectFilePath"
+              type="text"
+              readonly
+              placeholder="请选择项目 JSON 文件的保存位置"
+              @click="chooseProjectLocation"
+            />
+            <button type="button" :disabled="choosingProjectLocation" @click="chooseProjectLocation">
+              {{ choosingProjectLocation ? '选择中...' : '选择' }}
+            </button>
+          </span>
+        </label>
+
+        <div v-if="supportsPackageConfig" class="project-config-fields">
+          <label class="name-field">
+            <span>包路径</span>
+            <input v-model.trim="projectPackageName" type="text" placeholder="cn.coostack.generated" @keydown.enter="createProject" />
+          </label>
+          <label class="name-field">
+            <span>映射</span>
+            <select v-model="projectMapping">
+              <option value="yarn">Yarn (Fabric)</option>
+              <option value="mojmap">Mojang / Mojmap</option>
+            </select>
+          </label>
+        </div>
 
         <footer class="dialog-actions">
           <button type="button" @click="closeCreateDialog">取消</button>
@@ -147,23 +180,19 @@ import {
   createProjectPayload,
   getProjectRoute,
   getProjectType,
-  normalizeProjectType
+  normalizeProjectType,
+  parseProjectText,
+  projectNameForTypeChange
 } from '../modules/projects/project-types.js';
 import { getProjectRepository } from '../services/repositories/project-repository.js';
 import {
   getElectronShell,
   isElectronShell,
   openProjectResult,
+  sanitizeFileBase,
   stashPendingProject
 } from '../services/shell/electron-shell.js';
 import { formatDateTime } from '../utils/format.js';
-
-const defaultProjectNames = Object.freeze({
-  generator: 'EmitterGenerator',
-  composition: 'NewComposition',
-  pointsbuilder: 'PointsBuilderProject',
-  'shader-builder': 'shader-workbench'
-});
 
 const route = useRoute();
 const router = useRouter();
@@ -176,21 +205,30 @@ const fileInputRef = ref(null);
 const nameInputRef = ref(null);
 const createDialogOpen = ref(false);
 const creatingProject = ref(false);
+const choosingProjectLocation = ref(false);
 const selectedProjectType = ref('generator');
-const projectName = ref(defaultProjectNames.generator);
+const projectName = ref(getProjectType('generator').defaultName);
+const projectNameDirty = ref(false);
+const projectFilePath = ref('');
+const projectPackageName = ref('');
+const projectMapping = ref('yarn');
 const shellAvailable = computed(() => isElectronShell());
+const supportsPackageConfig = computed(() => ['generator', 'composition'].includes(selectedProjectType.value));
+const unindexedRecentFiles = computed(() => {
+  const indexedPaths = new Set(
+    projectItems.value
+      .map((item) => String(item.filePath || '').toLowerCase())
+      .filter(Boolean)
+  );
+  return recentFiles.value.filter((item) => !indexedPaths.has(String(item.filePath || '').toLowerCase()));
+});
 
 function typeLabel(rawType) {
   return getProjectType(rawType)?.label || String(rawType || '未知类型');
 }
 
 function typeInitial(rawType) {
-  const type = normalizeProjectType(rawType);
-  if (type === 'generator') return 'G';
-  if (type === 'composition') return 'C';
-  if (type === 'pointsbuilder') return 'P';
-  if (type === 'shader-builder') return 'S';
-  return '?';
+  return getProjectType(rawType)?.initial || '?';
 }
 
 function setError(error) {
@@ -205,6 +243,7 @@ function showCreateDialog() {
 
 function closeCreateDialog() {
   createDialogOpen.value = false;
+  projectFilePath.value = '';
   if (route.query.create) {
     const query = { ...route.query };
     delete query.create;
@@ -214,9 +253,43 @@ function closeCreateDialog() {
 }
 
 function selectProjectType(type) {
-  selectedProjectType.value = type;
-  projectName.value = defaultProjectNames[type] || 'NewProject';
+  const definition = getProjectType(type);
+  const previousType = selectedProjectType.value;
+  const previousPackageDefault = previousType === 'composition' ? 'cn.coostack.compositions' : '';
+  selectedProjectType.value = definition?.type || type;
+  projectName.value = projectNameForTypeChange(
+    projectName.value,
+    selectedProjectType.value,
+    projectNameDirty.value
+  );
+  if (!projectPackageName.value || projectPackageName.value === previousPackageDefault) {
+    projectPackageName.value = selectedProjectType.value === 'composition' ? 'cn.coostack.compositions' : '';
+  }
   nextTick(() => nameInputRef.value?.select());
+}
+
+async function chooseProjectLocation() {
+  if (choosingProjectLocation.value) return false;
+  const shell = getElectronShell();
+  if (!shell?.chooseProjectFile) return false;
+  choosingProjectLocation.value = true;
+  try {
+    const result = await shell.chooseProjectFile({
+      title: '选择项目位置',
+      defaultPath: `${sanitizeFileBase(projectName.value, 'project')}.json`
+    });
+    if (result?.ok && result.filePath) {
+      projectFilePath.value = String(result.filePath);
+      return true;
+    }
+    if (!result?.canceled) setError(result);
+    return false;
+  } catch (error) {
+    setError(error);
+    return false;
+  } finally {
+    choosingProjectLocation.value = false;
+  }
 }
 
 async function createProject() {
@@ -225,18 +298,40 @@ async function createProject() {
   pageError.value = '';
   try {
     const type = normalizeProjectType(selectedProjectType.value);
-    const payload = createProjectPayload(type, projectName.value);
-    const name = String(projectName.value || defaultProjectNames[type]).trim();
+    const definition = getProjectType(type);
+    const payload = createProjectPayload(type, projectName.value, {
+      packageName: projectPackageName.value,
+      mapping: projectMapping.value
+    });
+    const name = String(projectName.value || definition.defaultName).trim();
+    const shell = getElectronShell();
+    let filePath = '';
+    if (shell?.saveProjectFile) {
+      if (!projectFilePath.value && !await chooseProjectLocation()) return;
+      const fileResult = await shell.saveProjectFile({
+        title: '创建项目',
+        filePath: projectFilePath.value,
+        text: JSON.stringify(payload, null, 2)
+      });
+      if (!fileResult?.ok) {
+        if (!fileResult?.canceled) setError(fileResult);
+        return;
+      }
+      filePath = String(fileResult.filePath || projectFilePath.value);
+      projectFilePath.value = filePath;
+    }
     const saved = await projectRepository.save({
       tool: type,
       name,
       description: '',
+      filePath,
       payload
     });
     stashPendingProject({
       action: 'new',
       projectType: type,
       projectId: saved?.id || '',
+      filePath,
       name,
       text: JSON.stringify(payload)
     });
@@ -256,11 +351,26 @@ async function openIndexedProject(item) {
   pageError.value = '';
   try {
     const record = await projectRepository.get(item.tool, item.id);
-    const { type, payload } = classifyProjectData(record || item);
+    const filePath = String(record?.filePath || item.filePath || '');
+    let projectData = classifyProjectData(record || item);
+    if (filePath) {
+      const shell = getElectronShell();
+      if (shell?.readTextFile) {
+        const result = await shell.readTextFile(filePath);
+        if (!result?.ok) throw new Error(result?.message || '无法读取项目文件。');
+        projectData = parseProjectText(result.text, filePath);
+      }
+    }
+    const { type, payload } = projectData;
+    const indexedType = normalizeProjectType(item.tool);
+    if (type !== indexedType) {
+      throw new Error(`项目文件类型为 ${type}，与索引类型 ${indexedType} 不一致。请移除旧索引后重新打开文件。`);
+    }
     stashPendingProject({
       action: 'open',
       projectType: type,
       projectId: item.id,
+      filePath,
       name: record?.name || item.name,
       text: JSON.stringify(payload)
     });
@@ -274,7 +384,10 @@ async function openIndexedProject(item) {
 }
 
 async function deleteIndexedProject(item) {
-  if (!window.confirm(`删除项目“${item.name}”？`)) return;
+  const prompt = item.filePath
+    ? `从索引中移除项目“${item.name}”？项目文件会保留。`
+    : `删除项目“${item.name}”？`;
+  if (!window.confirm(prompt)) return;
   try {
     await projectRepository.remove(item.tool, item.id);
     await loadProjectIndex();
@@ -304,11 +417,27 @@ async function openBrowserFile(event) {
   event.target.value = '';
   if (!file) return;
   try {
-    await openProjectResult(router, {
-      ok: true,
-      filePath: file.name,
-      name: file.name,
-      text: await file.text()
+    const text = await file.text();
+    const { type, payload } = parseProjectText(text, file.name);
+    const definition = getProjectType(type);
+    const fallbackName = String(file.name || '').replace(/\.json$/i, '') || definition.defaultName;
+    const name = definition.nameOf(payload, fallbackName);
+    const saved = await projectRepository.save({
+      tool: type,
+      name,
+      description: '',
+      payload
+    });
+    stashPendingProject({
+      action: 'open',
+      projectType: type,
+      projectId: saved?.id || '',
+      name,
+      text: JSON.stringify(payload)
+    });
+    await router.push({
+      name: getProjectRoute(type),
+      query: { projectId: saved?.id || '', projectType: type, shellOpen: String(Date.now()) }
     });
   } catch (error) {
     setError(error);
@@ -529,7 +658,8 @@ onMounted(() => {
 }
 
 button,
-input {
+input,
+select {
   border-radius: 0;
 }
 
@@ -752,6 +882,17 @@ button:disabled {
   margin: 18px 0;
 }
 
+.project-copy .project-path {
+  color: #bd99aa;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+.project-config-fields {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
 .project-type-option {
   min-width: 0;
   min-height: 74px;
@@ -778,7 +919,8 @@ button:disabled {
   font-size: 13px;
 }
 
-.name-field input {
+.name-field input,
+.name-field select {
   width: 100%;
   height: 42px;
   padding: 0 11px;
@@ -788,9 +930,25 @@ button:disabled {
   background: #21101a;
 }
 
-.name-field input:focus {
+.name-field input:focus,
+.name-field select:focus {
   border-color: #f06aa7;
   box-shadow: 0 0 0 2px rgba(240, 106, 167, 0.16);
+}
+
+.project-location-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.project-location-control input {
+  min-width: 0;
+  cursor: pointer;
+}
+
+.project-location-control button {
+  min-height: 42px;
 }
 
 .dialog-actions {

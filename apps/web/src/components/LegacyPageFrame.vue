@@ -1,6 +1,6 @@
 <template>
   <div class="legacy-page-host" :class="hostClasses">
-    <iframe v-if="projectReady" ref="frameRef" :key="frameKey" class="legacy-page-frame" :src="src" :title="title"></iframe>
+    <iframe v-if="frameReady" ref="frameRef" :key="frameKey" class="legacy-page-frame" :src="src" :title="title" @load="handleFrameLoad"></iframe>
     <div v-else class="legacy-page-loading" role="status">正在打开项目...</div>
   </div>
 </template>
@@ -9,7 +9,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router';
 import { deploymentProfile } from '../config/deployment.js';
-import { classifyProjectData } from '../modules/projects/project-types.js';
+import {
+  classifyProjectData,
+  getLegacyProjectDefinition,
+  parseProjectText
+} from '../modules/projects/project-types.js';
+import {
+  hydrateLegacyPreferences,
+  persistLegacyPreferences
+} from '../modules/projects/legacy-preferences.js';
 import { getProjectRepository } from '../services/repositories/project-repository.js';
 import {
   consumePendingProject,
@@ -47,14 +55,22 @@ const props = defineProps({
 const route = useRoute();
 const router = useRouter();
 const projectRepository = getProjectRepository();
+const AUTO_SAVE_DELAY_MS = 350;
+const AUTO_SAVE_POLL_MS = 250;
 const frameNonce = ref(0);
 const frameRef = ref(null);
 const activeProjectId = ref('');
 const activeProjectName = ref('');
 const activeProjectPath = ref('');
 const projectReady = ref(!props.manageProject || !String(route.query.projectId || ''));
+const legacyPreferencesReady = ref(false);
+const frameReady = computed(() => projectReady.value && legacyPreferencesReady.value);
 let projectLoadToken = 0;
 let saveQueue = Promise.resolve();
+let savedFileSnapshot = '';
+let observedProjectSnapshot = '';
+let autoSaveTimer = 0;
+let autoSavePollTimer = 0;
 const forwardedShellCommands = new Set([
   'export-kotlin'
 ]);
@@ -69,34 +85,8 @@ const hostClasses = computed(() => ({
   'legacy-page-host--seamless': seamlessFramePages.has(props.page)
 }));
 
-const legacyProjectPages = Object.freeze({
-  'composition_builder.html': {
-    type: 'composition',
-    storageKey: 'cb_state_v1',
-    serialize(payload) {
-      return payload?.state || payload;
-    }
-  },
-  'pointsbuilder.html': {
-    type: 'pointsbuilder',
-    storageKey: 'pb_state_v1',
-    nameStorageKey: 'pb_project_name_v1',
-    serialize(payload) {
-      const state = payload?.state?.root ? payload.state : payload;
-      return { state, ts: Date.now() };
-    }
-  },
-  'shader_builder.html': {
-    type: 'shader-builder',
-    storageKey: 'sb_project_v1',
-    serialize(payload) {
-      return payload;
-    }
-  }
-});
-
 function getLegacyProjectTarget() {
-  return props.manageProject ? legacyProjectPages[props.page] : null;
+  return props.manageProject ? getLegacyProjectDefinition(props.page) : null;
 }
 
 function applyPendingProject() {
@@ -106,16 +96,11 @@ function applyPendingProject() {
   if (!pending?.text) return false;
   try {
     const payload = JSON.parse(pending.text);
-    window.localStorage.setItem(target.storageKey, JSON.stringify(target.serialize(payload)));
-    if (target.nameStorageKey) {
-      window.localStorage.setItem(
-        target.nameStorageKey,
-        String(pending.name || payload.projectName || 'PointsBuilderProject')
-      );
-    }
+    writeLegacyProjectPayload(target, payload, pending.name || '');
     activeProjectId.value = String(pending.projectId || route.query.projectId || '');
     activeProjectName.value = String(pending.name || '');
-    activeProjectPath.value = activeProjectId.value ? '' : String(pending.filePath || '');
+    activeProjectPath.value = String(pending.filePath || '');
+    markLegacyProjectSaved();
     projectReady.value = true;
     return true;
   } catch (error) {
@@ -125,13 +110,80 @@ function applyPendingProject() {
 }
 
 function writeLegacyProjectPayload(target, payload, name = '') {
-  window.localStorage.setItem(target.storageKey, JSON.stringify(target.serialize(payload)));
-  if (target.nameStorageKey) {
+  const adapter = target.legacy;
+  preserveLegacyPreferences(adapter, payload);
+  window.localStorage.setItem(adapter.storageKey, JSON.stringify(adapter.toDraft(payload)));
+  if (adapter.nameStorageKey) {
     window.localStorage.setItem(
-      target.nameStorageKey,
-      String(name || payload.projectName || 'PointsBuilderProject')
+      adapter.nameStorageKey,
+      String(name || target.nameOf(payload, target.defaultName))
     );
   }
+}
+
+function preserveLegacyPreferences(adapter, incomingPayload) {
+  if (!adapter.preferencesStorageKey || typeof adapter.preferencesFromDraft !== 'function') return;
+  let storedPreferences = null;
+  const storedPreferencesRaw = window.localStorage.getItem(adapter.preferencesStorageKey);
+  if (storedPreferencesRaw) {
+    try {
+      storedPreferences = adapter.preferencesFromDraft(JSON.parse(storedPreferencesRaw));
+    } catch {
+    }
+  }
+
+  let currentPreferences = null;
+  const currentDraft = window.localStorage.getItem(adapter.storageKey);
+  if (currentDraft) {
+    try {
+      currentPreferences = adapter.preferencesFromDraft(JSON.parse(currentDraft));
+    } catch {
+    }
+  }
+  const incomingPreferences = adapter.preferencesFromDraft(incomingPayload);
+  const preferences = mergeLegacyPreferences(
+    incomingPreferences,
+    currentPreferences,
+    storedPreferences
+  );
+  if (preferences) {
+    window.localStorage.setItem(adapter.preferencesStorageKey, JSON.stringify(preferences));
+  }
+}
+
+function mergeLegacyPreferences(...sources) {
+  const merged = {};
+  for (const source of sources) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const previous = merged[key] || {};
+      merged[key] = { ...previous, ...value };
+      if (previous.actions || value.actions) {
+        merged[key].actions = {
+          ...(previous.actions || {}),
+          ...(value.actions || {})
+        };
+      }
+    }
+  }
+  return Object.keys(merged).length ? merged : null;
+}
+
+async function restoreDurableLegacyPreferences() {
+  const adapter = getLegacyProjectTarget()?.legacy;
+  try {
+    await hydrateLegacyPreferences(adapter, window.localStorage, getElectronShell());
+  } catch (error) {
+    console.warn('restore legacy preferences failed:', error);
+  } finally {
+    legacyPreferencesReady.value = true;
+  }
+}
+
+async function saveDurableLegacyPreferences() {
+  const adapter = getLegacyProjectTarget()?.legacy;
+  return persistLegacyPreferences(adapter, window.localStorage, getElectronShell());
 }
 
 async function restoreIndexedProject(projectId, token) {
@@ -143,14 +195,24 @@ async function restoreIndexedProject(projectId, token) {
   if (!record?.payload) {
     throw new Error('找不到该项目，请返回项目页重新打开。');
   }
-  const { type, payload } = classifyProjectData(record || {});
+  const filePath = String(record.filePath || '');
+  const shell = getElectronShell();
+  let projectData = classifyProjectData(record || {});
+  if (filePath && shell?.readTextFile) {
+    const result = await shell.readTextFile(filePath, { addToRecent: false });
+    if (token !== projectLoadToken) return false;
+    if (!result?.ok) throw new Error(result?.message || '无法读取项目文件。');
+    projectData = parseProjectText(result.text, filePath);
+  }
+  const { type, payload } = projectData;
   if (type !== target.type) {
     throw new Error(`项目类型不匹配：当前页面需要 ${target.type}，项目内容为 ${type}。`);
   }
   writeLegacyProjectPayload(target, payload, record?.name || '');
   activeProjectId.value = projectId;
   activeProjectName.value = String(record?.name || payload.projectName || '');
-  activeProjectPath.value = '';
+  activeProjectPath.value = shell?.saveProjectFile ? filePath : '';
+  savedFileSnapshot = '';
   projectReady.value = true;
   return true;
 }
@@ -189,13 +251,10 @@ async function syncRouteProject() {
 }
 
 function readLegacyProjectPayload(target) {
-  const raw = window.localStorage.getItem(target.storageKey);
+  const adapter = target.legacy;
+  const raw = window.localStorage.getItem(adapter.storageKey);
   if (!raw) return null;
-  const parsed = JSON.parse(raw);
-  if (target.type === 'pointsbuilder') {
-    return parsed?.state?.root ? parsed.state : parsed;
-  }
-  return parsed;
+  return adapter.fromDraft(JSON.parse(raw));
 }
 
 function flushLegacyProjectState() {
@@ -205,36 +264,38 @@ function flushLegacyProjectState() {
 }
 
 function readLegacyProjectName(target, payload) {
-  if (target.nameStorageKey) {
-    const storedName = String(window.localStorage.getItem(target.nameStorageKey) || '').trim();
+  const adapter = target.legacy;
+  if (adapter.nameStorageKey) {
+    const storedName = String(window.localStorage.getItem(adapter.nameStorageKey) || '').trim();
     if (storedName) return storedName;
   }
-  return String(payload?.projectName || activeProjectName.value || 'Untitled Project').trim();
+  return target.nameOf(payload, activeProjectName.value || 'Untitled Project');
 }
 
 function buildLegacyFilePayload(target, payload) {
   const projectName = readLegacyProjectName(target, payload);
-  if (target.type === 'pointsbuilder') {
-    return {
-      ...payload,
-      tool: target.type,
-      schemaVersion: 1,
-      projectName
-    };
-  }
-  if (target.type === 'shader-builder') {
-    return {
-      ...payload,
-      tool: target.type,
-      schema: 'shader_builder_project_v1',
-      projectName
-    };
-  }
-  return {
-    ...payload,
-    tool: target.type,
-    projectName
-  };
+  return target.legacy.toFile(payload, projectName);
+}
+
+function legacyFileSnapshot() {
+  const target = getLegacyProjectTarget();
+  if (!target) return '';
+  const payload = readLegacyProjectPayload(target);
+  if (!payload) return '';
+  return JSON.stringify(buildLegacyFilePayload(target, payload));
+}
+
+function legacyObservedSnapshot() {
+  const target = getLegacyProjectTarget();
+  const preferencesKey = target?.legacy?.preferencesStorageKey;
+  const preferences = preferencesKey
+    ? String(window.localStorage.getItem(preferencesKey) || '')
+    : '';
+  return `${legacyFileSnapshot()}\n${preferences}`;
+}
+
+function markLegacyProjectSaved() {
+  savedFileSnapshot = legacyFileSnapshot();
 }
 
 function enqueueSave(operation) {
@@ -246,31 +307,91 @@ function enqueueSave(operation) {
 async function saveIndexedProject() {
   const target = getLegacyProjectTarget();
   const projectId = activeProjectId.value;
-  if (!target || !projectId || !projectReady.value) return true;
+  const filePath = activeProjectPath.value;
   flushLegacyProjectState();
+  await saveDurableLegacyPreferences();
+  if (!target || (!projectId && !filePath) || !projectReady.value) return true;
   const payload = readLegacyProjectPayload(target);
   if (!payload) return true;
   const snapshot = JSON.parse(JSON.stringify(payload));
   const projectName = readLegacyProjectName(target, snapshot);
-  await enqueueSave(() => projectRepository.save({
-      id: projectId,
-      tool: target.type,
-      name: projectName,
-      description: '',
-      payload: snapshot
-  }));
+  const filePayload = buildLegacyFilePayload(target, snapshot);
+  const fileSnapshot = JSON.stringify(filePayload);
+  await enqueueSave(async () => {
+    const shell = getElectronShell();
+    if (filePath && !shell?.saveProjectFile) {
+      throw new Error('当前环境无法自动保存这个项目文件。');
+    }
+    if (filePath) {
+      const result = await shell.saveProjectFile({
+        title: '自动保存项目',
+        filePath,
+        addToRecent: false,
+        text: JSON.stringify(filePayload, null, 2)
+      });
+      if (!result?.ok) throw new Error(result?.message || '项目自动保存失败。');
+    }
+    if (projectId) {
+      await projectRepository.save({
+        id: projectId,
+        tool: target.type,
+        name: projectName,
+        description: '',
+        filePath,
+        payload: snapshot
+      });
+    }
+    savedFileSnapshot = fileSnapshot;
+  });
   return true;
+}
+
+async function saveActiveProject() {
+  if (activeProjectId.value) return saveIndexedProject();
+  if (activeProjectPath.value) {
+    const result = await saveLegacyProjectFile(false);
+    if (!result?.ok) throw new Error(result?.message || '项目自动保存失败。');
+    return true;
+  }
+  return true;
+}
+
+function scheduleProjectAutoSave() {
+  window.clearTimeout(autoSaveTimer);
+  if (!activeProjectId.value && !activeProjectPath.value) return;
+  autoSaveTimer = window.setTimeout(() => {
+    autoSaveTimer = 0;
+    saveActiveProject().catch((error) => window.alert(error?.message || String(error)));
+  }, AUTO_SAVE_DELAY_MS);
+}
+
+function observeLegacyProjectChanges() {
+  if (!projectReady.value || !frameReady.value) return;
+  let snapshot = '';
+  try {
+    snapshot = legacyObservedSnapshot();
+  } catch {
+    return;
+  }
+  if (!snapshot || snapshot === observedProjectSnapshot) return;
+  observedProjectSnapshot = snapshot;
+  scheduleProjectAutoSave();
 }
 
 async function saveLegacyProjectFile(forceDialog = false) {
   const target = getLegacyProjectTarget();
   const shell = getElectronShell();
-  if (!target || !shell?.saveProjectFile) return false;
+  if (!target || !shell?.saveProjectFile) {
+    return { ok: false, message: '当前环境无法保存项目文件。' };
+  }
   flushLegacyProjectState();
+  await saveDurableLegacyPreferences();
   const payload = readLegacyProjectPayload(target);
-  if (!payload) return false;
+  if (!payload) return { ok: false, message: '当前项目没有可保存的内容。' };
   const projectName = readLegacyProjectName(target, payload);
-  const text = JSON.stringify(buildLegacyFilePayload(target, payload), null, 2);
+  const filePayload = buildLegacyFilePayload(target, payload);
+  const fileSnapshot = JSON.stringify(filePayload);
+  const text = JSON.stringify(filePayload, null, 2);
   const indexedProject = Boolean(activeProjectId.value);
   const result = await enqueueSave(() => shell.saveProjectFile({
       title: '保存项目',
@@ -280,14 +401,24 @@ async function saveLegacyProjectFile(forceDialog = false) {
       text
   }));
   if (result?.ok) {
-    if (!indexedProject) {
-      activeProjectPath.value = String(result.filePath || activeProjectPath.value);
-      activeProjectName.value = String(result.name || projectName);
+    activeProjectPath.value = String(result.filePath || activeProjectPath.value);
+    activeProjectName.value = String(result.name || projectName);
+    if (indexedProject) {
+      await enqueueSave(() => projectRepository.save({
+        id: activeProjectId.value,
+        tool: target.type,
+        name: projectName,
+        description: '',
+        filePath: activeProjectPath.value,
+        payload
+      }));
     }
-    return true;
+    sendProjectContextToFrame();
+    savedFileSnapshot = fileSnapshot;
+    return result;
   }
   if (!result?.canceled && result?.message) window.alert(result.message);
-  return false;
+  return result || { ok: false, message: '项目保存失败。' };
 }
 
 function routeHref(name) {
@@ -350,6 +481,11 @@ async function navigateFromLegacy(targetName) {
 function handleLegacyMessage(event) {
   if (event.origin && event.origin !== window.location.origin) return;
   const type = String(event?.data?.type || '').trim();
+  if (type === 'coo-request-project-context') {
+    if (event.source !== frameRef.value?.contentWindow) return;
+    sendProjectContextToFrame(event.source, event?.data?.requestId);
+    return;
+  }
   if (type === 'coo-legacy-navigate') {
     void navigateFromLegacy(event?.data?.routeName);
     return;
@@ -369,6 +505,76 @@ function handleLegacyMessage(event) {
     return;
   }
   router.push(props.returnRoute || { name: targetName });
+}
+
+function sendProjectContextToFrame(targetWindow = frameRef.value?.contentWindow, requestId = '') {
+  if (!targetWindow?.postMessage) return false;
+  targetWindow.postMessage({
+    type: 'coo-project-context',
+    requestId: String(requestId || ''),
+    projectFilePath: activeProjectPath.value,
+    projectId: activeProjectId.value,
+    projectType: getLegacyProjectTarget()?.type || '',
+    projectName: activeProjectName.value
+  }, window.location.origin);
+  return true;
+}
+
+function handleFrameLoad() {
+  sendProjectContextToFrame();
+  observedProjectSnapshot = legacyObservedSnapshot();
+  if (activeProjectId.value || savedFileSnapshot) return;
+  flushLegacyProjectState();
+  markLegacyProjectSaved();
+}
+
+async function inspectProjectBeforeClose() {
+  flushLegacyProjectState();
+  await saveDurableLegacyPreferences();
+  if (activeProjectId.value || activeProjectPath.value) {
+    try {
+      await saveIndexedProject();
+      return { handled: true, dirty: false, autoSaved: true };
+    } catch (error) {
+      return {
+        handled: true,
+        dirty: true,
+        autoSaved: false,
+        projectName: activeProjectName.value || '当前项目',
+        message: error?.message || String(error)
+      };
+    }
+  }
+  const snapshot = legacyFileSnapshot();
+  return {
+    handled: true,
+    dirty: Boolean(snapshot) && snapshot !== savedFileSnapshot,
+    autoSaved: false,
+    projectName: activeProjectName.value || '当前项目',
+    filePath: activeProjectPath.value
+  };
+}
+
+async function saveProjectBeforeClose() {
+  if (activeProjectId.value || activeProjectPath.value) {
+    try {
+      await saveActiveProject();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error?.message || String(error) };
+    }
+  }
+  return saveLegacyProjectFile(false);
+}
+
+function handleProjectCloseRequest(event) {
+  const request = event?.detail;
+  if (!request?.respondWith) return;
+  if (request.action === 'inspect') {
+    request.respondWith(inspectProjectBeforeClose());
+  } else if (request.action === 'save') {
+    request.respondWith(saveProjectBeforeClose());
+  }
 }
 
 async function handleShellCommand(event) {
@@ -404,7 +610,9 @@ onMounted(() => {
   window.__cooLegacyNavigate = navigateFromLegacy;
   window.addEventListener('message', handleLegacyMessage);
   window.addEventListener('coo-shell-command', handleShellCommand);
-  void syncRouteProject();
+  window.addEventListener('coo-project-close-request', handleProjectCloseRequest);
+  autoSavePollTimer = window.setInterval(observeLegacyProjectChanges, AUTO_SAVE_POLL_MS);
+  void restoreDurableLegacyPreferences().then(syncRouteProject);
 });
 
 watch(() => [route.query.shellOpen, route.query.shellNew, route.query.projectId], () => {
@@ -412,35 +620,47 @@ watch(() => [route.query.shellOpen, route.query.shellNew, route.query.projectId]
 });
 
 onBeforeUnmount(() => {
+  projectLoadToken += 1;
+  window.clearTimeout(autoSaveTimer);
+  window.clearInterval(autoSavePollTimer);
   if (window.__cooLegacyNavigate === navigateFromLegacy) {
     delete window.__cooLegacyNavigate;
   }
   window.removeEventListener('message', handleLegacyMessage);
   window.removeEventListener('coo-shell-command', handleShellCommand);
+  window.removeEventListener('coo-project-close-request', handleProjectCloseRequest);
 });
 
 onBeforeRouteLeave(async () => {
+  projectLoadToken += 1;
   try {
+    window.clearTimeout(autoSaveTimer);
     flushLegacyProjectState();
+    await saveDurableLegacyPreferences();
     if (typeof props.beforeFrameLeave === 'function') {
       await props.beforeFrameLeave();
     }
-    await saveIndexedProject();
+    await saveActiveProject();
   } catch (error) {
     window.alert(error?.message || String(error));
+    void syncRouteProject();
     return false;
   }
 });
 
 onBeforeRouteUpdate(async () => {
+  projectLoadToken += 1;
   try {
+    window.clearTimeout(autoSaveTimer);
     flushLegacyProjectState();
+    await saveDurableLegacyPreferences();
     if (typeof props.beforeFrameLeave === 'function') {
       await props.beforeFrameLeave();
     }
-    await saveIndexedProject();
+    await saveActiveProject();
   } catch (error) {
     window.alert(error?.message || String(error));
+    void syncRouteProject();
     return false;
   }
 });

@@ -3,6 +3,7 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         int,
         esc,
         normalizeAlphaHelperConfig,
+        getCompositionKotlinTarget,
         sanitizeKotlinClassName,
         transpileKotlinThisQualifierToJs,
         findFirstUnknownJsIdentifier,
@@ -14,6 +15,39 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
     if (!CompositionBuilderApp || !CompositionBuilderApp.prototype) {
         throw new Error("installExpressionEditorMethods requires CompositionBuilderApp");
     }
+
+    const RANDOM_COMPLETION_ITEMS = Object.freeze([
+        { label: "Random", insertText: "Random", detail: "Kotlin 随机数", kind: "class", priority: 205 },
+        { label: "Random.nextInt()", insertText: "Random.nextInt()", detail: "随机 Int", kind: "method", priority: 204 },
+        { label: "Random.nextInt(until)", insertText: "Random.nextInt($0)", detail: "随机 Int [0, until)", kind: "method", priority: 203 },
+        { label: "Random.nextInt(from, until)", insertText: "Random.nextInt($0, )", detail: "随机 Int [from, until)", kind: "method", priority: 202 },
+        { label: "Random.nextLong()", insertText: "Random.nextLong()", detail: "随机 Long", kind: "method", priority: 201 },
+        { label: "Random.nextLong(until)", insertText: "Random.nextLong($0)", detail: "随机 Long [0, until)", kind: "method", priority: 200 },
+        { label: "Random.nextLong(from, until)", insertText: "Random.nextLong($0, )", detail: "随机 Long [from, until)", kind: "method", priority: 199 },
+        { label: "Random.nextDouble()", insertText: "Random.nextDouble()", detail: "随机 Double [0, 1)", kind: "method", priority: 198 },
+        { label: "Random.nextDouble(until)", insertText: "Random.nextDouble($0)", detail: "随机 Double [0, until)", kind: "method", priority: 197 },
+        { label: "Random.nextDouble(from, until)", insertText: "Random.nextDouble($0, )", detail: "随机 Double [from, until)", kind: "method", priority: 196 },
+        { label: "Random.nextFloat()", insertText: "Random.nextFloat()", detail: "随机 Float [0, 1)", kind: "method", priority: 195 },
+        { label: "Random.nextBoolean()", insertText: "Random.nextBoolean()", detail: "随机 Boolean", kind: "method", priority: 194 }
+    ]);
+
+    const codeEditorDtsType = (rawType) => {
+        const type = String(rawType || "").trim();
+        if (["Int", "Long", "Float", "Double"].includes(type)) return "number";
+        if (type === "Boolean") return "boolean";
+        if (type === "String") return "string";
+        if (["Vec3", "Vec3d", "RelativeLocation", "Vector3f"].includes(type)) {
+            return "{ x: number; y: number; z: number; [key: string]: any }";
+        }
+        return "any";
+    };
+
+    const particleLifetimeField = (state) => {
+        const target = typeof getCompositionKotlinTarget === "function"
+            ? getCompositionKotlinTarget(state?.mapping)
+            : null;
+        return target?.id === "yarn" ? "maxAge" : "lifetime";
+    };
 
     class ExpressionEditorMixin {
     initExpressionSuggest() {
@@ -216,8 +250,14 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
 
     getExprCompletions(textarea = null) {
         const projectClass = sanitizeKotlinClassName(this.state.projectName || "NewComposition");
+        const mappingTarget = typeof getCompositionKotlinTarget === "function"
+            ? getCompositionKotlinTarget(this.state.mapping)
+            : { vec3Type: "Vec3" };
+        const lifetimeField = particleLifetimeField(this.state);
         const base = [
             "age",
+            "currentAge",
+            lifetimeField,
             "tick",
             "tickCount",
             "axis",
@@ -243,11 +283,12 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
             "particle.particleColor",
             "particle.particleSize",
             "axis = RelativeLocation($0)",
-            "Vec3($0)",
+            `${mappingTarget.vec3Type}($0)`,
             "RelativeLocation.yAxis()",
             "RelativeLocation($0)",
             "Vector3f($0)"
         ];
+        for (const item of RANDOM_COMPLETION_ITEMS) base.push(item.insertText);
         for (const snippet of this.getProjectScaleHelperCompletionSnippets(textarea)) {
             base.push(snippet);
         }
@@ -263,7 +304,9 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         }
         for (const c of this.state.globalConsts) {
             const name = String(c.name || "").trim();
-            if (name) base.push(name);
+            if (!name) continue;
+            base.push(name);
+            base.push(`this@${projectClass}.${name}`);
         }
         return Array.from(new Set(base));
     }
@@ -547,12 +590,18 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
   [key: string]: any;
 }`;
         declareSymbol("Math", "Math");
+        declareSymbol("Random", "{ nextInt(): number; nextInt(until: number): number; nextInt(from: number, until: number): number; nextLong(): number; nextLong(until: number): number; nextLong(from: number, until: number): number; nextDouble(): number; nextDouble(until: number): number; nextDouble(from: number, until: number): number; nextFloat(): number; nextBoolean(): boolean; }");
         declareSymbol("PI", "number");
         // Runtime context values are writable in expression scope; use let to avoid false const diagnostics.
         declareSymbol("age", "number", true);
         declareSymbol("tick", "number", true);
         declareSymbol("tickCount", "number", true);
         declareSymbol("index", "number", true);
+        declareSymbol("currentAge", "number", true);
+        declareSymbol("lifetime", "number", true);
+        declareSymbol("lifeTime", "number", true);
+        declareSymbol("maxAge", "number", true);
+        declareSymbol("textureSheet", "number", true);
         declareSymbol("rel", "any", true);
         declareSymbol("order", "any", true);
         declareSymbol("axis", "any", true);
@@ -563,12 +612,12 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         for (const g of (this.state.globalVars || [])) {
             const name = String(g?.name || "").trim();
             if (!name) continue;
-            declareSymbol(name, "any", g?.mutable !== false);
+            declareSymbol(name, codeEditorDtsType(g?.type), g?.mutable !== false, { preferType: true });
         }
         for (const c of (this.state.globalConsts || [])) {
             const name = String(c?.name || "").trim();
             if (!name) continue;
-            declareSymbol(name, "any", false);
+            declareSymbol(name, codeEditorDtsType(c?.type), false, { preferType: true });
         }
         for (const v of this.resolveCodeEditorControllerVars(cardId, treePath)) {
             const name = String(v?.name || "").trim();
@@ -592,7 +641,10 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         }
         lines.push("declare function RelativeLocation(...args: any[]): any;");
         lines.push("declare namespace RelativeLocation { function yAxis(...args: any[]): any; }");
-        lines.push("declare function Vec3(...args: any[]): any;");
+        const vectorType = typeof getCompositionKotlinTarget === "function"
+            ? getCompositionKotlinTarget(this.state.mapping).vec3Type
+            : "Vec3";
+        lines.push(`declare function ${vectorType}(...args: any[]): any;`);
         lines.push("declare function Vector3f(...args: any[]): any;");
 
         for (const name of Array.from(allowed).sort((a, b) => a.localeCompare(b))) {
@@ -667,6 +719,10 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
     getCodeEditorCompletions(textarea) {
         const isControllerScript = this.isControllerScriptEditor(textarea);
         const projectClass = sanitizeKotlinClassName(this.state.projectName || "NewComposition");
+        const mappingTarget = typeof getCompositionKotlinTarget === "function"
+            ? getCompositionKotlinTarget(this.state.mapping)
+            : { id: "mojmap", vec3Type: "Vec3" };
+        const lifetimeField = particleLifetimeField(this.state);
         const scopeInfo = this.getCodeEditorScopeInfo(textarea);
         const allowGrowthApi = this.isGrowthApiAllowedForCodeEditor(textarea);
         const base = isControllerScript
@@ -693,7 +749,7 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
                 { label: `this@${projectClass}.status.isEnable()`, insertText: `this@${projectClass}.status.isEnable()`, detail: "Composition 生命周期", priority: 257 },
                 { label: `this@${projectClass}.status.enable()`, insertText: `this@${projectClass}.status.enable()`, detail: "Composition 生命周期", priority: 257 },
                 { label: "RelativeLocation(x, y, z)", insertText: "RelativeLocation($0)", detail: "向量构造", priority: 220 },
-                { label: "Vec3(x, y, z)", insertText: "Vec3($0)", detail: "向量构造", priority: 220 },
+                { label: `${mappingTarget.vec3Type}(x, y, z)`, insertText: `${mappingTarget.vec3Type}($0)`, detail: "向量构造", priority: 220 },
                 { label: "Vector3f(x, y, z)", insertText: "Vector3f($0)", detail: "向量构造", priority: 220 },
                 { label: "PI", detail: "数学常量", priority: 210 },
                 { label: "tickCount", detail: "当前 tick（同 tick）", priority: 250 },
@@ -712,7 +768,7 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
                 { label: "addMultiple(n)", insertText: "addMultiple($0)", detail: "生长 API", priority: 260 },
                 { label: "addPreTickAction(() => {})", insertText: "addPreTickAction(() => {\\n    $0\\n})", detail: "控制器 API", priority: 220 },
                 { label: "RelativeLocation(x, y, z)", insertText: "RelativeLocation($0)", detail: "向量构造", priority: 225 },
-                { label: "Vec3(x, y, z)", insertText: "Vec3($0)", detail: "向量构造", priority: 225 },
+                { label: `${mappingTarget.vec3Type}(x, y, z)`, insertText: `${mappingTarget.vec3Type}($0)`, detail: "向量构造", priority: 225 },
                 { label: "Vector3f(x, y, z)", insertText: "Vector3f($0)", detail: "向量构造", priority: 225 },
                 { label: "RelativeLocation.yAxis()", insertText: "RelativeLocation.yAxis()", detail: "轴向量", priority: 225 },
                 { label: "setReversedScaleOnCompositionStatus(comp)", insertText: "setReversedScaleOnCompositionStatus($0)", detail: "Scale API", priority: 215 },
@@ -742,6 +798,15 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
                 { label: "Math.min(a, b)", insertText: "Math.min($0, )", cursorOffset: 11, detail: "数学函数", priority: 180 },
                 { label: "Math.max(a, b)", insertText: "Math.max($0, )", cursorOffset: 11, detail: "数学函数", priority: 180 }
             ];
+        base.push(...RANDOM_COMPLETION_ITEMS);
+        if (isControllerScript) {
+            base.push(
+                { label: "currentAge", insertText: "currentAge", detail: "当前粒子年龄 · Int", kind: "field", priority: 254 },
+                { label: lifetimeField, insertText: lifetimeField, detail: "粒子最大寿命 · Int", kind: "field", priority: 254 },
+                { label: `particle.currentAge`, insertText: "particle.currentAge", detail: "当前粒子年龄 · Int", kind: "field", priority: 249 },
+                { label: `particle.${lifetimeField}`, insertText: `particle.${lifetimeField}`, detail: "粒子最大寿命 · Int", kind: "field", priority: 249 }
+            );
+        }
         const isProjectDisplayExpr = !isControllerScript
             && String(textarea?.dataset?.displayField || "") === "expression"
             && !String(textarea?.dataset?.cardId || "").trim();
@@ -859,23 +924,31 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         for (const g of this.state.globalVars) {
             const name = String(g.name || "").trim();
             if (!name) continue;
-            vars.push({ label: name, detail: "全局变量", priority: 210 });
+            const type = String(g.type || "").trim() || "Unknown";
+            vars.push({ label: name, detail: `全局变量 · ${type}`, kind: "variable", priority: 210 });
             vars.push({
                 label: `this@${projectClass}.${name}`,
                 insertText: `this@${projectClass}.${name}`,
-                detail: "全局变量（限定访问）",
+                detail: `全局变量（限定访问）· ${type}`,
+                kind: "variable",
                 priority: 208
             });
-            if (String(g.type || "").trim() === "Vec3") {
-                vars.push({ label: `${name}.asRelative()`, detail: "Vec3 -> Relative", priority: 205 });
+            if (type === "Vec3" || type === "Vector3f") {
+                vars.push({ label: `${name}.asRelative()`, detail: `${type} -> Relative`, kind: "method", priority: 205 });
             }
         }
-        if (!isControllerScript) {
-            for (const c of this.state.globalConsts) {
-                const name = String(c.name || "").trim();
-                if (!name) continue;
-                vars.push({ label: name, detail: "全局常量", priority: 205 });
-            }
+        for (const c of this.state.globalConsts) {
+            const name = String(c.name || "").trim();
+            if (!name) continue;
+            const type = String(c.type || "").trim() || "Unknown";
+            vars.push({ label: name, detail: `全局常量 · ${type}`, kind: "constant", priority: 205 });
+            vars.push({
+                label: `this@${projectClass}.${name}`,
+                insertText: `this@${projectClass}.${name}`,
+                detail: `全局常量（限定访问）· ${type}`,
+                kind: "constant",
+                priority: 204
+            });
         }
 
         const cardVars = [];

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { createExpressionRuntime } from '../public/legacy/assets/composition_builder/js/expression_runtime.js';
 
 const sourceUrl = new URL(
   '../public/legacy/assets/composition_builder/js/preview_runtime_mixin.js',
@@ -28,12 +29,34 @@ const num = (value) => {
 };
 const int = (value) => Math.trunc(num(value));
 const clamp = (value, min, max) => Math.min(Math.max(num(value), num(min)), num(max));
+const U = {
+  v: (x = 0, y = 0, z = 0) => ({ x: num(x), y: num(y), z: num(z) }),
+  len: (value) => Math.hypot(num(value?.x), num(value?.y), num(value?.z)),
+  norm(value) {
+    const length = this.len(value) || 1;
+    return this.v(num(value?.x) / length, num(value?.y) / length, num(value?.z) / length);
+  }
+};
 
 installPreviewRuntimeMethods(PreviewHarness, {
-  U: {},
+  U,
   num,
   int,
-  clamp
+  clamp,
+  normalizeAnimate: (value) => value,
+  normalizeControllerAction: (value) => value,
+  normalizeDisplayAction: (value) => value,
+  normalizeAlphaHelperConfig: (value) => value || { type: 'none' },
+  normalizeScaleHelperConfig: (value) => value || { type: 'none' },
+  ensureStatusHelperMethods: (value) => value,
+  stripJsForLint: (value) => String(value || ''),
+  transpileKotlinThisQualifierToJs: (value) => String(value || ''),
+  rotatePointsToPointUpright: (value) => value,
+  srgbRgbToLinearArray: (value) => value,
+  CONTROLLER_SCOPE_RESERVED: new Set(),
+  normalizeAngleUnit: (value) => value,
+  normalizeAngleOffsetEaseName: (value) => value,
+  normalizeAngleOffsetEaseSpecialParams: (value) => value
 });
 
 function createHarness(pointCount) {
@@ -137,4 +160,67 @@ test('cached frames expose current geometry and visibility to preview interactio
   assert.equal(app.getPreviewInteractionVisibleMask(), visibleMask);
   assert.match(mainSource, /getPreviewInteractionPositionArray/);
   assert.match(mainSource, /getPreviewInteractionVisibleMask/);
+});
+
+test('constant Vector3f particle colors reach the Composition preview unchanged', () => {
+  const app = new PreviewHarness();
+  const color = [0.729412, 0.529412, 0.529412];
+  app.state = {
+    globalVars: [],
+    globalConsts: [],
+    cards: [{
+      id: 'particles',
+      dataType: 'single',
+      particleInit: [{
+        target: 'color',
+        expr: 'Vector3f(0.729412f, 0.529412f, 0.529412f)'
+      }],
+      controllerVars: [],
+      controllerActions: []
+    }]
+  };
+  app.previewNumericFnCache = new Map();
+  app.previewControllerFnCache = new Map();
+  app.previewVisualRuntimePlanCache = new Map();
+  app.previewCardVisualAgeDependentCache = new Map();
+  app.getCardById = (id) => app.state.cards.find((card) => card.id === id);
+  app.exprRuntime = createExpressionRuntime({
+    U,
+    getState: () => app.state,
+    sanitizeIdentifier: (value) => value
+  });
+
+  const visual = app.resolveCardPreviewVisual('particles');
+
+  assert.deepEqual(visual.color, color);
+});
+
+test('Vector3f preview colors accept Kotlin exponent suffixes', () => {
+  const app = new PreviewHarness();
+  app.state = {
+    globalVars: [],
+    globalConsts: [],
+    cards: [{
+      id: 'particles',
+      dataType: 'single',
+      particleInit: [{
+        target: 'color',
+        expr: 'Vector3f(1e0f, 5.29412e-1f, 5.29412e-1f)'
+      }],
+      controllerVars: [],
+      controllerActions: []
+    }]
+  };
+  app.previewNumericFnCache = new Map();
+  app.previewControllerFnCache = new Map();
+  app.previewVisualRuntimePlanCache = new Map();
+  app.previewCardVisualAgeDependentCache = new Map();
+  app.getCardById = (id) => app.state.cards.find((card) => card.id === id);
+  app.exprRuntime = createExpressionRuntime({
+    U,
+    getState: () => app.state,
+    sanitizeIdentifier: (value) => value
+  });
+
+  assert.deepEqual(app.resolveCardPreviewVisual('particles').color, [1, 0.529412, 0.529412]);
 });

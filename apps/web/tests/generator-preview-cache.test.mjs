@@ -58,6 +58,50 @@ test('generator render cache preserves values and invalidates after curve edits'
   assert.equal(edited.colors[2], 0);
 });
 
+test('generator preview applies emitter gravity before movement', () => {
+  const { project, card } = createFixture();
+  card.emitter.type = 'point';
+  card.emitter.offset = { x: 0, y: 0, z: 0 };
+  card.particle.velocity = { x: 0, y: 1, z: 0 };
+  card.particle.velocityRandom = { x: 0, y: 0, z: 0 };
+  card.particle.speedMin = 1;
+  card.particle.speedMax = 1;
+  card.physics.gravity = 0.25;
+
+  const runtime = createGeneratorPreviewRuntime();
+  runtime.step(project, 1);
+  const snapshot = runtime.snapshotRenderData(project);
+
+  assert.equal(snapshot.count, 1);
+  assert.ok(Math.abs(snapshot.positions[1] - 0.75) < 1e-6);
+});
+
+test('generator preview uses the first gravity setting for duplicate data signs', () => {
+  const { project, card } = createFixture();
+  card.emitter.type = 'point';
+  card.emitter.offset = { x: 0, y: 0, z: 0 };
+  card.particle.velocity = { x: 0, y: 1, z: 0 };
+  card.particle.velocityRandom = { x: 0, y: 0, z: 0 };
+  card.particle.speedMin = 1;
+  card.particle.speedMax = 1;
+  card.render.sign = 3;
+  card.physics.gravity = 0.25;
+  project.emitters.push({
+    ...card,
+    id: 'duplicate-sign-preview',
+    emitter: { ...card.emitter, offset: { x: 0, y: 10, z: 0 } },
+    physics: { ...card.physics, gravity: 0.5 }
+  });
+
+  const runtime = createGeneratorPreviewRuntime();
+  runtime.step(project, 1);
+  const snapshot = runtime.snapshotRenderData(project);
+
+  assert.equal(snapshot.count, 2);
+  assert.ok(Math.abs(snapshot.positions[1] - 0.75) < 1e-6);
+  assert.ok(Math.abs(snapshot.positions[4] - 10.75) < 1e-6);
+});
+
 test('generator render cache keeps repeated 30K snapshots bounded', () => {
   const { project, card } = createFixture(30000);
   card.particle.lifeMin = 40;
@@ -226,4 +270,41 @@ test('generator restarts the burst cycle after switching modes', () => {
   runtime.step(project, 1);
 
   assert.equal(runtime.getParticleCount(), 1);
+});
+
+test('generator preview resolves exact vector bindings and preserves fallback errors', () => {
+  const { project, card } = createFixture();
+  card.emitter.type = 'point';
+  card.particle.velocity = { x: 1, y: 0, z: 0 };
+  card.particle.velocityRandom = { x: 0, y: 0, z: 0 };
+  card.particle.speedMin = 1;
+  card.particle.speedMax = 1;
+  project.parameters = {
+    variables: [
+      { name: 'velocityValue', type: 'Vec3', value: [0, 3, 4] },
+      { name: 'velocityValue', type: 'RelativeLocation', value: [1, 2, 3] }
+    ],
+    constants: [{ name: 'velocityValue', type: 'Double', value: 9 }]
+  };
+  card.bindings['particle.velocity'] = 'velocityValue';
+
+  const runtime = createGeneratorPreviewRuntime();
+  runtime.step(project, 1);
+  let preview = runtime.snapshotRenderData(project);
+  assert.deepEqual(Array.from(preview.positions.slice(0, 3)), [0, 0.6000000238418579, 0.800000011920929]);
+  assert.deepEqual(preview.errors, []);
+
+  project.parameters.variables[0].type = 'RelativeLocation';
+  runtime.reset();
+  runtime.step(project, 1);
+  preview = runtime.snapshotRenderData(project);
+  assert.deepEqual(Array.from(preview.positions.slice(0, 3)), [1, 0, 0]);
+  assert.match(preview.errors[0]?.message || '', /velocityValue 类型是 RelativeLocation，不适用于这里，已使用默认值/);
+
+  card.bindings['particle.velocity'] = 'missingVelocity';
+  runtime.reset();
+  runtime.step(project, 1);
+  preview = runtime.snapshotRenderData(project);
+  assert.deepEqual(Array.from(preview.positions.slice(0, 3)), [1, 0, 0]);
+  assert.match(preview.errors[0]?.message || '', /未找到变量 missingVelocity，已使用默认值/);
 });

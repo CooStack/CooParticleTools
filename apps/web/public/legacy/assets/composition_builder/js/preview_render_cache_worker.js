@@ -1,5 +1,5 @@
 import "../../src/js/compat/legacy-utils.global.js";
-import { createExpressionRuntime } from "./expression_runtime.js?v=20260221_2";
+import { createExpressionRuntime } from "./expression_runtime.js?v=20260725_3";
 import { normalizeAlphaHelperConfig } from "./alpha_helper_utils.js";
 import { normalizeScaleHelperConfig } from "./scale_helper_utils.js";
 import {
@@ -7,7 +7,7 @@ import {
     normalizeAngleOffsetEaseName,
     normalizeAngleOffsetEaseSpecialParams
 } from "./angle_offset_utils.js";
-import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260710_6";
+import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260725_6";
 
 const U = globalThis.Utils;
 

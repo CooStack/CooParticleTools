@@ -5,11 +5,16 @@ const http = require('node:http');
 const net = require('node:net');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
+const { createProjectCloseGuard } = require('./project-close-guard');
+const { createProjectPresetFileStore } = require('./project-preset-files');
+const { createPreferencesStore } = require('./preferences-store');
+const { writeTextFileAtomic } = require('./atomic-text-file');
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const defaultWebRoot = path.join(repoRoot, 'apps', 'web');
 const appName = 'CooParticlesAPI Tools';
 const maxRecentProjects = 12;
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 const projectFilters = [
   { name: 'CooParticles 项目 JSON', extensions: ['json'] },
@@ -25,6 +30,15 @@ let mainWindow = null;
 let backendProcess = null;
 let backendInfo = null;
 let backendOutput = '';
+let projectCloseRequestId = 0;
+const pendingProjectCloseRequests = new Map();
+const projectPresetFileStore = createProjectPresetFileStore({
+  normalizeFilePath,
+  getDataDir: () => backendInfo?.dataDir || app.getPath('userData'),
+});
+const preferencesStore = createPreferencesStore({
+  filePath: () => userDataFile('preferences.json'),
+});
 
 function isTruthy(value) {
   return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
@@ -166,12 +180,26 @@ async function startBackend() {
   });
 
   await waitForBackend(url, backendProcess);
+  let localStatus = null;
+  let localStatusError = null;
+  for (let attempt = 0; attempt < 3 && !localStatus; attempt += 1) {
+    try {
+      localStatus = await requestJson(`${url}api/local/status`);
+    } catch (error) {
+      localStatusError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  if (!localStatus?.dataDir) {
+    throw new Error(`无法读取本地项目数据目录：${localStatusError?.message || '响应缺少 dataDir'}`);
+  }
   backendInfo = {
     url,
     port,
     command,
     args,
     repoRoot,
+    dataDir: String(localStatus?.dataDir || ''),
     webRoot: process.env.COO_PARTICLES_WEB_ROOT || defaultWebRoot,
   };
   return backendInfo;
@@ -270,6 +298,97 @@ function sendShellCommand(command) {
   target.webContents.send('shell:command', command);
 }
 
+function requestProjectCloseAction(targetWindow, action) {
+  if (!targetWindow || targetWindow.isDestroyed()) {
+    return Promise.resolve({ handled: false, dirty: false });
+  }
+  const requestId = String(++projectCloseRequestId);
+  const timeoutMs = action === 'save' ? 300000 : 5000;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingProjectCloseRequests.delete(requestId);
+      reject(new Error('等待项目页面响应超时。'));
+    }, timeoutMs);
+    pendingProjectCloseRequests.set(requestId, {
+      webContents: targetWindow.webContents,
+      resolve: (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+    });
+    try {
+      targetWindow.webContents.send('shell:project-close-request', { requestId, action });
+    } catch (error) {
+      clearTimeout(timer);
+      pendingProjectCloseRequests.delete(requestId);
+      reject(error);
+    }
+  });
+}
+
+function resolveProjectCloseRequest(event, payload = {}) {
+  const requestId = String(payload.requestId || '');
+  const pending = pendingProjectCloseRequests.get(requestId);
+  if (!pending || pending.webContents !== event.sender) return;
+  pendingProjectCloseRequests.delete(requestId);
+  pending.resolve(payload.result && typeof payload.result === 'object' ? payload.result : {});
+}
+
+function clearProjectCloseRequests(webContents) {
+  for (const [requestId, pending] of pendingProjectCloseRequests) {
+    if (pending.webContents !== webContents) continue;
+    pendingProjectCloseRequests.delete(requestId);
+    pending.resolve({ ok: false, canceled: true });
+  }
+}
+
+function projectCloseChoice(targetWindow, state = {}) {
+  const projectName = String(state.projectName || '').trim() || '当前项目';
+  const detail = state.filePath
+    ? `项目文件：${state.filePath}`
+    : '项目还没有保存到文件。';
+  return dialog.showMessageBox(targetWindow, {
+    type: 'warning',
+    title: appName,
+    message: `是否保存对“${projectName}”的更改？`,
+    detail,
+    buttons: ['保存', '不保存', '取消'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  }).then(({ response }) => ['save', 'discard', 'cancel'][response] || 'cancel');
+}
+
+function installProjectCloseGuard(targetWindow) {
+  let allowClose = false;
+  const guard = createProjectCloseGuard({
+    inspect: () => requestProjectCloseAction(targetWindow, 'inspect'),
+    prompt: (state) => projectCloseChoice(targetWindow, state),
+    save: () => requestProjectCloseAction(targetWindow, 'save'),
+    close: () => {
+      if (targetWindow.isDestroyed()) return;
+      allowClose = true;
+      targetWindow.close();
+    },
+    reportError: (message) => {
+      if (targetWindow.isDestroyed()) return;
+      void dialog.showMessageBox(targetWindow, {
+        type: 'error',
+        title: '无法退出',
+        message: '项目尚未保存，窗口会保持打开。',
+        detail: String(message || '未知错误'),
+        buttons: ['确定'],
+      });
+    },
+  });
+
+  targetWindow.on('close', (event) => {
+    if (allowClose) return;
+    event.preventDefault();
+    void guard.requestClose();
+  });
+}
+
 function errorPayload(error) {
   return {
     ok: false,
@@ -337,8 +456,7 @@ async function saveTextFile(event, payload = {}, defaultFilters = projectFilters
     filePath = result.filePath;
   }
 
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, String(payload.text || ''), 'utf8');
+  await writeTextFileAtomic(filePath, payload.text);
   if (payload.addToRecent !== false) {
     rememberRecentProject(filePath);
   }
@@ -348,6 +466,33 @@ async function saveTextFile(event, payload = {}, defaultFilters = projectFilters
     name: path.basename(filePath),
   };
 }
+
+async function chooseProjectFile(event, options = {}) {
+  const result = await dialog.showSaveDialog(getSenderWindow(event), {
+    title: String(options.title || '选择项目位置'),
+    defaultPath: options.defaultPath ? String(options.defaultPath) : undefined,
+    filters: Array.isArray(options.filters) ? options.filters : projectFilters,
+  });
+  if (result.canceled || !result.filePath) {
+    return { ok: false, canceled: true };
+  }
+  return {
+    ok: true,
+    filePath: result.filePath,
+    name: path.basename(result.filePath),
+  };
+}
+
+const listProjectPresetFolders = (payload) => projectPresetFileStore.listDirectories(payload);
+const createProjectPresetFolder = (payload) => projectPresetFileStore.createDirectory(payload);
+const deleteProjectPresetFolder = (payload) => projectPresetFileStore.removeDirectory(payload);
+const listProjectPresets = (payload) => projectPresetFileStore.list(payload);
+const readProjectPreset = (payload) => projectPresetFileStore.read(payload);
+const writeProjectPreset = (payload) => projectPresetFileStore.write(payload);
+const moveProjectPreset = (payload) => projectPresetFileStore.move(payload);
+const deleteProjectPreset = (payload) => projectPresetFileStore.remove(payload);
+const readPreferences = async (key) => ({ ok: true, value: await preferencesStore.read(key) });
+const writePreferences = async (key, value) => ({ ok: true, value: await preferencesStore.write(key, value) });
 
 function isSafeExternalUrl(rawUrl) {
   try {
@@ -458,7 +603,11 @@ async function createWindow() {
     mainWindow.show();
   });
 
+  installProjectCloseGuard(mainWindow);
+  const windowWebContents = mainWindow.webContents;
+
   mainWindow.on('closed', () => {
+    clearProjectCloseRequests(windowWebContents);
     mainWindow = null;
   });
 
@@ -488,6 +637,7 @@ async function createWindow() {
 }
 
 ipcMain.handle('shell:getBackendInfo', () => backendInfo);
+ipcMain.on('shell:project-close-response', resolveProjectCloseRequest);
 ipcMain.handle('shell:openExternal', async (_event, rawUrl) => {
   if (!isSafeExternalUrl(rawUrl)) {
     return { ok: false };
@@ -496,9 +646,23 @@ ipcMain.handle('shell:openExternal', async (_event, rawUrl) => {
   return { ok: true };
 });
 ipcMain.handle('shell:openProjectFile', (event, options) => withIpcErrors(() => openProjectFile(event, options)));
+ipcMain.handle('shell:chooseProjectFile', (event, options) => withIpcErrors(() => chooseProjectFile(event, options)));
 ipcMain.handle('shell:readTextFile', (_event, filePath, options) => withIpcErrors(() => readTextFile(filePath, options)));
-ipcMain.handle('shell:saveProjectFile', (event, payload) => withIpcErrors(() => saveTextFile(event, { ...payload, addToRecent: true }, projectFilters)));
+ipcMain.handle('shell:saveProjectFile', (event, payload = {}) => withIpcErrors(() => saveTextFile(event, {
+  ...payload,
+  addToRecent: payload.addToRecent !== false,
+}, projectFilters)));
 ipcMain.handle('shell:saveTextFile', (event, payload) => withIpcErrors(() => saveTextFile(event, payload, kotlinFilters)));
+ipcMain.handle('shell:listProjectPresetFolders', (_event, payload) => withIpcErrors(() => listProjectPresetFolders(payload)));
+ipcMain.handle('shell:createProjectPresetFolder', (_event, payload) => withIpcErrors(() => createProjectPresetFolder(payload)));
+ipcMain.handle('shell:deleteProjectPresetFolder', (_event, payload) => withIpcErrors(() => deleteProjectPresetFolder(payload)));
+ipcMain.handle('shell:listProjectPresets', (_event, payload) => withIpcErrors(() => listProjectPresets(payload)));
+ipcMain.handle('shell:readProjectPreset', (_event, payload) => withIpcErrors(() => readProjectPreset(payload)));
+ipcMain.handle('shell:writeProjectPreset', (_event, payload) => withIpcErrors(() => writeProjectPreset(payload)));
+ipcMain.handle('shell:moveProjectPreset', (_event, payload) => withIpcErrors(() => moveProjectPreset(payload)));
+ipcMain.handle('shell:deleteProjectPreset', (_event, payload) => withIpcErrors(() => deleteProjectPreset(payload)));
+ipcMain.handle('shell:readPreferences', (_event, key) => withIpcErrors(() => readPreferences(key)));
+ipcMain.handle('shell:writePreferences', (_event, key, value) => withIpcErrors(() => writePreferences(key, value)));
 ipcMain.handle('shell:getRecentProjects', () => ({ ok: true, items: readRecentProjects() }));
 ipcMain.handle('shell:revealInFolder', (_event, rawPath) => {
   const filePath = normalizeFilePath(rawPath);
@@ -509,22 +673,33 @@ ipcMain.handle('shell:revealInFolder', (_event, rawPath) => {
   return { ok: true };
 });
 
-app.whenReady().then(createWindow).catch((error) => {
-  dialog.showErrorBox(appName, error?.stack || error?.message || String(error));
+if (!hasSingleInstanceLock) {
   app.quit();
-});
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow().catch((error) => {
-      dialog.showErrorBox(appName, error?.stack || error?.message || String(error));
-    });
-  }
-});
-
-app.on('before-quit', killBackend);
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  app.whenReady().then(createWindow).catch((error) => {
+    dialog.showErrorBox(appName, error?.stack || error?.message || String(error));
     app.quit();
-  }
-});
+  });
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow().catch((error) => {
+        dialog.showErrorBox(appName, error?.stack || error?.message || String(error));
+      });
+    }
+  });
+
+  app.on('will-quit', killBackend);
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit();
+    }
+  });
+}

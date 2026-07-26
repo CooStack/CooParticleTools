@@ -58,9 +58,12 @@ function createParameterScope(parameters = {}) {
   ];
   if (!values.length) return null;
   const scope = { PI: Math.PI, Math };
+  const seenNames = new Set();
   for (const item of values) {
     const name = String(item?.name || '').trim();
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
+    if (seenNames.has(name)) continue;
+    seenNames.add(name);
     const type = String(item?.type || '');
     if (['Int', 'Long', 'Float', 'Double'].includes(type)) {
       const numeric = Number(item.value);

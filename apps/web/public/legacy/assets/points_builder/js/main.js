@@ -7,6 +7,15 @@ import { createKindDefs } from "./kinds.js?v=20260429_8";
 import { createBuilderTools } from "./builder.js?v=20260429_9";
 import { initLayoutSystem } from "./layout.js?v=20260429_1";
 import { createNodeHelpers } from "./nodes.js?v=20260316_1";
+import {
+    collectPointsBuilderIds,
+    createPointsBuilderNode,
+    createPointsBuilderState,
+    ensureUniquePointsBuilderIds,
+    normalizePointsBuilderNodeTree,
+    normalizePointsBuilderState,
+    reassignPointsBuilderIds
+} from "./model.js?v=20260711_1";
 import { toggleFullscreen } from "./viewer.js";
 import { createPickerModule } from "./main-picker.js?v=20260502_4";
 import { initGlobalShortcuts } from "./main-shortcuts.js?v=20260505_1";
@@ -2435,44 +2444,21 @@ function initPointsBuilderMain() {
         getDefaultMirrorPlane: () => mirrorPlane
     });
     const {
-        makeNode,
         cloneNodeDeep,
         cloneNodeListDeep,
         replaceListContents,
         mirrorCopyNode
     } = nodeHelpers;
+    const makeNode = (kind, init = {}) => createPointsBuilderNode(kind, init, {
+        idFactory: uid,
+        defaultParams: KIND[kind]?.defaultParams || {},
+        mergeDefaultParams: false
+    });
 
     // -------------------------
     // state
     // -------------------------
-    let state = {
-        root: {
-            id: "root",
-            kind: "ROOT",
-            children: []}
-    };
-
-    function normalizeLegacyVecParams(p, prefix, objKey = null) {
-        if (!p || typeof p !== "object") return;
-        const px = `${prefix}x`;
-        const py = `${prefix}y`;
-        const pz = `${prefix}z`;
-        if (p[px] !== undefined || p[py] !== undefined || p[pz] !== undefined) return;
-        const key = objKey || prefix;
-        const raw = p[key];
-        if (!raw) return;
-        if (Array.isArray(raw)) {
-            if (raw[0] !== undefined) p[px] = raw[0];
-            if (raw[1] !== undefined) p[py] = raw[1];
-            if (raw[2] !== undefined) p[pz] = raw[2];
-            return;
-        }
-        if (typeof raw === "object") {
-            if (raw.x !== undefined) p[px] = raw.x;
-            if (raw.y !== undefined) p[py] = raw.y;
-            if (raw.z !== undefined) p[pz] = raw.z;
-        }
-    }
+    let state = createPointsBuilderState();
 
     function hasMeaningfulVecComponentValue(value) {
         if (value === undefined || value === null) return false;
@@ -2531,249 +2517,33 @@ function initPointsBuilderMain() {
         }
     }
 
-    function normalizeNodeParams(node) {
-        if (!node || !node.kind) return;
-        if (!node.params || typeof node.params !== "object") node.params = {};
-        const offsetKinds = new Set([
-            "add_builder",
-            "add_with",
-            "add_circle",
-            "add_discrete_circle_xz",
-            "add_half_circle",
-            "add_radian_center",
-            "add_radian",
-            "add_ball",
-            "add_polygon",
-            "add_polygon_in_circle",
-            "add_round_shape",
-            "add_fourier_series"
-        ]);
-        if (node.kind === "with_builder") node.kind = "add_builder";
-        if (node.kind === "clear_as_mask" && !Array.isArray(node.children)) node.children = [];
-        if (offsetKinds.has(node.kind)) {
-            if (node.params.ox === undefined) node.params.ox = 0;
-            if (node.params.oy === undefined) node.params.oy = 0;
-            if (node.params.oz === undefined) node.params.oz = 0;
-        }
-        if (node.kind === "add_with" && node.params.previewBeforeOffsetEnabled === undefined) {
-            node.params.previewBeforeOffsetEnabled = false;
-        }
-        const p = node.params;
-        switch (node.kind) {
-            case "add_bezier":
-                normalizeLegacyVecParams(p, "p1");
-                normalizeLegacyVecParams(p, "p2");
-                normalizeLegacyVecParams(p, "p3");
-                if (p.count === undefined && p.counts !== undefined) p.count = p.counts;
-                break;
-            case "add_bezier_4":
-                normalizeLegacyVecParams(p, "s", "start");
-                normalizeLegacyVecParams(p, "e", "end");
-                normalizeLegacyVecParams(p, "sh", "startHandle");
-                normalizeLegacyVecParams(p, "eh", "endHandle");
-                if (p.sx === undefined && p.p1x !== undefined) p.sx = p.p1x;
-                if (p.sy === undefined && p.p1y !== undefined) p.sy = p.p1y;
-                if (p.sz === undefined && p.p1z !== undefined) p.sz = p.p1z;
-                if (p.ex === undefined && p.p4x !== undefined) p.ex = p.p4x;
-                if (p.ey === undefined && p.p4y !== undefined) p.ey = p.p4y;
-                if (p.ez === undefined && p.p4z !== undefined) p.ez = p.p4z;
-                if (p.shx === undefined && p.p1x !== undefined && p.p2x !== undefined) p.shx = num(p.p2x) - num(p.p1x);
-                if (p.shy === undefined && p.p1y !== undefined && p.p2y !== undefined) p.shy = num(p.p2y) - num(p.p1y);
-                if (p.shz === undefined && p.p1z !== undefined && p.p2z !== undefined) p.shz = num(p.p2z) - num(p.p1z);
-                if (p.ehx === undefined && p.p4x !== undefined && p.p3x !== undefined) p.ehx = num(p.p3x) - num(p.p4x);
-                if (p.ehy === undefined && p.p4y !== undefined && p.p3y !== undefined) p.ehy = num(p.p3y) - num(p.p4y);
-                if (p.ehz === undefined && p.p4z !== undefined && p.p3z !== undefined) p.ehz = num(p.p3z) - num(p.p4z);
-                if (p.count === undefined && p.counts !== undefined) p.count = p.counts;
-                break;
-            case "add_bezier_curve":
-                normalizeLegacyVecParams(p, "e", "target");
-                normalizeLegacyVecParams(p, "sh", "startHandle");
-                normalizeLegacyVecParams(p, "eh", "endHandle");
-                if (p.ex === undefined && p.tx !== undefined) p.ex = p.tx;
-                if (p.ey === undefined && p.ty !== undefined) p.ey = p.ty;
-                if (p.ez === undefined && p.tz !== undefined) p.ez = p.tz;
-                if (p.ex === undefined && p.target && typeof p.target === "object") p.ex = p.target.x ?? p.target[0];
-                if (p.ey === undefined && p.target && typeof p.target === "object") p.ey = p.target.y ?? p.target[1];
-                if (p.ez === undefined && p.target && typeof p.target === "object") p.ez = p.target.z ?? p.target[2];
-                if (p.shx === undefined && p.startHandle && typeof p.startHandle === "object") p.shx = p.startHandle.x ?? p.startHandle[0];
-                if (p.shy === undefined && p.startHandle && typeof p.startHandle === "object") p.shy = p.startHandle.y ?? p.startHandle[1];
-                if (p.shz === undefined && p.startHandle && typeof p.startHandle === "object") p.shz = p.startHandle.z ?? p.startHandle[2];
-                if (p.ehx === undefined && p.endHandle && typeof p.endHandle === "object") p.ehx = p.endHandle.x ?? p.endHandle[0];
-                if (p.ehy === undefined && p.endHandle && typeof p.endHandle === "object") p.ehy = p.endHandle.y ?? p.endHandle[1];
-                if (p.ehz === undefined && p.endHandle && typeof p.endHandle === "object") p.ehz = p.endHandle.z ?? p.endHandle[2];
-                break;
-            case "add_polygon":
-                if (p.count === undefined && p.edgeCount !== undefined) p.count = p.edgeCount;
-                if (p.sideCount === undefined && p.n !== undefined) p.sideCount = p.n;
-                break;
-            case "add_polygon_in_circle":
-                if (p.edgeCount === undefined && p.count !== undefined) p.edgeCount = p.count;
-                if (p.n === undefined && p.sideCount !== undefined) p.n = p.sideCount;
-                break;
-            case "add_round_shape":
-                if (p.preCircleCount === undefined && p.circleCount !== undefined) p.preCircleCount = p.circleCount;
-                if (p.minCircleCount === undefined && p.minCount !== undefined) p.minCircleCount = p.minCount;
-                if (p.maxCircleCount === undefined && p.maxCount !== undefined) p.maxCircleCount = p.maxCount;
-                break;
-            case "add_lightning_points":
-            case "add_lightning_nodes":
-            case "add_lightning_nodes_attenuation":
-                normalizeLegacyVecParams(p, "s", "start");
-                normalizeLegacyVecParams(p, "e", "end");
-                if (p.useStart === undefined && (p.start || p.sx !== undefined || p.sy !== undefined || p.sz !== undefined)) p.useStart = true;
-                if (p.useOffsetRange === undefined && p.offsetRange !== undefined) p.useOffsetRange = true;
-                break;
-            default:
-                break;
-        }
-    }
-
-    function normalizeFourierTerms(node) {
-        if (!node || node.kind !== "add_fourier_series") return;
-        if (!Array.isArray(node.terms)) {
-            node.terms = [];
-            return;
-        }
-        const terms = node.terms.filter((t) => t && typeof t === "object");
-        node.terms.splice(0, node.terms.length, ...terms);
-        for (const t of node.terms) {
-            if (!t.id) t.id = uid();
-            if (t.r === undefined) t.r = 1;
-            if (t.w === undefined) t.w = 1;
-            if (t.startAngle === undefined) t.startAngle = 0;
-            if (!t.startAngleUnit) t.startAngleUnit = "deg";
-            if (t.collapsed === undefined) t.collapsed = false;
-            if (t.bodyHeight === undefined) t.bodyHeight = null;
-        }
-    }
-
     function normalizeNodeTree(node) {
-        if (!node) return;
-        if (Array.isArray(node)) {
-            for (const n of node) normalizeNodeTree(n);
-            return;
-        }
-        normalizeNodeParams(node);
-        normalizeFourierTerms(node);
-        if (Array.isArray(node.children)) {
-            for (const c of node.children) normalizeNodeTree(c);
-        }
-    }
-
-    function makeFreshNodeId(usedIds) {
-        let next = "";
-        do {
-            next = uid();
-        } while (!next || usedIds.has(next));
-        usedIds.add(next);
-        return next;
+        return normalizePointsBuilderNodeTree(node, {
+            idFactory: uid,
+            toNumber: num
+        });
     }
 
     function reassignNodeIdsDeep(target, usedIds = null) {
-        const seen = usedIds instanceof Set ? usedIds : new Set();
-        let changed = 0;
-        const visitNode = (node) => {
-            if (!node || typeof node !== "object") return;
-            node.id = makeFreshNodeId(seen);
-            changed++;
-            if (Array.isArray(node.terms)) {
-                for (const term of node.terms) {
-                    if (!term || typeof term !== "object") continue;
-                    term.id = makeFreshNodeId(seen);
-                    changed++;
-                }
-            }
-            if (Array.isArray(node.children)) {
-                for (const child of node.children) visitNode(child);
-            }
-        };
-        if (Array.isArray(target)) {
-            for (const node of target) visitNode(node);
-        } else {
-            visitNode(target);
-        }
-        return changed;
+        return reassignPointsBuilderIds(target, usedIds, { idFactory: uid });
     }
 
     function collectNodeIds(target = state.root) {
-        const ids = new Set();
-        const visitNode = (node) => {
-            if (!node || typeof node !== "object") return;
-            if (node.id) ids.add(String(node.id));
-            if (Array.isArray(node.terms)) {
-                for (const term of node.terms) {
-                    if (term && term.id) ids.add(String(term.id));
-                }
-            }
-            if (Array.isArray(node.children)) {
-                for (const child of node.children) visitNode(child);
-            }
-        };
-        if (Array.isArray(target)) {
-            for (const node of target) visitNode(node);
-        } else if (target && typeof target === "object") {
-            if (target.kind === "ROOT") {
-                if (target.id) ids.add(String(target.id));
-                if (Array.isArray(target.children)) {
-                    for (const child of target.children) visitNode(child);
-                }
-            } else {
-                visitNode(target);
-            }
-        }
-        return ids;
+        return collectPointsBuilderIds(target);
     }
 
     function ensureUniqueNodeIds(target = state.root) {
-        const seen = new Set();
-        let repaired = 0;
-        const reserveId = (obj, fallback = "") => {
-            if (!obj || typeof obj !== "object") return;
-            const raw = String(obj.id || fallback || "").trim();
-            if (raw && !seen.has(raw)) {
-                obj.id = raw;
-                seen.add(raw);
-                return;
-            }
-            obj.id = makeFreshNodeId(seen);
-            repaired++;
-        };
-        const visitNode = (node) => {
-            if (!node || typeof node !== "object") return;
-            reserveId(node);
-            if (Array.isArray(node.terms)) {
-                for (const term of node.terms) reserveId(term);
-            }
-            if (Array.isArray(node.children)) {
-                for (const child of node.children) visitNode(child);
-            }
-        };
-        if (Array.isArray(target)) {
-            for (const node of target) visitNode(node);
-        } else if (target && typeof target === "object") {
-            if (target.kind === "ROOT") {
-                reserveId(target, "root");
-                if (Array.isArray(target.children)) {
-                    for (const child of target.children) visitNode(child);
-                }
-            } else {
-                visitNode(target);
-            }
-        }
-        return repaired;
+        return ensureUniquePointsBuilderIds(target, { idFactory: uid });
     }
 
     function normalizeState(obj) {
-        if (!obj || typeof obj !== "object") return null;
-        if (!obj.root || typeof obj.root !== "object") return null;
-        if (!Array.isArray(obj.root.children)) obj.root.children = [];
-        if (!obj.root.id) obj.root.id = "root";
-        if (!obj.root.kind) obj.root.kind = "ROOT";
-        obj.presets = normalizePresetList(obj.presets);
-        obj.variables = normalizeVariableState(obj.variables);
-        normalizeNodeTree(obj.root);
-        ensureUniqueNodeIds(obj.root);
-        return obj;
+        return normalizePointsBuilderState(obj, {
+            idFactory: uid,
+            toNumber: num,
+            requireDirectRoot: true,
+            normalizePresets: normalizePresetList,
+            normalizeVariables: normalizeVariableState
+        });
     }
 
     function deepCloneJson(obj) {
@@ -4066,7 +3836,7 @@ function initPointsBuilderMain() {
             label: String(presetRingGroupLabel?.value || "").trim() || "环形预设组",
             params: { ox: 0, oy: 0, oz: 0 }
         });
-        if (options.usedIds instanceof Set) group.id = makeFreshNodeId(options.usedIds);
+        if (options.usedIds instanceof Set) reassignNodeIdsDeep(group, options.usedIds);
         const sharedGroups = getPresetRingVariableGroups().filter((sharedGroup) => isPresetRingSharedVariableEnabled(sharedGroup.key));
         const sharedValuesByKey = new Map();
         const sharedKeysBySlot = new Map();
@@ -6599,8 +6369,7 @@ function initPointsBuilderMain() {
             stopPointPick?.();
         } catch {}
         try {
-            state = deepClone(snap.state);
-            normalizeState(state);
+            state = normalizeState(deepClone(snap.state));
             focusedNodeId = snap.focusedNodeId || null;
         } finally {
             isRestoringHistory = false;
@@ -14471,7 +14240,7 @@ function collectSyntheticVecTargetsForNode(node) {
         },
         setLineDivisionPoints,
         historyCapture,
-        setState: (next) => { state = next; },
+        setState: (next) => { state = normalizeState(next); },
         normalizeNodeTree,
         ensureAxisEverywhere,
         ensureAxisInList,

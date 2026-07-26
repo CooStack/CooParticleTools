@@ -138,13 +138,30 @@ async function returnToProjectPage(router, error = null) {
   await router.push({ name: 'workbench', query });
 }
 
+export async function dispatchProjectCloseRequest(payload = {}, target = window) {
+  const responses = [];
+  const event = new CustomEvent('coo-project-close-request', {
+    detail: {
+      action: String(payload.action || ''),
+      respondWith(response) {
+        responses.push(Promise.resolve(response));
+      }
+    }
+  });
+  target.dispatchEvent(event);
+  if (!responses.length) {
+    return { handled: false, dirty: false };
+  }
+  return responses[0];
+}
+
 export function installElectronShellBridge(router) {
   const shell = getElectronShell();
   if (!shell?.onCommand) {
     return () => {};
   }
 
-  return shell.onCommand(async (payload) => {
+  const removeCommandListener = shell.onCommand(async (payload) => {
     const command = payload && typeof payload === 'object' ? payload : {};
 
     if (command.type === 'new-project') {
@@ -172,4 +189,11 @@ export function installElectronShellBridge(router) {
     }
 
   });
+  const removeProjectCloseListener = shell.onProjectCloseRequest
+    ? shell.onProjectCloseRequest((payload) => dispatchProjectCloseRequest(payload))
+    : () => {};
+  return () => {
+    removeCommandListener();
+    removeProjectCloseListener();
+  };
 }

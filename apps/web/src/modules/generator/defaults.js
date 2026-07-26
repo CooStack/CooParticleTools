@@ -1,10 +1,14 @@
 import { createLifecycleCurve, normalizeLifecycleCurve } from './curves.js';
 import { createPointsBuilderProject, normalizePointsBuilderProject } from '../pointsbuilder/defaults.js';
 import {
+  GENERATOR_VALUE_TYPES,
+  getGeneratorTypeDefault,
   isGeneratorValueName,
-  normalizeGeneratorLongValue,
-  normalizeGeneratorVectorValue
-} from './parameter-values.js';
+  normalizeGeneratorTypedValue,
+  normalizeGeneratorValueType
+} from './bindings.js';
+
+export { GENERATOR_VALUE_TYPES };
 
 let idSeed = 1;
 
@@ -147,29 +151,15 @@ export const GENERATOR_THEME_OPTIONS = [
 ];
 
 export const GENERATOR_HOTKEY_DEFAULTS = {
+  toggleSettings: 'KeyH',
   playPause: 'Space',
   clearParticles: 'KeyC',
   resetCamera: 'KeyR',
   fullscreen: 'KeyF',
   deleteEmitter: 'Delete',
-  undo: 'KeyZ',
-  redo: 'KeyY'
+  undo: 'Mod+KeyZ',
+  redo: 'Mod+Shift+KeyZ'
 };
-
-export const GENERATOR_VALUE_TYPES = [
-  'Int',
-  'Long',
-  'Float',
-  'Double',
-  'Boolean',
-  'String',
-  'Vec3',
-  'RelativeLocation',
-  'Vector3f'
-];
-
-const NUMERIC_VALUE_TYPES = new Set(['Int', 'Long', 'Float', 'Double']);
-const VECTOR_VALUE_TYPES = new Set(['Vec3', 'RelativeLocation', 'Vector3f']);
 
 function numberParam(key, label, defaultValue, options = {}) {
   return {
@@ -432,18 +422,48 @@ export function createGeneratorValue(overrides = {}) {
     id: overrides.id || makeId('value'),
     name: '',
     type,
-    value: defaultValueForType(type),
+    value: getGeneratorTypeDefault(type),
     codec: true,
     ...overrides
   });
 }
 
 export function createGeneratorVariable(overrides = {}) {
-  return createGeneratorValue({ codec: true, ...overrides });
+  const value = createGeneratorValue({ codec: true, ...overrides });
+  return {
+    ...value,
+    automation: createGeneratorVariableAutomation({
+      targetMin: Number(value.value) || 0,
+      targetMax: Number(value.value) || 0,
+      ...(overrides.automation || {})
+    })
+  };
 }
 
 export function createGeneratorConstant(overrides = {}) {
   return createGeneratorValue({ codec: false, ...overrides });
+}
+
+export function createGeneratorVariableAutomation(overrides = {}) {
+  return normalizeVariableAutomation({
+    enabled: false,
+    source: 'lifecycle',
+    sourceVariable: '',
+    sourceMin: 0,
+    sourceMax: 1,
+    targetMin: 0,
+    targetMax: 1,
+    curve: createLifecycleCurve({
+      min: 0,
+      max: 1,
+      defaultValue: 0,
+      keyframes: [
+        { time: 0, value: 0 },
+        { time: 100, value: 1 }
+      ]
+    }),
+    ...overrides
+  });
 }
 
 function createEmitterPointsBuilderState() {
@@ -459,6 +479,12 @@ export function createEmitterCard(overrides = {}) {
     id,
     name: '发射器 #1',
     enabled: true,
+    externalData: false,
+    externalTemplate: false,
+    vars: {
+      data: '',
+      template: ''
+    },
     emitter: {
       type: 'sphere',
       offset: { x: 0, y: 0, z: 0 },
@@ -495,6 +521,11 @@ export function createEmitterCard(overrides = {}) {
       speedMax: 0.6,
       visibleRange: 128
     },
+    physics: {
+      gravity: 0,
+      collision: false,
+      collisionTargets: []
+    },
     render: {
       effectClass: 'ControlableEndRodEffect',
       textureSheet: 'PARTICLE_SHEET_TRANSLUCENT',
@@ -514,6 +545,37 @@ export function createEmitterCard(overrides = {}) {
     curves: createCurveGroup(),
     ...overrides
   });
+}
+
+export function normalizeCollisionTargets(raw = []) {
+  const values = Array.isArray(raw) ? raw : String(raw || '').split(/[，,\s]+/);
+  return Array.from(new Set(values
+    .map((value) => typeof value === 'string' ? value.trim() : value)
+    .filter((value) => value !== '' && value !== null && value !== undefined)
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+    .map((value) => clampInt(value, -2147483648, 2147483647, 0))));
+}
+
+export function countDuplicateEmitterSigns(emitters, target, bindingResolver = null) {
+  if (!target || target.enabled === false) return 0;
+  const targetKey = emitterSignKey(target, bindingResolver);
+  if (!targetKey) return 0;
+  return (Array.isArray(emitters) ? emitters : []).filter((card) => (
+    card
+    && card !== target
+    && card.id !== target.id
+    && card.enabled !== false
+    && emitterSignKey(card, bindingResolver) === targetKey
+  )).length;
+}
+
+function emitterSignKey(card, bindingResolver) {
+  const binding = bindingResolver?.resolve?.(card?.bindings, 'render.sign', 'Int');
+  if (binding?.status === 'resolved') return `expression:${binding.name}`;
+  if (binding?.status === 'expression') return `expression:${binding.kotlin || binding.name}`;
+  const sign = Number(card?.render?.sign);
+  return Number.isFinite(sign) ? `expression:${Math.trunc(sign)}` : '';
 }
 
 export function createCommandQueue(overrides = {}) {
@@ -542,7 +604,7 @@ export function createGeneratorProject(overrides = {}) {
   return normalizeGeneratorProject({
     id: '',
     tool: 'generator',
-    schemaVersion: 5,
+    schemaVersion: 7,
     name: 'EmitterGenerator',
     description: '参数化粒子发射器生成器',
     ticksPerSecond: 20,
@@ -555,7 +617,8 @@ export function createGeneratorProject(overrides = {}) {
     kotlin: {
       className: 'GeneratedEmitter',
       packageName: '',
-      baseClass: 'AutoParticleEmitters'
+      baseClass: 'AutoParticleEmitters',
+      mapping: 'mojmap'
     },
     rootLifecycle: {
       mode: 'interval',
@@ -566,6 +629,7 @@ export function createGeneratorProject(overrides = {}) {
       variables: [],
       constants: []
     },
+    doTick: { source: '' },
     doTickExpressions: [],
     deathBehavior: {
       enabled: true,
@@ -604,10 +668,16 @@ export function normalizeGeneratorProject(raw = {}) {
       ...(raw.settings || {})
     }
   };
-  const legacyPercentUnit = Number(base.schemaVersion || 0) < 3;
-  const legacySizeInRenderScale = Number(base.schemaVersion || 0) < 4;
+  const sourceSchemaVersion = Number(base.schemaVersion || 0);
+  const legacyPercentUnit = sourceSchemaVersion < 3;
+  const legacySizeInRenderScale = sourceSchemaVersion < 4;
+  const repairOverscaledOpacityHandles = sourceSchemaVersion >= 3 && sourceSchemaVersion < 7;
   const emitters = Array.isArray(base.emitters) && base.emitters.length
-    ? base.emitters.map((card, index) => normalizeEmitterCard(card, index, { legacyPercentUnit, legacySizeInRenderScale }))
+    ? base.emitters.map((card, index) => normalizeEmitterCard(card, index, {
+        legacyPercentUnit,
+        legacySizeInRenderScale,
+        repairOverscaledOpacityHandles
+      }))
     : [createEmitterCard()];
   const commandQueues = Array.isArray(base.commandQueues) && base.commandQueues.length
     ? base.commandQueues.map((queue, index) => ({
@@ -618,22 +688,29 @@ export function normalizeGeneratorProject(raw = {}) {
     }))
     : [createCommandQueue()];
   const parameters = normalizeGeneratorParameters(base.parameters);
+  const legacyDoTick = Array.isArray(base.doTickExpressions)
+    ? base.doTickExpressions.filter(Boolean).join('\n')
+    : '';
   return {
     ...base,
-    schemaVersion: 5,
+    schemaVersion: 7,
     ticksPerSecond: clampInt(base.ticksPerSecond, 1, 200, 20),
     previewTicks: clampInt(base.previewTicks, 1, 2000, 120),
-    leftTab: ['emitters', 'queues', 'project', 'tick', 'death', 'settings'].includes(base.leftTab) ? base.leftTab : 'emitters',
+    leftTab: ['emitters', 'queues', 'project', 'tick', 'death'].includes(base.leftTab) ? base.leftTab : 'emitters',
     pageMode: base.pageMode === 'code' ? 'code' : 'editor',
     selectedEmitterId: emitters.some((item) => item.id === base.selectedEmitterId) ? base.selectedEmitterId : emitters[0]?.id || '',
     selectedQueueId: commandQueues.some((item) => item.id === base.selectedQueueId) ? base.selectedQueueId : commandQueues[0]?.id || '',
     kotlin: {
       className: String(base.kotlin?.className || 'GeneratedEmitter'),
       packageName: String(base.kotlin?.packageName || ''),
-      baseClass: String(base.kotlin?.baseClass || 'AutoParticleEmitters')
+      baseClass: String(base.kotlin?.baseClass || 'AutoParticleEmitters'),
+      mapping: base.kotlin?.mapping === 'yarn' ? 'yarn' : 'mojmap'
     },
     rootLifecycle: normalizeRootLifecycle(base.rootLifecycle),
     parameters,
+    doTick: {
+      source: String(base.doTick?.source ?? legacyDoTick ?? '').replace(/\r\n/g, '\n').trim()
+    },
     deathBehavior: {
       enabled: base.deathBehavior?.enabled !== false,
       mode: base.deathBehavior?.mode === 'respawn' ? 'respawn' : 'dissipate'
@@ -659,6 +736,7 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
   const card = raw && typeof raw === 'object' ? raw : {};
   const defaults = createCurveGroup();
   const particleSource = card.particle || {};
+  const physicsSource = card.physics || {};
   const renderSource = card.render || {};
   const templateSource = card.template || {};
   const legacyBaseScale = normalizeVector(renderSource.baseScale, { x: 0.14, y: 0.14, z: 0.14 });
@@ -674,6 +752,12 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
     id: String(card.id || makeId('emitter')),
     name: String(card.name || `发射器 #${index + 1}`),
     enabled: card.enabled !== false,
+    externalData: card.externalData === true,
+    externalTemplate: card.externalTemplate === true,
+    vars: {
+      data: normalizeEmitterVariableName(card.vars?.data),
+      template: normalizeEmitterVariableName(card.vars?.template)
+    },
     emitter: {
       type: normalizeEmitterType(card.emitter?.type),
       offset: normalizeVector(card.emitter?.offset, { x: 0, y: 0, z: 0 }),
@@ -743,6 +827,15 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
       speedMax: clampNumber(particleSource.speedMax ?? particleSource.velSpeedMax, 0, 100, 0.6),
       visibleRange: clampInt(particleSource.visibleRange, 1, 10000, 128)
     },
+    physics: {
+      gravity: clampNumber(physicsSource.gravity, 0, 1000, 0),
+      collision: physicsSource.collision === true,
+      collisionTargets: normalizeCollisionTargets(
+        Array.isArray(physicsSource.collisionTargets)
+          ? physicsSource.collisionTargets
+          : physicsSource.signs
+      )
+    },
     render: {
       effectClass: normalizeEffectClass(renderSource.effectClass ?? templateSource.effectClass),
       textureSheet: normalizeTextureSheet(renderSource.textureSheet),
@@ -768,7 +861,12 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
         z: normalizeLifecycleCurve({ ...defaults.size.z, ...(card.curves?.size?.z || {}) })
       },
       brightness: normalizeLifecycleCurve({ ...defaults.brightness, ...(card.curves?.brightness || {}) }),
-      opacity: normalizeOpacityCurve(card.curves?.opacity, defaults.opacity, options.legacyPercentUnit),
+      opacity: normalizeOpacityCurve(
+        card.curves?.opacity,
+        defaults.opacity,
+        options.legacyPercentUnit,
+        options.repairOverscaledOpacityHandles
+      ),
       rotation: {
         syncAxes: card.curves?.rotation?.syncAxes === true,
         roll: normalizeLifecycleCurve({ ...defaults.rotation.roll, ...(card.curves?.rotation?.roll || {}) }),
@@ -802,61 +900,42 @@ function normalizeGeneratorValue(raw = {}, index = 0) {
     id: String(raw.id || makeId('value')),
     name: normalizeValueName(raw.name, `value${index + 1}`),
     type,
-    value: normalizeDefaultValue(type, raw.value ?? raw.defaultValue),
+    value: normalizeGeneratorTypedValue(type, raw.value ?? raw.defaultValue),
     codec: raw.codec !== false,
+    ...(raw.codec !== false ? { automation: normalizeVariableAutomation(raw.automation, type, raw.value ?? raw.defaultValue) } : {}),
     ...(type === 'Vector3f' ? { colorMode: raw.colorMode === true } : {})
+  };
+}
+
+function normalizeVariableAutomation(raw, type, rawValue) {
+  const fallback = Number.isFinite(Number(rawValue)) ? Number(rawValue) : 0;
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const targetMin = toNumber(source.targetMin, fallback);
+  const targetMax = toNumber(source.targetMax, fallback);
+  const sourceMin = toNumber(source.sourceMin, 0);
+  const rawSourceMax = toNumber(source.sourceMax, 1);
+  const sourceMax = Math.abs(rawSourceMax - sourceMin) < 1e-9 ? sourceMin + 1 : rawSourceMax;
+  const curve = normalizeLifecycleCurve({
+    min: 0,
+    max: 1,
+    defaultValue: 0,
+    ...(source.curve || {})
+  });
+  return {
+    enabled: source.enabled === true && (!type || ['Int', 'Long', 'Float', 'Double'].includes(type)),
+    source: source.source === 'variable' ? 'variable' : 'lifecycle',
+    sourceVariable: String(source.sourceVariable || '').trim(),
+    sourceMin,
+    sourceMax,
+    targetMin: Math.min(targetMin, targetMax),
+    targetMax: Math.max(targetMin, targetMax),
+    curve
   };
 }
 
 function normalizeValueName(raw, fallback) {
   const text = String(raw || '').trim();
   return isGeneratorValueName(text) ? text : fallback;
-}
-
-function normalizeGeneratorValueType(rawType) {
-  const raw = String(rawType || '').trim();
-  const lowered = raw.toLowerCase();
-  if (lowered === 'int') return 'Int';
-  if (lowered === 'long') return 'Long';
-  if (lowered === 'float') return 'Float';
-  if (lowered === 'double') return 'Double';
-  if (lowered === 'boolean' || lowered === 'bool') return 'Boolean';
-  if (lowered === 'string') return 'String';
-  if (lowered === 'vec3') return 'Vec3';
-  if (lowered === 'relativelocation') return 'RelativeLocation';
-  if (lowered === 'vector3f') return 'Vector3f';
-  return GENERATOR_VALUE_TYPES.includes(raw) ? raw : 'Double';
-}
-
-function defaultValueForType(type) {
-  const normalized = normalizeGeneratorValueType(type);
-  if (normalized === 'Boolean') return false;
-  if (normalized === 'String') return '';
-  if (normalized === 'Vec3') return 'Vec3(0.0, 0.0, 0.0)';
-  if (normalized === 'RelativeLocation') return 'RelativeLocation(0.0, 0.0, 0.0)';
-  if (normalized === 'Vector3f') return 'Vector3f(0.0f, 0.0f, 0.0f)';
-  if (normalized === 'Long') return '0';
-  return 0;
-}
-
-function normalizeDefaultValue(type, value) {
-  const normalized = normalizeGeneratorValueType(type);
-  if (normalized === 'Long') return normalizeGeneratorLongValue(value);
-  if (NUMERIC_VALUE_TYPES.has(normalized)) {
-    const numeric = toNumber(value, 0);
-    return normalized === 'Int' ? Math.trunc(numeric) : numeric;
-  }
-  if (normalized === 'Boolean') {
-    return value === true || value === 'true' || value === 1 || value === '1';
-  }
-  if (VECTOR_VALUE_TYPES.has(normalized)) {
-    return normalizeGeneratorVectorValue(normalized, value || defaultValueForType(normalized));
-  }
-  if (normalized === 'String') {
-    const text = String(value ?? '').trim();
-    return text || defaultValueForType(normalized);
-  }
-  return defaultValueForType(normalized);
 }
 
 function normalizeEmitterBindings(raw = {}) {
@@ -913,10 +992,19 @@ function normalizeGeneratorHotkeys(raw = {}) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const result = { ...GENERATOR_HOTKEY_DEFAULTS };
   Object.keys(result).forEach((key) => {
-    const value = String(source[key] || '').trim();
-    if (value) result[key] = value;
+    if (!Object.prototype.hasOwnProperty.call(source, key)) return;
+    const value = String(source[key] ?? '').trim();
+    if (key === 'undo' && value === 'KeyZ') result[key] = 'Mod+KeyZ';
+    else if (key === 'redo' && value === 'KeyY') result[key] = 'Mod+KeyY';
+    else result[key] = value;
   });
   return result;
+}
+
+function normalizeEmitterVariableName(raw) {
+  const text = String(raw || '').trim().replace(/[^A-Za-z0-9_]/g, '_');
+  if (!text) return '';
+  return /^[A-Za-z_]/.test(text) ? text : `_${text}`;
 }
 
 function normalizeVector(raw = {}, fallback = { x: 0, y: 0, z: 0 }) {
@@ -1021,14 +1109,32 @@ function normalizePercentValue(value, fallback = 100, legacyPercentUnit = false)
   return clampNumber(migrated, 0, 100, fallback);
 }
 
-function normalizeOpacityCurve(raw, fallbackCurve, legacyPercentUnit = false) {
+function normalizeOpacityCurve(raw, fallbackCurve, legacyPercentUnit = false, repairOverscaledHandles = false) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const curve = normalizeLifecycleCurve({ ...fallbackCurve, ...source });
   const frames = Array.isArray(curve.keyframes) ? curve.keyframes : [];
   const frameValuesLookUnit = frames.length > 0
     && frames.every((frame) => Number(frame.value || 0) >= 0 && Number(frame.value || 0) <= 1);
+  const frameValuesLookPercent = frames.length > 0
+    && frames.every((frame) => Number(frame.value || 0) >= 0 && Number(frame.value || 0) <= 100);
+  const sourceMax = Number(source.max);
+  if (repairOverscaledHandles && frameValuesLookPercent && Number.isFinite(sourceMax) && sourceMax > 1) {
+    // The old migration multiplied on every reopen; preserve modest intentional overshoot from existing curves.
+    const repairThreshold = Math.max(100, Math.abs(Number(curve.max || 100))) * 1.5;
+    let maxHandleMagnitude = Math.max(
+      0,
+      ...frames.flatMap((frame) => [Math.abs(Number(frame.in?.y || 0)), Math.abs(Number(frame.out?.y || 0))])
+    );
+    while (maxHandleMagnitude > repairThreshold) {
+      frames.forEach((frame) => {
+        if (frame.in) frame.in.y = Number(frame.in.y || 0) / 100;
+        if (frame.out) frame.out.y = Number(frame.out.y || 0) / 100;
+      });
+      maxHandleMagnitude /= 100;
+    }
+  }
   const looksLegacyUnit = frameValuesLookUnit
-    && (legacyPercentUnit || Number(source.max) <= 1 || Number(source.defaultValue) <= 1 || curve.max <= 100);
+    && (legacyPercentUnit || (Number.isFinite(sourceMax) && sourceMax <= 1));
   if (!looksLegacyUnit) {
     curve.min = 0;
     curve.max = 100;

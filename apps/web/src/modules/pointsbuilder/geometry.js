@@ -71,6 +71,7 @@ export function longExpr(value, fallback = '0') {
       return `${BigInt(fallback)}L`;
     }
   }
+  if (Number.isFinite(Number(value))) return `${BigInt(Math.trunc(Number(value)))}L`;
   return isSafeNumericExpression(expr) ? expr : `${BigInt(fallback)}L`;
 }
 
@@ -85,6 +86,29 @@ export function fmt(value) {
   return fixed === '-0' ? '0' : fixed;
 }
 
+export function fmtDouble(value) {
+  const literal = fmt(value);
+  if (Number.isFinite(Number(value))) {
+    return Number.isInteger(Number(value)) ? `${literal}.0` : literal;
+  }
+  return formatExpressionNumericLiterals(literal, (token) => (
+    /[.eE]/.test(token) ? token : `${token}.0`
+  ));
+}
+
+export function fmtFloat(value) {
+  const literal = fmt(value);
+  if (Number.isFinite(Number(value))) return `${literal}F`;
+  return formatExpressionNumericLiterals(literal, (token) => `${token}F`);
+}
+
+function formatExpressionNumericLiterals(source, formatToken) {
+  return String(source || '').replace(
+    /(^|[^A-Za-z0-9_.])(\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)(?![A-Za-z0-9_.])/g,
+    (_, prefix, token) => `${prefix}${formatToken(token)}`
+  );
+}
+
 function isSafeNumericExpression(value) {
   const source = String(value || '').trim();
   return source.length > 0
@@ -93,7 +117,7 @@ function isSafeNumericExpression(value) {
 }
 
 export function relExpr(x, y, z) {
-  return `RelativeLocation(${fmt(x)}, ${fmt(y)}, ${fmt(z)})`;
+  return `RelativeLocation(${fmtDouble(x)}, ${fmtDouble(y)}, ${fmtDouble(z)})`;
 }
 
 export function angleToRad(value, unit = 'deg') {

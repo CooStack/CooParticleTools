@@ -1,52 +1,20 @@
-const VECTOR_TYPES = new Set(['Vec3', 'RelativeLocation', 'Vector3f']);
-const VECTOR_AXES = ['x', 'y', 'z'];
-const GENERATOR_VALUE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const GENERATOR_LONG_PATTERN = /^-?\d+$/;
-const GENERATOR_LONG_MIN = -9223372036854775808n;
-const GENERATOR_LONG_MAX = 9223372036854775807n;
+import {
+  formatGeneratorVectorValue,
+  parseGeneratorVectorValue
+} from './bindings.js';
 
-export function isGeneratorValueName(value) {
-  return GENERATOR_VALUE_NAME_PATTERN.test(String(value || ''));
-}
-
-export function filterGeneratorValueNameInput(value) {
-  const text = String(value || '').replace(/[^A-Za-z0-9_]/g, '');
-  return text.replace(/^\d+/, '');
-}
-
-export function generatorBindingType(valueType = 'number') {
-  const type = String(valueType || 'number');
-  if (type === 'number') return 'Double';
-  if (type === 'int') return 'Int';
-  if (type === 'long') return 'Long';
-  if (type === 'float') return 'Float';
-  if (type === 'string') return 'String';
-  if (type === 'boolean') return 'Boolean';
-  if (type === 'vec3' || type === 'vector') return 'Vec3';
-  if (type === 'relative') return 'RelativeLocation';
-  if (type === 'vector3f' || type === 'color') return 'Vector3f';
-  return '';
-}
-
-export function filterGeneratorBindingsByType(items = [], valueType = 'number') {
-  const expectedType = generatorBindingType(valueType);
-  if (!expectedType) return [];
-  return Array.from(items || []).filter((item) => String(item?.type || '') === expectedType);
-}
-
-export function normalizeGeneratorLongValue(value, fallback = '0') {
-  const text = String(value ?? '').trim().replace(/[lL]$/, '');
-  if (!GENERATOR_LONG_PATTERN.test(text)) return normalizeGeneratorLongFallback(fallback);
-  try {
-    const parsed = BigInt(text);
-    if (parsed < GENERATOR_LONG_MIN || parsed > GENERATOR_LONG_MAX) {
-      return normalizeGeneratorLongFallback(fallback);
-    }
-    return parsed.toString();
-  } catch {
-    return normalizeGeneratorLongFallback(fallback);
-  }
-}
+export {
+  filterGeneratorBindingsByType,
+  filterGeneratorValueNameInput,
+  formatGeneratorVectorValue,
+  generatorBindingType,
+  isGeneratorValueName,
+  isGeneratorVectorType,
+  normalizeGeneratorLongValue,
+  normalizeGeneratorVectorValue,
+  parseGeneratorVectorValue,
+  updateGeneratorVectorComponent
+} from './bindings.js';
 
 export function createDeferredGeneratorValueCommit(commit, options = {}) {
   const delay = Math.max(0, Number(options.delay) || 220);
@@ -100,50 +68,27 @@ export function createDeferredGeneratorValueCommit(commit, options = {}) {
   };
 }
 
-export function isGeneratorVectorType(type) {
-  return VECTOR_TYPES.has(String(type || ''));
+export function calculateGeneratorNumericScrubValue(startValue, verticalPixels, options = {}) {
+  const start = Number(startValue);
+  if (!Number.isFinite(start)) return startValue;
+  const rawStep = Math.abs(Number(options.step));
+  const step = rawStep > 0 ? rawStep : 0.01;
+  const rawScale = Number(options.scale);
+  const scale = Number.isFinite(rawScale) && rawScale > 0 ? rawScale : 1;
+  let next = start + Number(verticalPixels || 0) * step * scale;
+  const min = Number(options.min);
+  const max = Number(options.max);
+  if (Number.isFinite(min)) next = Math.max(min, next);
+  if (Number.isFinite(max)) next = Math.min(max, next);
+  const precision = Math.min(8, Math.max(0, decimalPlaces(step) + (scale < 1 ? 1 : 0)));
+  const rounded = Number(next.toFixed(precision));
+  return Object.is(rounded, -0) ? 0 : rounded;
 }
 
-export function parseGeneratorVectorValue(type, rawValue) {
-  const fallback = { x: 0, y: 0, z: 0 };
-  if (!isGeneratorVectorType(type)) return fallback;
-
-  const match = String(rawValue || '').trim().match(/^[A-Za-z0-9_]+\s*\(([^)]+)\)$/);
-  if (!match) return fallback;
-  const parts = match[1].split(',').map((part) => Number(part.trim().replace(/[fFdDlL]$/g, '')));
-  if (parts.length < 3) return fallback;
-
-  return Object.fromEntries(VECTOR_AXES.map((axis, index) => [
-    axis,
-    Number.isFinite(parts[index]) ? parts[index] : fallback[axis]
-  ]));
-}
-
-export function formatGeneratorVectorValue(type, components = {}) {
-  if (!isGeneratorVectorType(type)) return '';
-  const values = VECTOR_AXES.map((axis) => formatVectorComponent(type, components[axis]));
-  return `${type}(${values.join(', ')})`;
-}
-
-export function normalizeGeneratorVectorValue(type, rawValue) {
-  if (!isGeneratorVectorType(type)) return '';
-  const text = String(rawValue ?? '').trim();
-  if (!/^[A-Za-z0-9_]+\s*\([^)]+\)$/.test(text)) {
-    return formatGeneratorVectorValue(type, { x: 0, y: 0, z: 0 });
-  }
-  return formatGeneratorVectorValue(type, parseGeneratorVectorValue(type, text));
-}
-
-export function updateGeneratorVectorComponent(type, rawValue, axis, value, limits = {}) {
-  if (!VECTOR_AXES.includes(axis)) return String(rawValue || '');
-  const components = parseGeneratorVectorValue(type, rawValue);
-  const fallback = components[axis];
-  let next = Number(value);
-  if (!Number.isFinite(next)) next = fallback;
-  if (Number.isFinite(limits.min)) next = Math.max(limits.min, next);
-  if (Number.isFinite(limits.max)) next = Math.min(limits.max, next);
-  components[axis] = next;
-  return formatGeneratorVectorValue(type, components);
+function decimalPlaces(value) {
+  const text = String(value).toLowerCase();
+  if (text.includes('e-')) return Number(text.split('e-')[1]) || 0;
+  return text.includes('.') ? text.length - text.indexOf('.') - 1 : 0;
 }
 
 export function generatorVectorValueToHex(rawValue) {
@@ -158,25 +103,6 @@ export function generatorHexToVectorValue(hex) {
     y: rgb.g / 255,
     z: rgb.b / 255
   });
-}
-
-function formatVectorComponent(type, value) {
-  const numeric = Number(value);
-  const safe = Number.isFinite(numeric) ? numeric : 0;
-  const rounded = Math.abs(safe) < 0.0000005 ? 0 : Number(safe.toFixed(6));
-  const literal = Number.isInteger(rounded) ? `${rounded}.0` : String(rounded);
-  return type === 'Vector3f' ? `${literal}f` : literal;
-}
-
-function normalizeGeneratorLongFallback(fallback) {
-  const text = String(fallback ?? '0').trim().replace(/[lL]$/, '');
-  try {
-    if (!GENERATOR_LONG_PATTERN.test(text)) return '0';
-    const parsed = BigInt(text);
-    return parsed >= GENERATOR_LONG_MIN && parsed <= GENERATOR_LONG_MAX ? parsed.toString() : '0';
-  } catch {
-    return '0';
-  }
 }
 
 function hexToRgb(hex) {

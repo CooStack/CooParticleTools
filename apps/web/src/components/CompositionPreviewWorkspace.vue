@@ -8,6 +8,7 @@
         <button class="btn small" @click="$emit('compile-expressions')">编译表达式</button>
         <button class="btn small" @click="$emit('jump-preview-end')">跳到消散前</button>
         <button class="btn small" @click="resetCamera">重置镜头</button>
+        <button class="btn small" @click="alignCameraToPoints">对齐画面</button>
         <button class="btn small" @click="toggleFullscreen">全屏</button>
       </div>
     </div>
@@ -63,12 +64,17 @@ function resetCamera() {
   previewCanvasRef.value?.resetCamera?.();
 }
 
+function alignCameraToPoints() {
+  previewCanvasRef.value?.alignCameraToPoints?.();
+}
+
 async function toggleFullscreen() {
   await previewCanvasRef.value?.toggleFullscreen?.();
 }
 
 defineExpose({
   resetCamera,
+  alignCameraToPoints,
   toggleFullscreen
 });
 </script>

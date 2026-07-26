@@ -1,5 +1,8 @@
 import { normalizePointsBuilderProject } from '../pointsbuilder/defaults.js';
-import { isGeneratorValueName } from './parameter-values.js';
+import {
+  collectGeneratorValueEntries,
+  isGeneratorNumericType
+} from './bindings.js';
 
 export const GENERATOR_POINTS_BUILDER_STATE_KEY = 'egpb_pb_state_v1';
 export const GENERATOR_POINTS_BUILDER_NAME_KEY = 'egpb_pb_project_name_v1';
@@ -9,10 +12,8 @@ export const GENERATOR_POINTS_BUILDER_VARIABLE_CONTEXT_KEY = 'egpb_pb_comp_conte
 
 const TOOL_KEY = 'generator-pointsbuilder';
 const KOTLIN_END_MODES = new Set(['builder', 'list', 'clone']);
-const NUMERIC_TYPES = new Set(['Int', 'Long', 'Float', 'Double']);
 
 function contextEntry(item, scope) {
-  if (!isGeneratorValueName(item?.name)) return null;
   return {
     name: item.name,
     ref: item.name,
@@ -23,15 +24,16 @@ function contextEntry(item, scope) {
 }
 
 export function createGeneratorPointsBuilderVariableContext(parameters = {}) {
-  const globalVars = (Array.isArray(parameters?.variables) ? parameters.variables : [])
-    .map((item) => contextEntry(item, '变量'))
-    .filter(Boolean);
-  const globalConsts = (Array.isArray(parameters?.constants) ? parameters.constants : [])
-    .map((item) => contextEntry(item, '常量'))
-    .filter(Boolean);
+  const entries = collectGeneratorValueEntries(parameters);
+  const globalVars = entries
+    .filter((entry) => entry.scope === 'variable')
+    .map((entry) => contextEntry(entry.value, '变量'));
+  const globalConsts = entries
+    .filter((entry) => entry.scope === 'constant')
+    .map((entry) => contextEntry(entry.value, '常量'));
   const numericMap = { PI: Math.PI };
   for (const item of [...globalVars, ...globalConsts]) {
-    if (!NUMERIC_TYPES.has(item.type)) continue;
+    if (!isGeneratorNumericType(item.type)) continue;
     const numeric = Number(item.value);
     if (Number.isFinite(numeric)) numericMap[item.name] = numeric;
   }

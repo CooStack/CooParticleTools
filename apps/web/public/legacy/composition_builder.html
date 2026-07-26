@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>Composition 构建器</title>
-    <link rel="stylesheet" href="./assets/composition_builder/css/style.css?v=20260710_3"/>
+    <link rel="stylesheet" href="./assets/composition_builder/css/style.css?v=20260726_3"/>
     <link rel="stylesheet" href="./assets/shared/css/minecraft-theme.css?v=20260710_2"/>
     <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
 </head>
@@ -30,9 +30,6 @@
             <button id="btnRedo" class="btn">重做</button>
             <button id="btnSettings" class="btn">设置</button>
             <button id="btnHotkeys" class="btn">快捷键</button>
-            <button id="btnImportProject" class="btn">导入</button>
-            <button id="btnExportProject" class="btn">导出</button>
-            <input id="fileProject" type="file" accept="application/json" hidden/>
             <button id="btnGenerateCode" class="btn">生成代码</button>
             <button id="btnCopyCode" class="btn">复制代码</button>
         </div>
@@ -76,14 +73,18 @@
                     <div id="selectBox" class="select-box hidden"></div>
                 </div>
                 <aside class="preview-editor-column">
-                    <details id="projectEditorDrawer" class="preview-project-drawer">
-                        <summary class="project-drawer-summary">
-                            <span>项目设置</span>
+                    <nav class="preview-editor-tabs" role="tablist" aria-label="设置范围">
+                        <button id="btnProjectEditorTab" class="preview-editor-tab" type="button" role="tab" aria-selected="false" aria-controls="projectSection" tabindex="-1">
+                            <span>全局设置</span>
                             <span class="badge">全局</span>
-                        </summary>
-                        <div id="projectSection" class="project-section"></div>
-                    </details>
-                    <aside id="cardsRoot" class="cards composition-card-editor-root preview-editor-root"></aside>
+                        </button>
+                        <button id="btnCardEditorTab" class="preview-editor-tab active" type="button" role="tab" aria-selected="true" aria-controls="cardsRoot" tabindex="0">
+                            <span>卡片设置</span>
+                            <span id="activeCardTabLabel" class="badge">卡片 1</span>
+                        </button>
+                    </nav>
+                    <section id="projectSection" class="project-section preview-editor-view hidden" role="tabpanel" aria-labelledby="btnProjectEditorTab"></section>
+                    <aside id="cardsRoot" class="cards composition-card-editor-root preview-editor-root preview-editor-view" role="tabpanel" aria-labelledby="btnCardEditorTab"></aside>
                 </aside>
             </div>
         </section>
@@ -207,6 +208,130 @@
         </div>
     </div>
 
+    <div id="cardPresetMask" class="modal-mask hidden"></div>
+    <div id="cardPresetModal" class="modal modal-preset hidden" role="dialog" aria-modal="true" aria-labelledby="cardPresetTitle">
+        <div class="modal-head modal-head-simple">
+            <div id="cardPresetTitle" class="modal-title">卡片预设</div>
+            <button id="btnCloseCardPreset" class="btn icon" type="button" aria-label="关闭卡片预设窗口">X</button>
+        </div>
+        <div class="modal-body preset-modal-body">
+            <div id="cardPresetContext" class="preset-context">当前卡片</div>
+            <div class="preset-browser-layout">
+                <nav class="preset-tree" aria-label="卡片预设分类">
+                    <div class="preset-tree-head">
+                        <div class="preset-tree-root">presets/</div>
+                    </div>
+                    <div class="preset-tree-folders" data-preset-folder-list></div>
+                    <div class="preset-folder-editor hidden" data-preset-folder-editor>
+                        <input class="input" type="text" data-preset-folder-name placeholder="文件夹名称" maxlength="80" autocomplete="off"/>
+                        <button class="btn icon" type="button" data-preset-action="confirm-folder" title="确认创建" aria-label="确认创建">✓</button>
+                        <button class="btn icon" type="button" data-preset-action="cancel-folder" title="取消创建" aria-label="取消创建">×</button>
+                    </div>
+                </nav>
+                <div class="preset-browser-content">
+                    <div class="preset-directory-head">
+                        <span class="preset-directory-path">presets/cards/</span>
+                        <input id="cardPresetSearch" class="input preset-search-input" data-preset-search type="search" placeholder="搜索预设" autocomplete="off"/>
+                    </div>
+                    <div id="cardPresetList" class="preset-list" data-preset-list role="listbox" aria-label="卡片预设列表"></div>
+                    <div id="cardPresetStatus" class="preset-status" role="status"></div>
+                    <fieldset class="preset-apply-options">
+                        <legend>应用内容</legend>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="position" checked/>
+                            <span><strong>位置信息</strong><small>PointsBuilder 或单个点配置</small></span>
+                        </label>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="particle" checked/>
+                            <span><strong>粒子信息</strong><small>单粒子或 Composition 类型</small></span>
+                        </label>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="properties" checked/>
+                            <span><strong>粒子属性</strong><small>particleInit、缩放助手、显示行为与生长动画</small></span>
+                        </label>
+                    </fieldset>
+                </div>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <span class="flex-spacer"></span>
+            <button id="btnCloseCardPreset2" class="btn" type="button">取消</button>
+            <button class="btn primary" type="button" data-preset-action="apply">应用预设</button>
+        </div>
+        <div class="preset-context-menu hidden" data-preset-context-menu role="menu" aria-label="卡片预设操作"></div>
+        <div class="preset-save-dialog-mask hidden" data-preset-save-dialog-mask data-preset-action="cancel-save"></div>
+        <div class="preset-save-dialog hidden" data-preset-save-dialog role="dialog" aria-modal="true" aria-labelledby="cardPresetSaveTitle">
+            <div id="cardPresetSaveTitle" class="preset-save-dialog-title">保存为预设</div>
+            <input class="input" type="text" data-preset-save-name aria-label="预设名称" placeholder="输入预设名称" maxlength="80" autocomplete="off"/>
+            <div class="preset-save-dialog-actions">
+                <button class="btn" type="button" data-preset-action="cancel-save">取消</button>
+                <button class="btn primary" type="button" data-preset-action="confirm-save">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="nodePresetMask" class="modal-mask hidden"></div>
+    <div id="nodePresetModal" class="modal modal-preset hidden" role="dialog" aria-modal="true" aria-labelledby="nodePresetTitle">
+        <div class="modal-head modal-head-simple">
+            <div id="nodePresetTitle" class="modal-title">卡片子节点预设</div>
+            <button id="btnCloseNodePreset" class="btn icon" type="button" aria-label="关闭子节点预设窗口">X</button>
+        </div>
+        <div class="modal-body preset-modal-body">
+            <div id="nodePresetContext" class="preset-context">当前子节点</div>
+            <div class="preset-browser-layout">
+                <nav class="preset-tree" aria-label="子节点预设分类">
+                    <div class="preset-tree-head">
+                        <div class="preset-tree-root">presets/</div>
+                    </div>
+                    <div class="preset-tree-folders" data-preset-folder-list></div>
+                    <div class="preset-folder-editor hidden" data-preset-folder-editor>
+                        <input class="input" type="text" data-preset-folder-name placeholder="文件夹名称" maxlength="80" autocomplete="off"/>
+                        <button class="btn icon" type="button" data-preset-action="confirm-folder" title="确认创建" aria-label="确认创建">✓</button>
+                        <button class="btn icon" type="button" data-preset-action="cancel-folder" title="取消创建" aria-label="取消创建">×</button>
+                    </div>
+                </nav>
+                <div class="preset-browser-content">
+                    <div class="preset-directory-head">
+                        <span class="preset-directory-path">presets/nodes/</span>
+                        <input id="nodePresetSearch" class="input preset-search-input" data-preset-search type="search" placeholder="搜索预设" autocomplete="off"/>
+                    </div>
+                    <div id="nodePresetList" class="preset-list" data-preset-list role="listbox" aria-label="子节点预设列表"></div>
+                    <div id="nodePresetStatus" class="preset-status" role="status"></div>
+                    <fieldset class="preset-apply-options">
+                        <legend>应用内容</legend>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="position" checked/>
+                            <span><strong>位置信息</strong><small>PointsBuilder 或单个点配置</small></span>
+                        </label>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="particle" checked/>
+                            <span><strong>粒子信息</strong><small>单粒子或 Composition 类型</small></span>
+                        </label>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="properties" checked/>
+                            <span><strong>粒子属性</strong><small>particleInit、缩放助手、显示行为与生长动画</small></span>
+                        </label>
+                    </fieldset>
+                </div>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <span class="flex-spacer"></span>
+            <button id="btnCloseNodePreset2" class="btn" type="button">取消</button>
+            <button class="btn primary" type="button" data-preset-action="apply">应用预设</button>
+        </div>
+        <div class="preset-context-menu hidden" data-preset-context-menu role="menu" aria-label="节点预设操作"></div>
+        <div class="preset-save-dialog-mask hidden" data-preset-save-dialog-mask data-preset-action="cancel-save"></div>
+        <div class="preset-save-dialog hidden" data-preset-save-dialog role="dialog" aria-modal="true" aria-labelledby="nodePresetSaveTitle">
+            <div id="nodePresetSaveTitle" class="preset-save-dialog-title">保存为预设</div>
+            <input class="input" type="text" data-preset-save-name aria-label="预设名称" placeholder="输入预设名称" maxlength="80" autocomplete="off"/>
+            <div class="preset-save-dialog-actions">
+                <button class="btn" type="button" data-preset-action="cancel-save">取消</button>
+                <button class="btn primary" type="button" data-preset-action="confirm-save">确认</button>
+            </div>
+        </div>
+    </div>
+
     <div id="builderMask" class="modal-mask hidden"></div>
     <div id="builderModal" class="modal modal-xl hidden" role="dialog" aria-modal="true">
         <div class="modal-head">
@@ -270,6 +395,6 @@
   }
 }
 </script>
-<script type="module" src="./assets/src/js/pages/composition-builder.page.js?v=20260710_6"></script>
+<script type="module" src="./assets/src/js/pages/composition-builder.page.js?v=20260726_3"></script>
 </body>
 </html>

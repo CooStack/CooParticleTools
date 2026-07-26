@@ -50,12 +50,14 @@ class ProjectStore:
         now = now_iso()
         with self._lock:
             current = self.get_project(tool, project_id)
+            file_path = str(payload.get("filePath") or (current or {}).get("filePath") or "").strip()
             project = {
                 "id": project_id,
                 "tool": tool,
                 "name": str(payload.get("name") or "Untitled Project").strip(),
                 "description": str(payload.get("description") or "").strip(),
                 "tags": payload.get("tags") if isinstance(payload.get("tags"), list) else [],
+                "filePath": file_path,
                 "payload": payload.get("payload") or {},
                 "createdAt": (current or {}).get("createdAt") or now,
                 "updatedAt": now,
@@ -66,7 +68,7 @@ class ProjectStore:
 
             metadata = {
                 key: project[key]
-                for key in ("id", "tool", "name", "description", "tags", "createdAt", "updatedAt", "storageMode")
+                for key in ("id", "tool", "name", "description", "tags", "filePath", "createdAt", "updatedAt", "storageMode")
             }
             index = [
                 item

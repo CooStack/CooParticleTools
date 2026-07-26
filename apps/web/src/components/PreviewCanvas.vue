@@ -160,12 +160,20 @@ function resetCamera() {
   threePreview.value?.resetCamera();
 }
 
+function alignCameraToPoints() {
+  if (isLineMode.value) {
+    draw2d();
+    return;
+  }
+  threePreview.value?.alignCameraToPoints();
+}
+
 async function toggleFullscreen() {
   if (isLineMode.value) return;
   await threePreview.value?.toggleFullscreen();
 }
 
-defineExpose({ resetCamera, toggleFullscreen });
+defineExpose({ resetCamera, alignCameraToPoints, toggleFullscreen });
 
 onMounted(async () => {
   await ensureThreePreview();

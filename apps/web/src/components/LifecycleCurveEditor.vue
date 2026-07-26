@@ -17,6 +17,30 @@
     </div>
 
     <div class="curve-stage" @dblclick.stop="toggleExpanded">
+      <input
+        class="curve-range-input curve-range-input--max"
+        type="number"
+        step="0.01"
+        :value="displayMaxText"
+        aria-label="显示上限"
+        title="显示上限；清空后恢复自动范围"
+        @change="updateDisplayBound('max', $event)"
+        @click.stop
+        @dblclick.stop
+        @pointerdown.stop
+      />
+      <input
+        class="curve-range-input curve-range-input--min"
+        type="number"
+        step="0.01"
+        :value="displayMinText"
+        aria-label="显示下限"
+        title="显示下限；清空后恢复自动范围"
+        @change="updateDisplayBound('min', $event)"
+        @click.stop
+        @dblclick.stop
+        @pointerdown.stop
+      />
       <svg
         ref="svgRef"
         class="curve-svg"
@@ -88,11 +112,11 @@
         <span class="frame-index">{{ index + 1 }}</span>
         <label>
           <span>%</span>
-          <input class="curve-input" type="number" min="0" max="100" step="1" :value="frame.time" :disabled="isEndpointFrame(frame.id)" @input="updateFrame(frame.id, 'time', $event.target.value)" />
+          <input class="curve-input" type="number" min="0" max="100" step="1" :value="frame.time" :disabled="isEndpointFrame(frame.id)" @change="updateFrame(frame.id, 'time', $event.target.value)" />
         </label>
         <label>
           <span>值</span>
-          <input class="curve-input" type="number" :min="curve.min" :max="inputValueMax" step="0.01" :value="frame.value" @input="updateFrame(frame.id, 'value', $event.target.value)" />
+          <input class="curve-input" type="number" :min="curve.min" :max="inputValueMax" step="0.01" :value="frame.value" @change="updateFrame(frame.id, 'value', $event.target.value)" />
         </label>
       </div>
     </div>
@@ -101,7 +125,13 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { clampNumber, clampPercent, createCurveKeyframe, getSortedKeyframes } from '../modules/generator/curves.js';
+import {
+  clampNumber,
+  clampPercent,
+  createCurveKeyframe,
+  getLifecycleCurveDisplayBounds,
+  getSortedKeyframes
+} from '../modules/generator/curves.js';
 
 const props = defineProps({
   title: { type: String, default: '曲线' },
@@ -114,24 +144,31 @@ const props = defineProps({
 const svgRef = ref(null);
 const selectedId = ref('');
 const dragging = ref(null);
+const dragCurve = ref(null);
 const windowDragging = ref(null);
 const windowOffset = ref({ x: 0, y: 0 });
 const expanded = ref(false);
-const displayMax = ref(resolveDisplayMax());
+const initialDisplayBounds = resolveDisplayBounds();
+const displayMin = ref(initialDisplayBounds.min);
+const displayMax = ref(initialDisplayBounds.max);
+const manualDisplayMin = ref(false);
+const manualDisplayMax = ref(false);
 const canvasPointerMode = ref('');
 const canvasHovering = ref(false);
 const syncingEndpoints = ref(false);
-const displayMin = computed(() => hasFinitePropNumber(props.hardMin) ? Number(props.hardMin) : Number(props.curve.min || 0));
+const activeCurve = computed(() => dragCurve.value || props.curve);
 const inputValueMax = computed(() => hasFinitePropNumber(props.hardMax) ? Number(props.hardMax) : null);
 const fillId = `curve_fill_${Math.random().toString(16).slice(2)}`;
 const gridX = [100, 200, 300, 400, 500];
 const gridY = [45, 90, 135];
 
-const sortedFrames = computed(() => getSortedKeyframes(props.curve));
+const sortedFrames = computed(() => getSortedKeyframes(activeCurve.value));
 
 const canDeleteSelected = computed(() => canDeleteFrame(selectedId.value));
 
 const valueRangeText = computed(() => `${formatValue(displayMin.value)} .. ${formatValue(displayMax.value)}`);
+const displayMinText = computed(() => Number(displayMin.value).toFixed(2));
+const displayMaxText = computed(() => Number(displayMax.value).toFixed(2));
 const expandedStyle = computed(() => (expanded.value
   ? { transform: `translate(${windowOffset.value.x}px, ${windowOffset.value.y}px)` }
   : null));
@@ -150,7 +187,7 @@ const linePath = computed(() => {
   const points = plottedFrames.value;
   if (!points.length) return '';
   if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
-  if (props.curve.mode === 'bezier') {
+  if (activeCurve.value.mode === 'bezier') {
     const parts = [`M ${points[0].x} ${points[0].y}`];
     for (let index = 1; index < points.length; index += 1) {
       const prev = sortedFrames.value[index - 1];
@@ -174,7 +211,7 @@ const fillPath = computed(() => {
 });
 
 const bezierHandleLines = computed(() => {
-  if (props.curve.mode !== 'bezier') return [];
+  if (activeCurve.value.mode !== 'bezier') return [];
   const rows = [];
   const points = plottedFrames.value;
   for (let index = 1; index < points.length; index += 1) {
@@ -211,8 +248,14 @@ watch(sortedFrames, (frames) => {
 
 watch(() => props.curve, () => {
   if (dragging.value) return;
-  displayMax.value = resolveDisplayMax();
+  syncDisplayBounds();
 }, { deep: true });
+
+watch(() => props.curve.id, () => {
+  manualDisplayMin.value = false;
+  manualDisplayMax.value = false;
+  syncDisplayBounds();
+});
 
 function toggleExpanded() {
   expanded.value = !expanded.value;
@@ -220,47 +263,82 @@ function toggleExpanded() {
 }
 
 function startWindowDrag(event) {
-  if (!expanded.value || event.button !== 0) return;
+  if (!expanded.value || windowDragging.value || event.button !== 0) return;
+  event.preventDefault();
   windowDragging.value = {
     startX: event.clientX,
     startY: event.clientY,
     originX: windowOffset.value.x,
-    originY: windowOffset.value.y
+    originY: windowOffset.value.y,
+    pointerId: event.pointerId
   };
   event.currentTarget?.setPointerCapture?.(event.pointerId);
   window.addEventListener('pointermove', handleWindowDrag);
-  window.addEventListener('pointerup', stopWindowDrag, { once: true });
+  window.addEventListener('pointerup', stopWindowDrag);
+  window.addEventListener('pointercancel', stopWindowDrag);
 }
 
 function handleWindowDrag(event) {
-  if (!windowDragging.value) return;
+  if (!windowDragging.value || event.pointerId !== windowDragging.value.pointerId) return;
   windowOffset.value = {
     x: windowDragging.value.originX + event.clientX - windowDragging.value.startX,
     y: windowDragging.value.originY + event.clientY - windowDragging.value.startY
   };
 }
 
-function stopWindowDrag() {
+function stopWindowDrag(event) {
+  if (event?.pointerId !== undefined
+    && windowDragging.value
+    && event.pointerId !== windowDragging.value.pointerId) return;
   windowDragging.value = null;
   window.removeEventListener('pointermove', handleWindowDrag);
+  window.removeEventListener('pointerup', stopWindowDrag);
+  window.removeEventListener('pointercancel', stopWindowDrag);
 }
 
-function resolveDisplayMax() {
-  if (hasFinitePropNumber(props.hardMax)) return Number(props.hardMax);
-  const maxFrame = Math.max(...getSortedKeyframes(props.curve).map((frame) => Number(frame.value || 0)), Number(props.curve.max || 1));
-  return Math.max(Number(props.curve.min || 0) + 0.0001, niceMax(maxFrame));
+function resolveDisplayBounds(curve = props.curve) {
+  return getLifecycleCurveDisplayBounds(curve, {
+    hardMin: props.hardMin,
+    hardMax: props.hardMax
+  });
 }
 
 function hasFinitePropNumber(value) {
   return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
 }
 
-function niceMax(value) {
-  if (value <= 1) return 1;
-  if (value <= 2) return 2;
-  if (value <= 5) return 5;
-  if (value <= 10) return 10;
-  return Math.ceil(value / 5) * 5;
+function syncDisplayBounds() {
+  const bounds = resolveDisplayBounds();
+  if (!manualDisplayMin.value) displayMin.value = bounds.min;
+  if (!manualDisplayMax.value) displayMax.value = bounds.max;
+  if (displayMax.value - displayMin.value < 0.01) {
+    if (manualDisplayMax.value) displayMin.value = Number((displayMax.value - 0.01).toFixed(2));
+    else displayMax.value = Number((displayMin.value + 0.01).toFixed(2));
+  }
+}
+
+function updateDisplayBound(edge, event) {
+  const raw = String(event.target.value ?? '').trim();
+  if (!raw) {
+    if (edge === 'min') manualDisplayMin.value = false;
+    else manualDisplayMax.value = false;
+    syncDisplayBounds();
+    event.target.value = edge === 'min' ? displayMinText.value : displayMaxText.value;
+    return;
+  }
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) {
+    event.target.value = edge === 'min' ? displayMinText.value : displayMaxText.value;
+    return;
+  }
+  if (edge === 'min') {
+    displayMin.value = Number(Math.min(numeric, displayMax.value - 0.01).toFixed(2));
+    manualDisplayMin.value = true;
+  } else {
+    displayMax.value = Number(Math.max(numeric, displayMin.value + 0.01).toFixed(2));
+    manualDisplayMax.value = true;
+  }
+  event.target.value = edge === 'min' ? displayMinText.value : displayMaxText.value;
 }
 
 function valueToY(value) {
@@ -357,19 +435,24 @@ function startPointDrag(id, event) {
     return;
   }
   if (event.ctrlKey || event.metaKey) return;
+  beginCurveDrag();
   dragging.value = { kind: 'point', id, pointerId: event.pointerId, lockedTime: endpointTimeForFrame(id) };
   event.currentTarget?.setPointerCapture?.(event.pointerId);
   window.addEventListener('pointermove', handlePointerMove);
-  window.addEventListener('pointerup', stopPointDrag, { once: true });
+  window.addEventListener('pointerup', stopPointDrag);
+  window.addEventListener('pointercancel', cancelPointDrag);
 }
 
 function startHandleDrag(id, role, event) {
   if (dragging.value || event.button !== 0) return;
+  event.preventDefault();
   selectedId.value = id;
+  beginCurveDrag();
   dragging.value = { kind: 'handle', id, role, pointerId: event.pointerId };
   event.currentTarget?.setPointerCapture?.(event.pointerId);
   window.addEventListener('pointermove', handlePointerMove);
-  window.addEventListener('pointerup', stopPointDrag, { once: true });
+  window.addEventListener('pointerup', stopPointDrag);
+  window.addEventListener('pointercancel', cancelPointDrag);
 }
 
 function startPointMouseDrag(id, event) {
@@ -382,13 +465,15 @@ function startPointMouseDrag(id, event) {
     return;
   }
   if (event.ctrlKey || event.metaKey) return;
+  beginCurveDrag();
   dragging.value = { kind: 'point', id, pointerId: null, lockedTime: endpointTimeForFrame(id) };
   window.addEventListener('mousemove', handleMouseMove);
   window.addEventListener('mouseup', stopMouseDrag, { once: true });
 }
 
 function handlePointerMove(event) {
-  if (!dragging.value) return;
+  if (!dragging.value
+    || (dragging.value.pointerId !== null && event.pointerId !== dragging.value.pointerId)) return;
   updateDraggedFrame(event.clientX, event.clientY);
 }
 
@@ -398,7 +483,7 @@ function handleMouseMove(event) {
 }
 
 function updateDraggedFrame(clientX, clientY) {
-  const frame = props.curve.keyframes.find((item) => item.id === dragging.value.id);
+  const frame = activeCurve.value.keyframes.find((item) => item.id === dragging.value.id);
   if (!frame) return;
   if (dragging.value.kind === 'handle') {
     const point = clientToSvgPoint(clientX, clientY);
@@ -416,18 +501,58 @@ function updateDraggedFrame(clientX, clientY) {
   frame.value = Number(clampCurveValue(pointToValue(clientX, clientY), { allowExpand: true }).toFixed(3));
 }
 
-function stopPointDrag() {
+function stopPointDrag(event) {
+  if (!dragging.value
+    || (dragging.value.pointerId !== null && event.pointerId !== dragging.value.pointerId)) return;
+  commitCurveDrag();
   dragging.value = null;
-  props.curve.keyframes.sort((a, b) => a.time - b.time);
   commitDisplayRange();
   window.removeEventListener('pointermove', handlePointerMove);
+  window.removeEventListener('pointerup', stopPointDrag);
+  window.removeEventListener('pointercancel', cancelPointDrag);
 }
 
 function stopMouseDrag() {
+  commitCurveDrag();
   dragging.value = null;
-  props.curve.keyframes.sort((a, b) => a.time - b.time);
   commitDisplayRange();
   window.removeEventListener('mousemove', handleMouseMove);
+  window.removeEventListener('mouseup', stopMouseDrag);
+}
+
+function beginCurveDrag() {
+  dragCurve.value = {
+    ...props.curve,
+    keyframes: getSortedKeyframes(props.curve).map((frame) => ({
+      ...frame,
+      in: { ...frame.in },
+      out: { ...frame.out }
+    }))
+  };
+}
+
+function commitCurveDrag() {
+  if (!dragCurve.value) return;
+  props.curve.keyframes = getSortedKeyframes(dragCurve.value).map((frame) => ({
+    ...frame,
+    in: { ...frame.in },
+    out: { ...frame.out }
+  }));
+  dragCurve.value = null;
+}
+
+function cancelPointDrag(event) {
+  if (event?.pointerId !== undefined
+    && dragging.value?.pointerId !== null
+    && event.pointerId !== dragging.value?.pointerId) return;
+  commitCurveDrag();
+  dragging.value = null;
+  commitDisplayRange();
+  window.removeEventListener('pointermove', handlePointerMove);
+  window.removeEventListener('pointerup', stopPointDrag);
+  window.removeEventListener('mousemove', handleMouseMove);
+  window.removeEventListener('mouseup', stopMouseDrag);
+  window.removeEventListener('pointercancel', cancelPointDrag);
 }
 
 function updateFrame(id, key, value) {
@@ -512,18 +637,15 @@ function clampCurveValue(value, options = {}) {
   const hasHardMax = hasFinitePropNumber(props.hardMax);
   const hardMin = Number(props.hardMin);
   const hardMax = Number(props.hardMax);
-  const min = hasHardMin ? hardMin : displayMin.value;
+  const curveMin = Number(props.curve.min);
+  const min = hasHardMin ? hardMin : Number.isFinite(curveMin) ? curveMin : Number.NEGATIVE_INFINITY;
   const max = hasHardMax ? hardMax : Number.POSITIVE_INFINITY;
   const next = clampNumber(value, min, max, Number(props.curve.defaultValue || 0));
-  if (options.allowExpand && !hasHardMax && next > displayMax.value) {
-    displayMax.value = niceMax(next);
-  }
   return next;
 }
 
 function commitDisplayRange() {
-  if (hasFinitePropNumber(props.hardMax)) return;
-  displayMax.value = resolveDisplayMax();
+  syncDisplayBounds();
 }
 
 function formatValue(value) {
@@ -536,15 +658,18 @@ onMounted(() => {
   window.addEventListener('keydown', handleCanvasModifierChange, true);
   window.addEventListener('keyup', handleCanvasModifierChange, true);
   window.addEventListener('blur', clearCanvasPointerMode);
+  window.addEventListener('blur', cancelPointDrag);
+  window.addEventListener('blur', stopWindowDrag);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('pointermove', handlePointerMove);
-  window.removeEventListener('mousemove', handleMouseMove);
-  window.removeEventListener('pointermove', handleWindowDrag);
+  cancelPointDrag();
+  stopWindowDrag();
   window.removeEventListener('keydown', handleCanvasModifierChange, true);
   window.removeEventListener('keyup', handleCanvasModifierChange, true);
   window.removeEventListener('blur', clearCanvasPointerMode);
+  window.removeEventListener('blur', cancelPointDrag);
+  window.removeEventListener('blur', stopWindowDrag);
 });
 </script>
 
@@ -569,14 +694,25 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
+.curve-editor:not(.expanded) {
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: auto 330px;
+}
+
 .curve-editor.expanded {
   position: fixed;
-  inset: 44px;
+  inset: 44px 44px auto;
+  height: calc(100vh - 88px);
+  min-height: 420px;
+  max-height: calc(100vh - 32px);
   z-index: 80;
   background: var(--bg-panel-strong);
   box-shadow: 0 32px 120px rgba(0, 0, 0, 0.56);
   padding: 18px;
   grid-template-rows: auto minmax(280px, 1fr) auto;
+  overflow-y: auto;
+  resize: vertical;
 }
 
 .curve-head,
@@ -634,10 +770,50 @@ onBeforeUnmount(() => {
 }
 
 .curve-stage {
+  position: relative;
   min-height: 164px;
   border-radius: 8px;
   overflow: hidden;
   background: var(--curve-canvas-bg);
+}
+
+.curve-stage > .curve-range-input {
+  position: absolute;
+  left: 6px;
+  z-index: 3;
+  width: 68px;
+  height: 26px !important;
+  min-height: 26px !important;
+  appearance: textfield;
+  border: 1px solid transparent !important;
+  border-radius: 4px !important;
+  outline: none;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: inherit;
+  padding: 2px 5px !important;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.curve-range-input::-webkit-inner-spin-button,
+.curve-range-input::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.curve-stage > .curve-range-input:focus {
+  border-color: color-mix(in srgb, var(--border) 82%, transparent) !important;
+  background: color-mix(in srgb, var(--bg-panel-strong) 90%, transparent) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 28%, transparent) !important;
+}
+
+.curve-range-input--max {
+  top: 6px;
+}
+
+.curve-range-input--min {
+  bottom: 6px;
 }
 
 .expanded .curve-stage {

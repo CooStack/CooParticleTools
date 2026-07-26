@@ -10,7 +10,7 @@
         <RouterLink class="btn small" :to="{ name: 'workbench' }">项目</RouterLink>
         <div>
           <h1>粒子发射器</h1>
-          <p>生成 Kotlin：<code>class {{ project.kotlin.className }}(pos: Vec3, world: Level?) : {{ project.kotlin.baseClass }}(pos, world)</code></p>
+          <p>生成 Kotlin：<code>class {{ project.kotlin.className }}(pos: {{ project.kotlin.mapping === 'yarn' ? 'Vec3d' : 'Vec3' }}, world: {{ project.kotlin.mapping === 'yarn' ? 'World' : 'Level' }}?) : {{ project.kotlin.baseClass }}(pos, world)</code></p>
         </div>
       </div>
       <div class="generator-actions">
@@ -18,14 +18,21 @@
         <button class="btn small" :class="{ primary: project.pageMode === 'code' }" @click="project.pageMode = 'code'">代码</button>
         <button class="btn small" @click="togglePreviewPlayback">{{ project.playing ? '暂停' : '继续' }}</button>
         <button class="btn small" @click="restartPreview">重播</button>
-        <button class="btn small" @click="exportJson">导出 JSON</button>
-        <button class="btn small" @click="openProjectWithShell">导入 JSON</button>
+        <button
+          class="btn small"
+          :class="{ primary: settingsOpen }"
+          :title="`设置（${formatHotkey(project.settings.hotkeys?.toggleSettings)}）`"
+          @click="toggleGeneratorSettings"
+        >设置</button>
         <button class="btn small danger" @click="resetProject">重置</button>
-        <input ref="fileInputRef" type="file" accept="application/json,.json" hidden @change="importJson" />
       </div>
     </header>
 
-    <main v-if="project.pageMode === 'editor'" class="generator-workspace" :style="workspaceStyle">
+    <main
+      v-if="project.pageMode === 'editor'"
+      class="generator-workspace"
+      :style="workspaceStyle"
+    >
       <aside class="generator-panel generator-left">
         <div class="panel-title-row">
           <strong>粒子发射器</strong>
@@ -41,7 +48,7 @@
         </section>
 
         <nav class="left-tabs" aria-label="页面切换">
-          <button v-for="tab in leftTabs" :key="tab.id" type="button" :class="{ active: project.leftTab === tab.id }" @click="project.leftTab = tab.id">
+          <button v-for="tab in leftTabs" :key="tab.id" type="button" :class="{ active: tab.id === 'settings' ? settingsOpen : project.leftTab === tab.id }" @click="selectGeneratorTab(tab.id)">
             {{ tab.label }}
           </button>
         </nav>
@@ -59,7 +66,10 @@
                 <button class="icon-btn emitter-toggle" @click.stop="card.enabled = !card.enabled">{{ card.enabled ? '●' : '○' }}</button>
                 <div>
                   <input v-model="card.name" class="plain-input" @click.stop />
-                  <div class="sub">{{ emitterTypeLabel(card.emitter.type) }}</div>
+                  <div class="sub emitter-card-meta">
+                    <span>{{ emitterTypeLabel(card.emitter.type) }}</span>
+                    <span v-if="duplicateEmitterSignCount(card)" class="duplicate-sign-badge">sign 重复</span>
+                  </div>
                 </div>
               </div>
               <div class="row-actions">
@@ -93,6 +103,7 @@
           <div class="block-title">项目设置</div>
           <label class="field"><span>类名</span><input v-model="project.kotlin.className" class="input" type="text" /></label>
           <label class="field"><span>包名</span><input v-model="project.kotlin.packageName" class="input" type="text" placeholder="cn.coostack.generated.emitters" /></label>
+          <label class="field"><span>映射</span><select v-model="project.kotlin.mapping" class="input"><option value="yarn">Yarn (Fabric)</option><option value="mojmap">Mojang / Mojmap</option></select></label>
           <label class="field"><span>发射器运行模式</span><select v-model="project.rootLifecycle.mode" class="input" @change="restartPreviewAfterRootLifecycleChange"><option value="once">只运行一次</option><option value="interval">持续运行</option><option value="interval_n_tick">按总 Tick 运行</option></select></label>
           <div class="grid2">
             <label class="field"><span>发射间隔 Tick</span><input v-model.number="project.rootLifecycle.intervalTick" class="input" type="number" min="1" step="1" @change="restartPreviewAfterRootLifecycleChange" /></label>
@@ -118,6 +129,27 @@
               <GeneratorParameterValueEditor :item="item" label="默认值" />
             </div>
             <label class="check-row parameter-codec"><input v-model="item.codec" type="checkbox" />生成 @CodecField</label>
+            <details v-if="isNumericVariable(item)" class="variable-automation">
+              <summary>
+                <span>变量变化</span>
+                <label class="check-row" @click.stop><input v-model="item.automation.enabled" type="checkbox" />启用</label>
+              </summary>
+              <div v-if="item.automation.enabled" class="variable-automation-body">
+                <div class="grid2">
+                  <label class="field"><span>自变量</span><select v-model="item.automation.source" class="input"><option value="lifecycle">Emitter 生命周期</option><option value="variable">指定变量</option></select></label>
+                  <label v-if="item.automation.source === 'variable'" class="field"><span>来源变量</span><select v-model="item.automation.sourceVariable" class="input"><option value="">请选择</option><option v-for="source in automationSourceVariables(item)" :key="source.name" :value="source.name">{{ source.name }}</option></select></label>
+                </div>
+                <div v-if="item.automation.source === 'variable'" class="grid2">
+                  <label class="field"><span>来源最小值</span><input v-model.number="item.automation.sourceMin" class="input" type="number" step="any" /></label>
+                  <label class="field"><span>来源最大值</span><input v-model.number="item.automation.sourceMax" class="input" type="number" step="any" /></label>
+                </div>
+                <div class="grid2">
+                  <label class="field"><span>变量最小值</span><input v-model.number="item.automation.targetMin" class="input" type="number" step="any" /></label>
+                  <label class="field"><span>变量最大值</span><input v-model.number="item.automation.targetMax" class="input" type="number" step="any" /></label>
+                </div>
+                <LifecycleCurveEditor title="Progress 采样" :curve="item.automation.curve" :hard-min="0" :hard-max="1" />
+              </div>
+            </details>
           </div>
           <div class="panel-title-row compact">
             <span class="block-title">常量</span>
@@ -143,7 +175,12 @@
 
         <section v-else-if="project.leftTab === 'tick'" class="left-block">
           <div class="block-title">每 Tick 表达式</div>
-          <textarea v-model="doTickText" class="input code-textarea" placeholder="在这里填写每 tick 执行的表达式"></textarea>
+          <GeneratorExpressionEditor
+            v-model="project.doTick.source"
+            :completions="doTickCompletions"
+            :validation-message="doTickValidationMessage"
+            :placeholder="'phase += speed\nvalue = sin(phase)'"
+          />
         </section>
 
         <section v-else-if="project.leftTab === 'death'" class="left-block">
@@ -152,13 +189,6 @@
           <label class="field"><span>模式</span><select v-model="project.deathBehavior.mode" class="input"><option value="dissipate">直接消散</option><option value="respawn">重生粒子</option></select></label>
         </section>
 
-        <section v-else class="left-block">
-          <div class="block-title">设置</div>
-          <div class="settings-summary">
-            <span>主题：{{ themeLabel(project.settings.theme) }}</span>
-            <span>倍率：{{ formatScale(project.settings.particleRenderScale) }}</span>
-          </div>
-        </section>
       </aside>
 
       <div class="panel-resizer panel-resizer--left" role="separator" aria-label="调整左侧面板宽度" @pointerdown="startPanelResize('left', $event)"></div>
@@ -171,6 +201,7 @@
             <span class="chip">已运行：{{ previewTick }} Tick</span>
             <span class="chip">帧率：{{ fpsText }}</span>
             <button class="btn small" title="R" @click="previewCanvasRef?.resetCamera()">重置镜头</button>
+            <button class="btn small" @click="previewCanvasRef?.alignCameraToPoints()">对齐画面</button>
             <button class="btn small" title="C" @click="clearPreviewParticles">清理粒子</button>
             <button class="btn small" title="F" @click="previewCanvasRef?.toggleFullscreen()">全屏</button>
           </div>
@@ -187,7 +218,7 @@
           :interpolation-ms="previewInterpolationMs"
           @fps="fpsText = formatFps($event)"
         />
-        <div v-if="previewErrors.length" class="preview-error-overlay" role="status">
+        <div v-if="previewErrors.length && !hasVisibleAutocomplete" class="preview-error-overlay" role="status">
           <strong>配置错误</strong>
           <ul>
             <li v-for="item in previewErrors" :key="item.key || item.message">{{ item.message }}</li>
@@ -198,59 +229,7 @@
       <div class="panel-resizer panel-resizer--right" role="separator" aria-label="调整右侧面板宽度" @pointerdown="startPanelResize('right', $event)"></div>
 
       <aside class="generator-panel generator-right">
-        <template v-if="project.leftTab === 'settings'">
-          <div class="panel-title-row">
-            <strong>设置</strong>
-            <span class="chip">{{ themeLabel(project.settings.theme) }}</span>
-          </div>
-
-          <section class="editor-section">
-            <div class="section-title">预览渲染</div>
-            <div class="settings-grid">
-              <label class="field"><span>粒子基本倍率</span><input v-model.number="project.settings.particleRenderScale" class="input" type="number" min="0.05" max="20" step="0.05" /></label>
-              <label class="check-row"><input v-model="project.settings.showSkybox" type="checkbox" />显示天空盒</label>
-              <label class="check-row"><input v-model="project.settings.showGrid" type="checkbox" />显示网格</label>
-              <label class="check-row"><input v-model="project.settings.showAxes" type="checkbox" />显示坐标轴</label>
-            </div>
-          </section>
-
-          <section class="editor-section">
-            <div class="section-title">主题样式</div>
-            <div class="theme-choice-grid">
-              <button
-                v-for="theme in generatorThemeOptions"
-                :key="theme.id"
-                type="button"
-                class="theme-choice"
-                :class="{ selected: project.settings.theme === theme.id }"
-                :data-theme-option="theme.id"
-                @click="project.settings.theme = theme.id"
-              >
-                <span class="theme-swatch"></span>
-                <span>{{ theme.label }}</span>
-              </button>
-            </div>
-          </section>
-
-          <section class="editor-section">
-            <div class="section-title">快捷键</div>
-            <div class="hotkey-grid">
-              <label v-for="item in hotkeyFields" :key="item.key" class="hotkey-row">
-                <span>{{ item.label }}</span>
-                <input
-                  class="input hotkey-input"
-                  type="text"
-                  readonly
-                  :value="formatHotkey(project.settings.hotkeys[item.key])"
-                  @keydown.stop.prevent="recordHotkey(item.key, $event)"
-                />
-                <button class="btn small" type="button" @click="resetHotkey(item.key)">默认</button>
-              </label>
-            </div>
-          </section>
-        </template>
-
-        <template v-else-if="project.leftTab === 'queues' && selectedQueue">
+        <template v-if="project.leftTab === 'queues' && selectedQueue">
           <div class="panel-title-row">
             <strong>参数编辑</strong>
             <div class="inline-actions">
@@ -320,6 +299,17 @@
               <BindableField :card="selectedEmitter" path="render.textureSheet" label="RenderType" value-type="string" input-type="text" :autocomplete-options="renderTypeAutocompleteOptions" />
             </div>
 
+            <div class="grid2 external-parameter-grid">
+              <div class="field-pack external-parameter-option">
+                <label class="check-row"><input v-model="selectedEmitter.externalData" type="checkbox" />外放粒子数值数据</label>
+                <label v-if="selectedEmitter.externalData" class="field"><span>粒子数值数据变量名</span><input v-model="selectedEmitter.vars.data" class="input" type="text" placeholder="data1" /></label>
+              </div>
+              <div class="field-pack external-parameter-option">
+                <label class="check-row"><input v-model="selectedEmitter.externalTemplate" type="checkbox" />外放粒子数据</label>
+                <label v-if="selectedEmitter.externalTemplate" class="field"><span>粒子数据变量名</span><input v-model="selectedEmitter.vars.template" class="input" type="text" placeholder="template1" /></label>
+              </div>
+            </div>
+
             <BindableVector :card="selectedEmitter" path="emitter.offset" label="世界偏移" value-type="relative" step="0.1" />
 
             <EmitterSpecificFields :card="selectedEmitter" />
@@ -358,6 +348,25 @@
           </section>
 
           <section class="editor-section">
+            <div class="section-title">物理</div>
+            <div class="grid3 physics-grid">
+              <BindableField :card="selectedEmitter" path="physics.gravity" label="重力强度（0=关闭）" min="0" step="0.01" />
+              <label class="field"><span>粒子物理碰撞</span><select v-model="selectedEmitter.physics.collision" class="input"><option :value="false">关闭</option><option :value="true">开启</option></select></label>
+              <label class="field">
+                <span>粒子碰撞目标</span>
+                <input
+                  class="input"
+                  type="text"
+                  :disabled="!selectedEmitter.physics.collision"
+                  :value="selectedEmitter.physics.collisionTargets.join(', ')"
+                  placeholder="留空表示所有 sign"
+                  @input="updateCollisionTargets(selectedEmitter, $event.target.value)"
+                />
+              </label>
+            </div>
+          </section>
+
+          <section class="editor-section">
             <div class="section-title">渲染与姿态</div>
             <div class="grid3">
               <label class="field"><span>相机模式</span><select v-model="selectedEmitter.render.billboardMode" class="input" @change="syncBillboardScaleMode(selectedEmitter)"><option v-for="mode in billboardModes" :key="mode.id" :value="mode.id">{{ mode.label }}</option></select></label>
@@ -380,9 +389,14 @@
               <BindableField :card="selectedEmitter" path="render.baseScale.x" label="宽度倍率" value-type="float" min="0" step="0.01" />
               <BindableField :card="selectedEmitter" path="render.baseScale.y" label="高度倍率" value-type="float" min="0" step="0.01" />
             </div>
-            <div class="grid3">
+            <div class="grid3 sign-grid-row">
               <BindableField v-if="usesDepthScale(selectedEmitter)" :card="selectedEmitter" path="render.baseScale.z" label="深度倍率" value-type="float" min="0" step="0.01" />
-              <BindableField :card="selectedEmitter" path="render.sign" label="标记值" value-type="int" step="1" />
+              <div class="field-pack sign-field-wrap" :class="{ 'duplicate-sign-field': duplicateEmitterSignCount(selectedEmitter) }">
+                <BindableField :card="selectedEmitter" path="render.sign" label="标记值" value-type="int" step="1" />
+                <small v-if="duplicateEmitterSignCount(selectedEmitter)" class="duplicate-sign-message">
+                  与 {{ duplicateEmitterSignCount(selectedEmitter) }} 个启用发射器 sign 重复
+                </small>
+              </div>
               <BindableField :card="selectedEmitter" path="render.speedLimit" label="速度上限" min="0" step="1" />
             </div>
           </section>
@@ -430,20 +444,33 @@
           <strong>Kotlin 输出</strong>
           <button class="btn small primary" @click="copyKotlin">复制代码</button>
         </div>
-        <pre class="kotlin-output">{{ kotlinOutput }}</pre>
+        <pre class="kotlin-output"><code v-html="highlightedKotlinOutput"></code></pre>
       </div>
     </section>
+    <GeneratorSettingsModal
+      :open="settingsOpen"
+      :project="project"
+      :theme-options="generatorThemeOptions"
+      :hotkey-fields="hotkeyFields"
+      @close="closeGeneratorSettings"
+      @lifecycle-change="restartPreviewAfterRootLifecycleChange"
+      @record-hotkey="recordHotkeyFromSettings"
+      @reset-hotkeys="resetAllHotkeys"
+    />
   </div>
   <div v-else class="generator-loading" role="status">正在打开项目...</div>
 </template>
 
 <script setup>
 import { RouterLink } from 'vue-router';
-import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, Teleport, watch } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router';
 import PreviewCanvas from '../components/PreviewCanvas.vue';
 import LifecycleCurveEditor from '../components/LifecycleCurveEditor.vue';
 import GeneratorParameterValueEditor from '../components/GeneratorParameterValueEditor.vue';
+import GeneratorExpressionEditor from '../components/GeneratorExpressionEditor.vue';
+import GeneratorSettingsModal from '../components/GeneratorSettingsModal.vue';
+import { highlightKotlin } from '../utils/legacy-code-highlight.js';
 import {
   BILLBOARD_MODES,
   COMMAND_TYPE_OPTIONS,
@@ -460,6 +487,8 @@ import {
   createGeneratorProject,
   createGeneratorVariable,
   createQueueCommand,
+  countDuplicateEmitterSigns,
+  normalizeCollisionTargets,
   normalizeGeneratorProject
 } from '../modules/generator/defaults.js';
 import { generateEmitterKotlin } from '../modules/generator/codegen.js';
@@ -467,30 +496,46 @@ import { createGeneratorPreviewRuntime } from '../modules/generator/preview-simu
 import {
   consumePendingGeneratorProject,
   getElectronShell,
-  isElectronShell,
   openProjectResult,
   sanitizeFileBase
 } from '../services/shell/electron-shell.js';
-import { classifyProjectData } from '../modules/projects/project-types.js';
+import { classifyProjectData, parseProjectText } from '../modules/projects/project-types.js';
 import { getProjectRepository } from '../services/repositories/project-repository.js';
 import { evaluatePointsProject } from '../modules/pointsbuilder/evaluator.js';
 import {
+  calculateGeneratorNumericScrubValue,
   filterGeneratorBindingsByType,
-  filterGeneratorValueNameInput,
-  isGeneratorValueName
+  filterGeneratorValueNameInput
 } from '../modules/generator/parameter-values.js';
+import {
+  collectGeneratorValueEntries,
+  createGeneratorBindingResolver,
+  generatorBindingType
+} from '../modules/generator/bindings.js';
+import {
+  analyzeGeneratorDoTick,
+  applyGeneratorExpressionCompletion,
+  buildGeneratorExpressionCompletions,
+  isLikelyIncompleteGeneratorExpression,
+  validateGeneratorExpression
+} from '../modules/generator/expression-runtime.js';
 import {
   getProjectNodes
 } from '../modules/pointsbuilder/defaults.js';
+import {
+  eventToHotkey,
+  hotkeyMatchEvent,
+  hotkeyToHuman
+} from '../modules/pointsbuilder/hotkeys.js';
 
 const STORAGE_KEY = 'vue_emitter_generator_state_v2';
+const AUTO_SAVE_DELAY_MS = 350;
 const MAX_PREVIEW_UPDATES_PER_SECOND = 60;
 const LEFT_PANEL_MIN_WIDTH = 220;
 const RIGHT_PANEL_MIN_WIDTH = 260;
 const PREVIEW_MIN_WIDTH = 160;
 const PANEL_RESIZER_WIDTH = 8;
 const PANEL_WIDTH_MAX_FALLBACK = 2400;
-const fileInputRef = ref(null);
 const previewCanvasRef = ref(null);
 const route = useRoute();
 const router = useRouter();
@@ -499,7 +544,8 @@ const fpsText = ref('--');
 const previewTick = ref(0);
 const previewPoints = shallowRef([]);
 const previewErrors = ref([]);
-const doTickText = ref('');
+const visibleAutocompleteIds = ref(new Set());
+const settingsOpen = ref(false);
 const project = ref(createGeneratorProject(loadSavedProject()));
 const currentProjectPath = ref('');
 const projectReady = ref(!String(route.query.projectId || ''));
@@ -512,6 +558,8 @@ let indexedSaveTimer = 0;
 let projectLoadToken = 0;
 let indexedSaveQueue = Promise.resolve();
 let historyApplying = false;
+let suppressNextProjectAutoSave = false;
+let savedFileSnapshot = JSON.stringify(project.value);
 const undoStack = [];
 const redoStack = [];
 
@@ -534,18 +582,20 @@ const generatorValueTypes = GENERATOR_VALUE_TYPES;
 const commandTypeOptions = COMMAND_TYPE_OPTIONS;
 const generatorThemeOptions = GENERATOR_THEME_OPTIONS;
 const hotkeyFields = [
+  { key: 'toggleSettings', label: '设置' },
   { key: 'playPause', label: '播放 / 暂停' },
   { key: 'clearParticles', label: '清理粒子' },
   { key: 'resetCamera', label: '重置镜头' },
   { key: 'fullscreen', label: '全屏预览' },
   { key: 'deleteEmitter', label: '删除发射器' },
-  { key: 'undo', label: '撤销（Ctrl）' },
-  { key: 'redo', label: '重做（Ctrl）' }
+  { key: 'undo', label: '撤销' },
+  { key: 'redo', label: '重做' }
 ];
 
 const selectedEmitter = computed(() => project.value.emitters.find((card) => card.id === project.value.selectedEmitterId) || project.value.emitters[0] || null);
 const selectedQueue = computed(() => project.value.commandQueues.find((queue) => queue.id === project.value.selectedQueueId) || project.value.commandQueues[0] || null);
 const kotlinOutput = computed(() => generateEmitterKotlin(project.value));
+const highlightedKotlinOutput = computed(() => highlightKotlin(kotlinOutput.value));
 const previewInterpolationMs = computed(() => {
   const ticksPerSecond = Math.max(1, Number(project.value.ticksPerSecond || 20));
   const updateRate = Math.min(ticksPerSecond, MAX_PREVIEW_UPDATES_PER_SECOND);
@@ -555,14 +605,44 @@ const workspaceStyle = computed(() => ({
   '--left-panel-width': `${project.value.settings.leftPanelWidth || 340}px`,
   '--right-panel-width': `${project.value.settings.rightPanelWidth || 480}px`
 }));
-const bindableRefs = computed(() => [
-  ...(project.value.parameters?.variables || []),
-  ...(project.value.parameters?.constants || [])
-].filter((item) => isGeneratorValueName(item?.name)).map((item) => ({
+const hasVisibleAutocomplete = computed(() => visibleAutocompleteIds.value.size > 0);
+
+function setGeneratorAutocompleteVisibility(id, visible) {
+  const current = visibleAutocompleteIds.value;
+  if (current.has(id) === visible) return;
+  const next = new Set(current);
+  if (visible) next.add(id);
+  else next.delete(id);
+  visibleAutocompleteIds.value = next;
+}
+const bindableRefs = computed(() => collectGeneratorValueEntries(project.value.parameters).map(({ scope, value: item }) => ({
   name: item.name,
   type: item.type,
-  label: `${item.name} : ${item.type}${item.codec === false ? ' const' : ''}`
+  kind: scope === 'constant' ? 'constant' : 'variable',
+  label: `${item.name} : ${item.type}${scope === 'constant' ? ' const' : ''}`,
+  detail: `${item.type}${scope === 'constant' ? ' const' : ''}`
 })));
+const bindingResolver = computed(() => createGeneratorBindingResolver(project.value.parameters));
+const doTickCompletions = computed(() => buildGeneratorExpressionCompletions(project.value.parameters, { statements: true }));
+const doTickValidationMessage = computed(() => {
+  const source = project.value.doTick?.source || '';
+  if (isLikelyIncompleteGeneratorExpression(source)) return '';
+  const typed = analyzeGeneratorDoTick(source, project.value.parameters, {
+    context: { tick: 0, progress: 0 }
+  });
+  if (typed.handled) return typed.valid ? '' : typed.message;
+  if (typed.fallbackSafe !== true) {
+    return typed.message || '复杂 doTick 无法可靠转换为 Kotlin';
+  }
+  return validateGeneratorExpression(
+    source,
+    [...bindableRefs.value.map((item) => item.name), 'progress'],
+    {
+      statements: true,
+      mutableNames: project.value.parameters.variables.map((item) => item.name)
+    }
+  ).message;
+});
 const vectorBindingModes = [
   { id: 'constant', label: '常量' },
   { id: 'independent', label: '独立变量' },
@@ -586,12 +666,39 @@ const BindableField = defineComponent({
     compact: { type: Boolean, default: false }
   },
   setup(props) {
+    const draftValue = ref(null);
+    watch(
+      () => [props.card, props.path, props.valueType],
+      () => { draftValue.value = null; },
+      { flush: 'sync' }
+    );
+
+    function updateValue(next) {
+      if (isBindableNumericValueType(props.valueType)) {
+        draftValue.value = String(next ?? '');
+        return;
+      }
+      applyBindableSingleInput(props.card, props.path, next, props.valueType);
+    }
+
+    function commitValue(next) {
+      const value = draftValue.value ?? next;
+      applyBindableSingleInput(props.card, props.path, value, props.valueType);
+      draftValue.value = null;
+    }
+
     return () => h('label', { class: ['field', 'bindable-field', { compact: props.compact }] }, [
       h('span', props.label),
-      renderBindableSingleInput(props.card, props.path, props)
+      renderBindableSingleInput(props.card, props.path, props, {
+        draftValue: draftValue.value,
+        onUpdate: updateValue,
+        onCommit: commitValue
+      })
     ]);
   }
 });
+
+let minecraftAutocompleteSequence = 0;
 
 const MinecraftAutocomplete = defineComponent({
   name: 'MinecraftAutocomplete',
@@ -600,48 +707,254 @@ const MinecraftAutocomplete = defineComponent({
     options: { type: Array, default: () => [] },
     maxItems: { type: Number, default: 10 },
     placeholder: { type: String, default: '' },
-    title: { type: String, default: '' }
+    title: { type: String, default: '' },
+    expression: { type: Boolean, default: false },
+    validationMessage: { type: String, default: '' },
+    scrub: { type: Boolean, default: false },
+    scrubStep: { type: [String, Number], default: 0.01 },
+    scrubMin: { type: [String, Number], default: undefined },
+    scrubMax: { type: [String, Number], default: undefined }
   },
-  emits: ['update:modelValue'],
+  emits: ['update:modelValue', 'commit'],
   setup(props, { emit }) {
+    const instanceId = `generator-autocomplete-${++minecraftAutocompleteSequence}`;
+    const listboxId = `${instanceId}-listbox`;
+    const validationId = `${instanceId}-validation`;
+    const inputRef = ref(null);
+    const suggestionRef = ref(null);
     const open = ref(false);
+    const composing = ref(false);
     const activeIndex = ref(0);
+    const hasExplicitSelection = ref(false);
+    const selectionStart = ref(0);
+    const selectionEnd = ref(0);
+    const suggestionStyle = ref({});
+    let trackingSuggestions = false;
+    let scrubState = null;
+    let suppressScrubClick = false;
+    const activeQuery = computed(() => {
+      const value = String(props.modelValue || '');
+      if (!props.expression) return value.trim().toLowerCase();
+      const cursor = Math.min(value.length, Math.max(0, selectionStart.value));
+      return (value.slice(0, cursor).match(/[A-Za-z_][A-Za-z0-9_]*$/)?.[0] || '').toLowerCase();
+    });
     const matches = computed(() => {
-      const query = String(props.modelValue || '').trim().toLowerCase();
+      const query = activeQuery.value;
       const normalized = props.options
         .map((item) => ({
+          id: String(item?.id || `${item?.kind || 'option'}:${item?.value || item?.label || ''}`),
           value: String(item?.value || ''),
-          label: String(item?.label || item?.value || '')
+          insertText: String(item?.insertText || item?.value || ''),
+          label: String(item?.label || item?.value || ''),
+          displayText: String(item?.displayText || item?.value || ''),
+          detail: String(item?.detail ?? (item?.label !== item?.value ? item?.label || '' : '')),
+          kind: String(item?.kind || ''),
+          type: String(item?.type || ''),
+          cursorOffset: item?.cursorOffset,
+          selectionLength: item?.selectionLength,
+          memberInsertText: item?.memberInsertText
         }))
         .filter((item) => item.value);
       const filtered = query
-        ? normalized.filter((item) => item.value.toLowerCase().includes(query) || item.label.toLowerCase().includes(query))
+        ? normalized.filter((item) => [item.value, item.label, item.displayText, item.detail]
+          .some((text) => text.toLowerCase().includes(query)))
         : normalized;
       return filtered
         .sort((a, b) => scoreAutocomplete(a, query) - scoreAutocomplete(b, query) || a.value.localeCompare(b.value))
-        .slice(0, Math.max(1, props.maxItems));
+        .slice(0, Math.min(8, Math.max(1, props.maxItems)));
+    });
+    const menuVisible = computed(() => open.value && matches.value.length > 0);
+    const showValidation = computed(() => Boolean(props.validationMessage) && !menuVisible.value);
+
+    watch(menuVisible, (visible) => {
+      setGeneratorAutocompleteVisibility(instanceId, visible);
+    }, { immediate: true });
+
+    watch(matches, (items) => {
+      if (activeIndex.value >= items.length) activeIndex.value = 0;
+      if (open.value) nextTick(updateSuggestionPosition);
     });
 
-    function update(value) {
-      emit('update:modelValue', value);
+    function updateSuggestionPosition() {
+      const input = inputRef.value;
+      if (!input || typeof window === 'undefined') return;
+      const rect = input.getBoundingClientRect();
+      const gap = 4;
+      const viewportGap = 8;
+      const desiredHeight = Math.min(328, Math.max(48, matches.value.length * 40 + 8));
+      const availableBelow = window.innerHeight - rect.bottom - viewportGap - gap;
+      const availableAbove = rect.top - viewportGap - gap;
+      const placeAbove = availableBelow < desiredHeight && availableAbove > availableBelow;
+      const maxHeight = Math.max(48, Math.min(desiredHeight, placeAbove ? availableAbove : availableBelow));
+      const width = Math.min(
+        Math.max(rect.width, 360),
+        480,
+        window.innerWidth - viewportGap * 2
+      );
+      const left = Math.min(Math.max(viewportGap, rect.left), window.innerWidth - width - viewportGap);
+      suggestionStyle.value = {
+        position: 'fixed',
+        left: `${left}px`,
+        top: `${placeAbove ? Math.max(viewportGap, rect.top - maxHeight - gap) : rect.bottom + gap}px`,
+        width: `${width}px`,
+        maxWidth: `${window.innerWidth - viewportGap * 2}px`,
+        maxHeight: `${maxHeight}px`
+      };
+    }
+
+    function scrollActiveSuggestion() {
+      nextTick(() => {
+        const active = suggestionRef.value?.querySelector(`[data-completion-index="${activeIndex.value}"]`);
+        active?.scrollIntoView({ block: 'nearest' });
+      });
+    }
+
+    function startSuggestionTracking() {
+      if (trackingSuggestions || typeof window === 'undefined') return;
+      trackingSuggestions = true;
+      window.addEventListener('resize', updateSuggestionPosition);
+      window.addEventListener('scroll', updateSuggestionPosition, true);
+    }
+
+    function stopSuggestionTracking() {
+      if (!trackingSuggestions || typeof window === 'undefined') return;
+      trackingSuggestions = false;
+      window.removeEventListener('resize', updateSuggestionPosition);
+      window.removeEventListener('scroll', updateSuggestionPosition, true);
+    }
+
+    onBeforeUnmount(() => {
+      stopNumericScrubTracking();
+      stopSuggestionTracking();
+      setGeneratorAutocompleteVisibility(instanceId, false);
+    });
+
+    function startNumericScrub(event) {
+      const startValue = Number(props.modelValue);
+      if (!props.scrub || event.button !== 0 || !Number.isFinite(startValue)) return;
+      scrubState = {
+        startY: event.clientY,
+        startValue,
+        lastValue: String(props.modelValue),
+        active: false
+      };
+      open.value = false;
+      window.addEventListener('pointermove', moveNumericScrub);
+      window.addEventListener('pointerup', finishNumericScrub, { once: true });
+      window.addEventListener('pointercancel', finishNumericScrub, { once: true });
+    }
+
+    function moveNumericScrub(event) {
+      if (!scrubState) return;
+      const verticalPixels = scrubState.startY - event.clientY;
+      if (!scrubState.active && Math.abs(verticalPixels) < 3) return;
+      scrubState.active = true;
+      event.preventDefault();
+      document.documentElement.classList.add('generator-numeric-scrubbing');
+      const scale = event.shiftKey ? 0.1 : (event.ctrlKey || event.metaKey) ? 10 : 1;
+      const next = calculateGeneratorNumericScrubValue(scrubState.startValue, verticalPixels, {
+        step: props.scrubStep,
+        min: props.scrubMin,
+        max: props.scrubMax,
+        scale
+      });
+      scrubState.lastValue = String(next);
+      emit('update:modelValue', scrubState.lastValue);
+    }
+
+    function finishNumericScrub(event) {
+      if (!scrubState) return;
+      const state = scrubState;
+      stopNumericScrubTracking();
+      if (!state.active) return;
+      event?.preventDefault?.();
+      suppressScrubClick = true;
+      emit('commit', state.lastValue);
+      open.value = false;
+    }
+
+    function stopNumericScrubTracking() {
+      scrubState = null;
+      document.documentElement.classList.remove('generator-numeric-scrubbing');
+      window.removeEventListener('pointermove', moveNumericScrub);
+      window.removeEventListener('pointerup', finishNumericScrub);
+      window.removeEventListener('pointercancel', finishNumericScrub);
+    }
+
+    function update(event) {
+      const target = event.target;
+      selectionStart.value = Number(target.selectionStart) || 0;
+      selectionEnd.value = Number(target.selectionEnd) || selectionStart.value;
+      emit('update:modelValue', target.value);
+      if (composing.value) {
+        open.value = false;
+        return;
+      }
       activeIndex.value = 0;
+      hasExplicitSelection.value = false;
       open.value = true;
+      nextTick(updateSuggestionPosition);
+    }
+
+    function syncSelection(event) {
+      const target = event?.target;
+      if (!target) return;
+      const nextStart = Number(target.selectionStart) || 0;
+      const nextEnd = Number(target.selectionEnd) || nextStart;
+      const selectionChanged = nextStart !== selectionStart.value || nextEnd !== selectionEnd.value;
+      selectionStart.value = nextStart;
+      selectionEnd.value = nextEnd;
+      if (event?.type === 'keyup' && ['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+      if (selectionChanged) {
+        activeIndex.value = 0;
+        hasExplicitSelection.value = false;
+      }
     }
 
     function accept(index = activeIndex.value) {
       const item = matches.value[index];
       if (!item) return;
-      emit('update:modelValue', item.value);
+      if (!props.expression) {
+        emit('update:modelValue', item.value);
+        selectionStart.value = item.value.length;
+        selectionEnd.value = item.value.length;
+      } else {
+        const next = applyGeneratorExpressionCompletion(
+          props.modelValue,
+          selectionStart.value,
+          selectionEnd.value,
+          item
+        );
+        emit('update:modelValue', next.value);
+        selectionStart.value = next.selectionStart;
+        selectionEnd.value = next.selectionEnd;
+        nextTick(() => {
+          inputRef.value?.focus();
+          inputRef.value?.setSelectionRange(next.selectionStart, next.selectionEnd);
+        });
+      }
       open.value = false;
+      hasExplicitSelection.value = false;
     }
 
     function move(delta) {
       if (!matches.value.length) return;
       open.value = true;
       activeIndex.value = (activeIndex.value + delta + matches.value.length) % matches.value.length;
+      hasExplicitSelection.value = true;
+      scrollActiveSuggestion();
     }
 
     function onKeydown(event) {
+      if (composing.value || event.isComposing || event.keyCode === 229) return;
+      if ((event.ctrlKey || event.metaKey) && event.code === 'Space') {
+        event.preventDefault();
+        open.value = true;
+        activeIndex.value = 0;
+        hasExplicitSelection.value = false;
+        nextTick(updateSuggestionPosition);
+        return;
+      }
       if (event.key === 'ArrowDown') {
         event.preventDefault();
         move(1);
@@ -652,45 +965,131 @@ const MinecraftAutocomplete = defineComponent({
         move(-1);
         return;
       }
-      if ((event.key === 'Tab' || event.key === 'Enter') && open.value && matches.value.length) {
+      if ((event.key === 'Tab' || event.key === 'Enter')
+        && open.value
+        && matches.value.length
+        && (activeQuery.value || hasExplicitSelection.value)) {
+        if (!matches.value[activeIndex.value]) return;
         event.preventDefault();
         accept();
         return;
       }
       if (event.key === 'Escape') {
-        event.preventDefault();
+        if (open.value) event.preventDefault();
+        open.value = false;
+        return;
+      }
+      if (event.key === 'Enter') {
+        emit('commit', event.target.value);
         open.value = false;
       }
     }
 
-    return () => h('div', { class: 'mc-autocomplete' }, [
+    function onCompositionStart() {
+      composing.value = true;
+      open.value = false;
+    }
+
+    function onCompositionEnd(event) {
+      composing.value = false;
+      update(event);
+    }
+
+    return () => h('div', {
+      class: ['mc-autocomplete', {
+        'mc-autocomplete--invalid': showValidation.value,
+        'mc-autocomplete--scrubbable': props.scrub
+      }]
+    }, [
       h('input', {
-        class: 'input',
+        ref: inputRef,
+        class: ['input', { invalid: showValidation.value }],
         type: 'text',
         value: props.modelValue,
         placeholder: props.placeholder,
         title: props.title || undefined,
+        role: 'combobox',
+        'aria-autocomplete': 'list',
+        'aria-expanded': String(menuVisible.value),
+        'aria-controls': listboxId,
+        'aria-activedescendant': menuVisible.value ? `${listboxId}-option-${activeIndex.value}` : undefined,
+        'aria-invalid': showValidation.value ? 'true' : undefined,
+        'aria-describedby': showValidation.value ? validationId : undefined,
         autocomplete: 'off',
         spellcheck: 'false',
-        onInput: (event) => update(event.target.value),
-        onFocus: () => { open.value = true; },
-        onBlur: () => { window.setTimeout(() => { open.value = false; }, 100); },
+        onInput: update,
+        onClick: (event) => {
+          if (suppressScrubClick) {
+            suppressScrubClick = false;
+            event.preventDefault();
+            return;
+          }
+          syncSelection(event);
+          if (!composing.value) {
+            open.value = true;
+            nextTick(updateSuggestionPosition);
+          }
+        },
+        onSelect: syncSelection,
+        onKeyup: syncSelection,
+        onFocus: (event) => {
+          syncSelection(event);
+          open.value = true;
+          startSuggestionTracking();
+          nextTick(updateSuggestionPosition);
+        },
+        onBlur: (event) => {
+          emit('commit', event.target.value);
+          window.setTimeout(() => {
+            open.value = false;
+            stopSuggestionTracking();
+          }, 100);
+        },
+        onCompositionstart: onCompositionStart,
+        onCompositionend: onCompositionEnd,
+        onPointerdown: startNumericScrub,
+        onDragstart: (event) => props.scrub && event.preventDefault(),
         onKeydown
       }),
-      open.value && matches.value.length
-        ? h('div', { class: 'mc-suggestions' }, matches.value.map((item, index) => h('button', {
-          key: item.value,
+      menuVisible.value
+        ? h(Teleport, { to: 'body' }, [h('div', {
+          ref: suggestionRef,
+          id: listboxId,
+          class: ['mc-suggestions', 'generator-autocomplete-listbox'],
+          role: 'listbox',
+          'aria-label': '代码补全',
+          style: suggestionStyle.value
+        }, matches.value.map((item, index) => h('button', {
+          key: `${item.id}:${index}`,
+          id: `${listboxId}-option-${index}`,
           type: 'button',
           class: ['mc-suggestion', { active: index === activeIndex.value }],
-          onMouseenter: () => { activeIndex.value = index; },
+          role: 'option',
+          tabindex: '-1',
+          'aria-selected': String(index === activeIndex.value),
+          'data-completion-index': String(index),
+          onMouseenter: () => {
+            activeIndex.value = index;
+            hasExplicitSelection.value = true;
+          },
           onMousedown: (event) => {
             event.preventDefault();
             accept(index);
           }
         }, [
-          h('span', { class: 'mc-suggestion-main' }, item.value),
-          item.label !== item.value ? h('span', { class: 'mc-suggestion-label' }, item.label) : null
-        ])))
+          h('span', { class: 'mc-suggestion-main' }, item.displayText),
+          item.detail || item.type || item.kind
+            ? h('span', { class: 'mc-suggestion-meta' }, [
+              item.type || item.kind
+                ? h('span', { class: 'mc-suggestion-kind' }, item.type || item.kind)
+                : null,
+              item.detail ? h('span', { class: 'mc-suggestion-label' }, item.detail) : null
+            ])
+            : null
+        ])))])
+        : null,
+      showValidation.value
+        ? h('div', { id: validationId, class: 'binding-validation', role: 'alert' }, props.validationMessage)
         : null
     ]);
   }
@@ -712,19 +1111,44 @@ const BindableVector = defineComponent({
       { key: 'y', label: 'Y' },
       { key: 'z', label: 'Z' }
     ];
+    const drafts = ref({});
+    watch(
+      () => [props.card, props.path, getBindingMode(props.card, props.path)],
+      () => { drafts.value = {}; },
+      { flush: 'sync' }
+    );
+
+    function updateAxisDraft(axis, value) {
+      drafts.value = { ...drafts.value, [axis]: String(value ?? '') };
+    }
+
+    function commitAxisDraft(axis, value) {
+      const draft = Object.prototype.hasOwnProperty.call(drafts.value, axis)
+        ? drafts.value[axis]
+        : value;
+      setPath(props.card, `${props.path}.${axis}`, coerceBindableNumericInput(draft, 'number'));
+      const nextDrafts = { ...drafts.value };
+      delete nextDrafts[axis];
+      drafts.value = nextDrafts;
+    }
+
     return () => {
       const mode = getBindingMode(props.card, props.path);
       const controls = mode === 'constant'
         ? h('div', { class: 'bindable-axis-grid' }, axes.map((axis) => renderAxisNumberInput(props.card, props.path, axis, {
           step: props.step,
           min: props.min
+        }, {
+          hasDraft: Object.prototype.hasOwnProperty.call(drafts.value, axis.key),
+          draftValue: drafts.value[axis.key],
+          onUpdate: (value) => updateAxisDraft(axis.key, value),
+          onCommit: (value) => commitAxisDraft(axis.key, value)
         })))
         : mode === 'independent'
           ? h('div', { class: 'bindable-axis-grid' }, axes.map((axis) => renderAxisExpressionInput(
             props.card,
             `${props.path}.${axis.key}`,
-            axis,
-            bindingOptions('number')
+            axis
           )))
           : h('div', { class: 'bindable-single-expression' }, [
             renderBindingExpressionInput(props.card, props.path, props.valueType, '整体变量')
@@ -751,11 +1175,28 @@ const BindableColorVector = defineComponent({
     label: { type: String, required: true }
   },
   setup(props) {
+    const draftColorHex = ref('');
     const axes = [
       { key: 'r', label: 'R' },
       { key: 'g', label: 'G' },
       { key: 'b', label: 'B' }
     ];
+    watch(
+      () => [props.card, props.path, getBindingMode(props.card, props.path)],
+      () => { draftColorHex.value = ''; },
+      { flush: 'sync' }
+    );
+
+    function updateColorDraft(value) {
+      draftColorHex.value = colorHexValueFromInput(value);
+    }
+
+    function commitColorDraft(value) {
+      const next = colorHexValueFromInput(draftColorHex.value || value);
+      draftColorHex.value = '';
+      if (next !== colorHexValue(props.card, props.path)) setPath(props.card, props.path, next);
+    }
+
     return () => {
       const mode = getBindingMode(props.card, props.path);
       const controls = mode === 'constant'
@@ -764,9 +1205,11 @@ const BindableColorVector = defineComponent({
             h('input', {
               class: 'input color-picker-input',
               type: 'color',
-              value: colorHexValue(props.card, props.path),
+              value: draftColorHex.value || colorHexValue(props.card, props.path),
               title: '调色板',
-              onInput: (event) => setPath(props.card, props.path, colorHexValueFromInput(event.target.value))
+              onInput: (event) => updateColorDraft(event.target.value),
+              onChange: (event) => commitColorDraft(event.target.value),
+              onBlur: (event) => commitColorDraft(event.target.value)
             }),
             h('input', {
               class: 'input color-text-input',
@@ -786,7 +1229,7 @@ const BindableColorVector = defineComponent({
               max: '255',
               step: '1',
               value: colorChannelValue(props.card, props.path, axis.key),
-              onInput: (event) => updateColorChannel(props.card, props.path, axis.key, event.target.value)
+              onChange: (event) => updateColorChannel(props.card, props.path, axis.key, event.target.value)
             })
           ])))
         ])
@@ -794,8 +1237,7 @@ const BindableColorVector = defineComponent({
           ? h('div', { class: 'bindable-axis-grid' }, axes.map((axis) => renderAxisExpressionInput(
             props.card,
             `${props.path}.${axis.key}`,
-            axis,
-            bindingOptions('number')
+            axis
           )))
           : h('div', { class: 'bindable-single-expression' }, [
             renderBindingExpressionInput(props.card, props.path, 'color', 'RGB 向量变量')
@@ -900,26 +1342,49 @@ function setPath(target, path, value) {
   if (parent && last) parent[last] = value;
 }
 
-function renderBindableSingleInput(card, path, props) {
+function renderBindableSingleInput(card, path, props, inputState = {}) {
   if (props.valueType === 'none' || props.options?.length) {
     return renderValueInput(card, path, props);
   }
-  const value = getBinding(card, path) || formatBindableSingleValue(getPath(card, path), props.valueType);
+  const storedValue = getBinding(card, path) || formatBindableSingleValue(getPath(card, path), props.valueType);
+  const value = inputState.draftValue ?? storedValue;
+  const scrub = isBindableNumericValueType(props.valueType)
+    && !getBinding(card, path)
+    && Number.isFinite(Number(value));
   const options = [
     ...(props.autocompleteOptions || []),
     ...bindingOptions(props.valueType).map((item) => ({
+      id: `${item.kind}:${item.name}`,
+      kind: item.kind,
+      type: item.type,
       value: item.name,
-      label: item.label
-    }))
+      label: item.name,
+      displayText: item.name,
+      detail: item.detail
+    })),
+    ...(['number', 'int', 'long', 'float'].includes(props.valueType)
+      ? buildGeneratorExpressionCompletions(project.value.parameters, {
+        expectedType: generatorBindingType(props.valueType)
+      }).map(toExpressionAutocompleteOption)
+      : [])
   ];
   return h(MinecraftAutocomplete, {
     class: 'bindable-single-input',
     modelValue: value,
     options,
     maxItems: 10,
-    placeholder: props.valueType === 'string' ? '值 / 变量' : '数值 / 变量',
-    title: '输入常量或变量名',
-    'onUpdate:modelValue': (next) => applyBindableSingleInput(card, path, next, props.valueType)
+    placeholder: props.valueType === 'string' ? '值 / 变量' : '数值 / 表达式',
+    title: '输入常量、变量或表达式',
+    expression: ['number', 'int', 'long', 'float'].includes(props.valueType),
+    validationMessage: bindingValidationMessage(card, path, props.valueType),
+    scrub,
+    scrubStep: props.step,
+    scrubMin: props.min,
+    scrubMax: props.max,
+    'onUpdate:modelValue': inputState.onUpdate
+      || ((next) => applyBindableSingleInput(card, path, next, props.valueType)),
+    onCommit: inputState.onCommit
+      || ((next) => applyBindableSingleInput(card, path, next, props.valueType))
   });
 }
 
@@ -958,13 +1423,23 @@ function applyBindableSingleInput(card, path, value, valueType = 'number') {
     const numeric = Number(text);
     if (Number.isFinite(numeric)) {
       setBinding(card, path, '');
-      setPath(card, path, valueType === 'int' || valueType === 'long' ? Math.trunc(numeric) : numeric);
+      setPath(card, path, coerceBindableNumericInput(text, valueType));
     } else {
       setBinding(card, path, text);
     }
     return;
   }
   setBinding(card, path, text);
+}
+
+function isBindableNumericValueType(valueType) {
+  return ['number', 'int', 'long', 'float'].includes(valueType);
+}
+
+function coerceBindableNumericInput(value, valueType = 'number') {
+  const text = String(value ?? '').trim();
+  const numeric = Number(text);
+  return valueType === 'int' || valueType === 'long' ? Math.trunc(numeric) : numeric;
 }
 
 function renderValueInput(card, path, props) {
@@ -1006,6 +1481,106 @@ function bindingOptions(valueType = 'number') {
   return filterGeneratorBindingsByType(bindableRefs.value, valueType);
 }
 
+function expressionBindingOptions(card, path, valueType = 'number') {
+  const expectedType = generatorBindingType(valueType);
+  const raw = getBinding(card, path);
+  const numericTypes = new Set(['Int', 'Long', 'Float', 'Double']);
+  const vectorTypes = new Set(['Vec3', 'RelativeLocation', 'Vector3f']);
+  const activeDelimiter = String(raw).match(/([,(+\-*/])\s*[A-Za-z_0-9.]*$/)?.[1] || '';
+  const vectorNumericOperand = vectorTypes.has(expectedType) && ['(', ',', '*', '/'].includes(activeDelimiter);
+  const allowedTypes = vectorNumericOperand
+    ? numericTypes
+    : numericTypes.has(expectedType) && activeDelimiter
+      ? numericOperandTypes(expectedType)
+      : new Set([expectedType]);
+  const refs = bindableRefs.value
+    .filter((item) => allowedTypes.has(item.type))
+    .map((item) => ({
+      id: `${item.kind}:${item.name}`,
+      kind: item.kind,
+      type: item.type,
+      value: item.name,
+      insertText: item.name,
+      displayText: item.name,
+      detail: item.detail
+    }));
+  const startsNewExpression = /^\s*[A-Za-z_][A-Za-z0-9_]*\s*$/.test(raw) || !String(raw).trim();
+  const relativeConversions = expectedType === 'Vec3' && startsNewExpression
+    ? buildRelativeVec3Completions(bindableRefs.value)
+    : [];
+  const snippets = [
+    ...buildGeneratorExpressionCompletions(project.value.parameters, {
+      expectedType: vectorNumericOperand ? 'Double' : expectedType
+    })
+  ]
+    .filter((item) => startsNewExpression || !item.label.startsWith('RelativeLocation('))
+    .map(toExpressionAutocompleteOption);
+  const seen = new Set();
+  return [...refs, ...relativeConversions, ...snippets].filter((item) => {
+    const key = `${item.value}|${item.insertText || item.value}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function numericOperandTypes(expectedType) {
+  if (expectedType === 'Int') return new Set(['Int']);
+  if (expectedType === 'Long') return new Set(['Long']);
+  if (expectedType === 'Float') return new Set(['Float']);
+  return new Set(['Int', 'Double']);
+}
+
+function buildRelativeVec3Completions(refs) {
+  const relatives = refs.filter((item) => item.type === 'RelativeLocation');
+  const vectors = refs.filter((item) => item.type === 'Vec3');
+  return relatives.flatMap((relative) => {
+    const targets = vectors.length ? vectors : [{ name: 'Vec3(0.0, 0.0, 0.0)' }];
+    return targets.map((vector) => ({
+      id: `conversion:${relative.name}:${vector.name}`,
+      kind: 'conversion',
+      type: 'Vec3',
+      value: `${relative.name} + ${vector.name}`,
+      insertText: `${relative.name} + ${vector.name}`,
+      displayText: `${relative.name} + ${vector.name}`,
+      detail: 'RelativeLocation -> Vec3',
+      cursorOffset: vectors.length ? undefined : relative.name.length + 8,
+      selectionLength: vectors.length ? undefined : 3
+    }));
+  });
+}
+
+function toExpressionAutocompleteOption(item) {
+  return {
+    id: item.id,
+    kind: item.kind,
+    type: item.type,
+    signature: item.signature,
+    value: item.insertText || item.label,
+    insertText: item.insertText || item.label,
+    label: item.label,
+    displayText: item.label,
+    detail: item.detail || '',
+    cursorOffset: item.cursorOffset,
+    selectionLength: item.selectionLength,
+    memberInsertText: item.memberInsertText
+  };
+}
+
+function bindingValidationMessage(card, path, valueType) {
+  const raw = getBinding(card, path);
+  if (!raw || isLikelyIncompleteGeneratorExpression(raw)) return '';
+  const expectedType = generatorBindingType(valueType);
+  if (!expectedType) return '';
+  const binding = bindingResolver.value.resolve(card?.bindings, path, expectedType);
+  if (binding.status === 'missing') return `未找到变量 ${binding.name}`;
+  if (binding.status === 'type_mismatch') {
+    return binding.message || `${binding.name} 类型是 ${binding.type || '未知'}，需要 ${expectedType}`;
+  }
+  if (binding.status === 'invalid_expression') return binding.message || '表达式无效';
+  return '';
+}
+
 function getBinding(card, path) {
   return String(card?.bindings?.[path] || '');
 }
@@ -1022,30 +1597,41 @@ function renderBindingExpressionInput(card, path, valueType, placeholder = '变�
   return h(MinecraftAutocomplete, {
     class: 'binding-expression',
     modelValue: getBinding(card, path),
-    options: bindingOptions(valueType),
+    options: expressionBindingOptions(card, path, valueType),
     maxItems: 10,
     placeholder,
     title: '绑定变量或常量',
+    expression: true,
+    validationMessage: bindingValidationMessage(card, path, valueType),
     'onUpdate:modelValue': (next) => setBinding(card, path, next)
   });
 }
 
-function renderAxisExpressionInput(card, path, axis, options) {
+function renderAxisExpressionInput(card, path, axis) {
   return h('label', { key: axis.key, class: 'axis-expression' }, [
     h('span', { class: 'axis-chip' }, axis.label),
     h(MinecraftAutocomplete, {
       class: 'binding-expression',
       modelValue: getBinding(card, path),
-      options,
+      options: expressionBindingOptions(card, path, 'number'),
       maxItems: 10,
       placeholder: axis.label,
       title: '绑定变量或常量',
+      expression: true,
+      validationMessage: bindingValidationMessage(card, path, 'number'),
       'onUpdate:modelValue': (next) => setBinding(card, path, next)
     })
   ]);
 }
 
-function renderAxisNumberInput(card, basePath, axis, attrs = {}) {
+function renderAxisNumberInput(card, basePath, axis, attrs = {}, inputState = {}) {
+  const commit = (event) => {
+    if (inputState.onCommit) {
+      inputState.onCommit(event.target.value);
+      return;
+    }
+    setPath(card, `${basePath}.${axis.key}`, coerceBindableInputValue(event.target.value, 'number'));
+  };
   return h('label', { key: axis.key, class: 'axis-number' }, [
     h('span', { class: 'axis-chip' }, axis.label),
     h('input', {
@@ -1053,8 +1639,14 @@ function renderAxisNumberInput(card, basePath, axis, attrs = {}) {
       type: 'number',
       step: attrs.step || '0.01',
       min: attrs.min,
-      value: getPath(card, `${basePath}.${axis.key}`),
-      onInput: (event) => setPath(card, `${basePath}.${axis.key}`, coerceBindableInputValue(event.target.value, 'number'))
+      value: inputState.hasDraft ? inputState.draftValue : getPath(card, `${basePath}.${axis.key}`),
+      onInput: (event) => inputState.onUpdate?.(event.target.value),
+      onBlur: commit,
+      onKeydown: (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        commit(event);
+      }
     })
   ]);
 }
@@ -1166,9 +1758,10 @@ function scoreAutocomplete(item, query) {
   if (!query) return 0;
   const value = item.value.toLowerCase();
   const label = item.label.toLowerCase();
+  const displayText = item.displayText.toLowerCase();
   if (value === query) return 0;
   if (value.startsWith(query)) return 1;
-  if (label.startsWith(query)) return 2;
+  if (displayText.startsWith(query) || label.startsWith(query)) return 2;
   if (value.includes(query)) return 3;
   return 4;
 }
@@ -1205,7 +1798,20 @@ function removeProjectParameter(list, id) {
 function syncParameterType(item) {
   if (!item) return;
   item.value = defaultParameterValue(item.type);
+  if (item.automation) {
+    item.automation.enabled = false;
+    item.automation.targetMin = Number(item.value) || 0;
+    item.automation.targetMax = Number(item.value) || 0;
+  }
   if (item.type !== 'Vector3f') delete item.colorMode;
+}
+
+function isNumericVariable(item) {
+  return ['Int', 'Long', 'Float', 'Double'].includes(item?.type);
+}
+
+function automationSourceVariables(target) {
+  return project.value.parameters.variables.filter((item) => item !== target && isNumericVariable(item));
 }
 
 function updateParameterName(item, event) {
@@ -1281,6 +1887,8 @@ function loadSavedProject() {
 }
 
 watch(project, (next) => {
+  const suppressAutoSave = suppressNextProjectAutoSave;
+  suppressNextProjectAutoSave = false;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
@@ -1288,7 +1896,7 @@ watch(project, (next) => {
   }
   syncPreviewPoints();
   scheduleHistorySnapshot();
-  scheduleIndexedProjectSave();
+  if (!suppressAutoSave) scheduleIndexedProjectSave();
 }, { deep: true });
 
 watch(() => project.value.settings.theme, (theme) => {
@@ -1304,6 +1912,7 @@ onMounted(async () => {
   startTickTimer();
   window.addEventListener('keydown', handleGeneratorHotkey, true);
   window.addEventListener('coo-shell-command', handleShellCommand);
+  window.addEventListener('coo-project-close-request', handleProjectCloseRequest);
 });
 
 watch(() => [route.query.shellOpen, route.query.shellNew, route.query.projectId], () => {
@@ -1328,12 +1937,14 @@ function startTickTimer() {
 }
 
 onBeforeUnmount(() => {
+  projectLoadToken += 1;
   delete document.documentElement.dataset.generatorTheme;
   window.clearInterval(tickTimer);
   window.clearTimeout(historyTimer);
   window.clearTimeout(indexedSaveTimer);
   window.removeEventListener('keydown', handleGeneratorHotkey, true);
   window.removeEventListener('coo-shell-command', handleShellCommand);
+  window.removeEventListener('coo-project-close-request', handleProjectCloseRequest);
   window.removeEventListener('pointermove', handlePanelResize);
   window.removeEventListener('pointerup', stopPanelResize);
 });
@@ -1344,15 +1955,38 @@ function indexedProjectId() {
 
 async function saveIndexedProject() {
   const projectId = loadedProjectId.value;
-  if (!projectId || !projectReady.value) return true;
-  const snapshot = JSON.parse(JSON.stringify(project.value));
-  const operation = indexedSaveQueue.then(() => projectRepository.save({
-    id: projectId,
-    tool: 'generator',
-    name: snapshot.name || snapshot.kotlin?.className || 'EmitterGenerator',
-    description: snapshot.description || '',
-    payload: snapshot
-  }));
+  const filePath = currentProjectPath.value;
+  if ((!projectId && !filePath) || !projectReady.value) return true;
+  const fileSnapshot = serializeProject();
+  const snapshot = JSON.parse(fileSnapshot);
+  const operation = indexedSaveQueue.then(async () => {
+    const shell = getElectronShell();
+    if (filePath && !shell?.saveProjectFile) {
+      throw new Error('当前环境无法自动保存这个项目文件。');
+    }
+    if (filePath) {
+      const result = await shell.saveProjectFile({
+        title: '自动保存 Generator 项目',
+        filePath,
+        addToRecent: false,
+        text: JSON.stringify(snapshot, null, 2)
+      });
+      if (!result?.ok) {
+        throw new Error(result?.message || '项目自动保存失败。');
+      }
+    }
+    if (projectId) {
+      await projectRepository.save({
+        id: projectId,
+        tool: 'generator',
+        name: snapshot.name || snapshot.kotlin?.className || 'EmitterGenerator',
+        description: snapshot.description || '',
+        filePath,
+        payload: snapshot
+      });
+    }
+    savedFileSnapshot = fileSnapshot;
+  });
   indexedSaveQueue = operation.catch(() => {});
   await operation;
   return true;
@@ -1360,14 +1994,15 @@ async function saveIndexedProject() {
 
 function scheduleIndexedProjectSave() {
   window.clearTimeout(indexedSaveTimer);
-  if (!loadedProjectId.value) return;
+  if (!loadedProjectId.value && !currentProjectPath.value) return;
   indexedSaveTimer = window.setTimeout(() => {
     indexedSaveTimer = 0;
     saveIndexedProject().catch(showShellError);
-  }, 500);
+  }, AUTO_SAVE_DELAY_MS);
 }
 
 onBeforeRouteLeave(async () => {
+  projectLoadToken += 1;
   window.clearTimeout(indexedSaveTimer);
   try {
     await saveIndexedProject();
@@ -1378,6 +2013,7 @@ onBeforeRouteLeave(async () => {
 });
 
 onBeforeRouteUpdate(async () => {
+  projectLoadToken += 1;
   window.clearTimeout(indexedSaveTimer);
   try {
     await saveIndexedProject();
@@ -1530,6 +2166,11 @@ function updateQueueSigns(text) {
     .map((item) => Math.trunc(item));
 }
 
+function updateCollisionTargets(card, text) {
+  if (!card?.physics) return;
+  card.physics.collisionTargets = normalizeCollisionTargets(text);
+}
+
 function syncBillboardScaleMode(card) {
   if (!card?.render) return;
   if (card.render.billboardMode !== 'none') {
@@ -1591,13 +2232,8 @@ function emitterTypeLabel(type) {
   return emitterTypes.find((item) => item.id === type)?.label || type;
 }
 
-function themeLabel(theme) {
-  return generatorThemeOptions.find((item) => item.id === theme)?.label || '深粉';
-}
-
-function formatScale(scale) {
-  const numeric = clampNumber(scale, 0.05, 20, 1);
-  return `${Number(numeric.toFixed(2))}x`;
+function duplicateEmitterSignCount(card) {
+  return countDuplicateEmitterSigns(project.value.emitters, card, bindingResolver.value);
 }
 
 function formatFps(value) {
@@ -1606,31 +2242,18 @@ function formatFps(value) {
 }
 
 function recordHotkey(key, event) {
-  const code = event.code || event.key;
-  if (!code || code === 'Tab') return;
-  project.value.settings.hotkeys[key] = code;
-}
-
-function resetHotkey(key) {
-  project.value.settings.hotkeys[key] = GENERATOR_HOTKEY_DEFAULTS[key];
+  if (!event || event.key === 'Tab' || event.key === 'Escape') return;
+  const hotkey = event.key === 'Backspace' ? '' : eventToHotkey(event);
+  if (!hotkey && event.key !== 'Backspace') return;
+  const hotkeys = project.value.settings.hotkeys || (project.value.settings.hotkeys = {});
+  Object.keys(GENERATOR_HOTKEY_DEFAULTS).forEach((otherKey) => {
+    if (otherKey !== key && hotkeys[otherKey] === hotkey) hotkeys[otherKey] = '';
+  });
+  hotkeys[key] = hotkey;
 }
 
 function formatHotkey(code) {
-  const labels = {
-    Space: 'Space',
-    Delete: 'Delete',
-    Backspace: 'Backspace',
-    Escape: 'Esc',
-    ArrowUp: '↑',
-    ArrowDown: '↓',
-    ArrowLeft: '←',
-    ArrowRight: '→'
-  };
-  const text = String(code || '');
-  if (labels[text]) return labels[text];
-  if (/^Key[A-Z]$/.test(text)) return text.slice(3);
-  if (/^Digit[0-9]$/.test(text)) return text.slice(5);
-  return text || '未设置';
+  return hotkeyToHuman(code);
 }
 
 function commandParamFields(command) {
@@ -1702,8 +2325,11 @@ function resetPreviewAfterProjectChange() {
 }
 
 function loadProjectText(text, filePath = '') {
-  project.value = normalizeGeneratorProject(JSON.parse(text));
+  const nextProject = normalizeGeneratorProject(JSON.parse(text));
+  suppressNextProjectAutoSave = true;
+  project.value = nextProject;
   currentProjectPath.value = filePath || '';
+  savedFileSnapshot = JSON.stringify(project.value);
   resetPreviewAfterProjectChange();
 }
 
@@ -1742,11 +2368,20 @@ async function loadIndexedProject(projectId) {
     if (!record?.payload) {
       throw new Error('找不到该 Generator 项目，请返回项目页重新打开。');
     }
-    const { type, payload } = classifyProjectData(record);
+    const filePath = String(record.filePath || '');
+    const shell = getElectronShell();
+    let projectData = classifyProjectData(record);
+    if (filePath && shell?.readTextFile) {
+      const result = await shell.readTextFile(filePath, { addToRecent: false });
+      if (token !== projectLoadToken) return false;
+      if (!result?.ok) throw new Error(result?.message || '无法读取 Generator 项目文件。');
+      projectData = parseProjectText(result.text, filePath);
+    }
+    const { type, payload } = projectData;
     if (type !== 'generator') {
       throw new Error(`项目类型不匹配：当前页面需要 generator，项目内容为 ${type}。`);
     }
-    loadProjectText(JSON.stringify(payload));
+    loadProjectText(JSON.stringify(payload), shell?.saveProjectFile ? filePath : '');
     loadedProjectId.value = projectId;
     return true;
   } finally {
@@ -1757,6 +2392,7 @@ async function loadIndexedProject(projectId) {
 async function consumeShellRouteState() {
   const pending = consumePendingGeneratorProject();
   if (pending?.text) {
+    projectLoadToken += 1;
     try {
       loadProjectText(pending.text, pending.filePath || '');
       loadedProjectId.value = String(pending.projectId || '');
@@ -1787,6 +2423,7 @@ async function consumeShellRouteState() {
     }
     return;
   }
+  projectLoadToken += 1;
   loadedProjectId.value = '';
   projectReady.value = true;
 }
@@ -1794,7 +2431,6 @@ async function consumeShellRouteState() {
 async function openProjectWithShell() {
   const shell = getElectronShell();
   if (!shell?.openProjectFile) {
-    fileInputRef.value?.click();
     return;
   }
   const result = await shell.openProjectFile();
@@ -1827,41 +2463,75 @@ async function openRecentProjectWithShell(filePath) {
 }
 
 async function saveProjectWithShell(forceDialog = false) {
-  if (loadedProjectId.value && forceDialog) {
+  if (!forceDialog && (loadedProjectId.value || currentProjectPath.value)) {
     try {
       await saveIndexedProject();
+      return { ok: true };
     } catch (error) {
       showShellError(error);
-      return;
+      return { ok: false, message: error?.message || String(error) };
     }
-  }
-  if (loadedProjectId.value && !forceDialog) {
-    try {
-      await saveIndexedProject();
-    } catch (error) {
-      showShellError(error);
-    }
-    return;
   }
   const shell = getElectronShell();
   if (!shell?.saveProjectFile) {
     downloadJsonInBrowser();
-    return;
+    return { ok: true };
   }
+  const fileSnapshot = serializeProject();
   const result = await shell.saveProjectFile({
     title: 'Save Generator Project',
     filePath: forceDialog ? '' : currentProjectPath.value,
     forceDialog,
     defaultPath: `${defaultProjectFileBase()}.json`,
-    text: JSON.stringify(project.value, null, 2)
+    text: JSON.stringify(JSON.parse(fileSnapshot), null, 2)
   });
   if (result?.ok) {
-    if (!loadedProjectId.value) {
-      currentProjectPath.value = result.filePath || currentProjectPath.value;
-    }
-    return;
+    currentProjectPath.value = result.filePath || currentProjectPath.value;
+    savedFileSnapshot = fileSnapshot;
+    if (loadedProjectId.value) await saveIndexedProject();
+    return result;
   }
   showShellError(result);
+  return result || { ok: false, message: '项目保存失败。' };
+}
+
+async function inspectProjectBeforeClose() {
+  if (loadedProjectId.value || currentProjectPath.value) {
+    window.clearTimeout(indexedSaveTimer);
+    try {
+      await saveIndexedProject();
+      return { handled: true, dirty: false, autoSaved: true };
+    } catch (error) {
+      return {
+        handled: true,
+        dirty: true,
+        autoSaved: false,
+        projectName: project.value.name || 'Generator 项目',
+        message: error?.message || String(error)
+      };
+    }
+  }
+  return {
+    handled: true,
+    dirty: serializeProject() !== savedFileSnapshot,
+    autoSaved: false,
+    projectName: project.value.name || 'Generator 项目',
+    filePath: currentProjectPath.value
+  };
+}
+
+async function saveProjectBeforeClose() {
+  return saveProjectWithShell(false);
+}
+
+function handleProjectCloseRequest(event) {
+  const request = event?.detail;
+  if (!request?.respondWith) return;
+  if (request.action === 'inspect') {
+    request.respondWith(inspectProjectBeforeClose());
+  } else if (request.action === 'save') {
+    request.respondWith(saveProjectBeforeClose());
+  }
 }
 
 async function exportKotlinWithShell() {
@@ -1926,34 +2596,10 @@ function downloadJsonInBrowser() {
   URL.revokeObjectURL(url);
 }
 
-async function exportJson() {
-  if (isElectronShell()) {
-    await saveProjectWithShell(true);
-    return;
-  }
-  downloadJsonInBrowser();
-}
-
-async function importJson(event) {
-  const file = event.target.files?.[0];
-  event.target.value = '';
-  if (!file) return;
-  try {
-    await openProjectResult(router, {
-      ok: true,
-      filePath: file.name,
-      name: file.name,
-      text: await file.text()
-    });
-  } catch (error) {
-    showShellError(error);
-  }
-}
-
 function resetProject() {
   project.value = createGeneratorProject();
-  currentProjectPath.value = '';
   loadedProjectId.value = indexedProjectId();
+  savedFileSnapshot = serializeProject();
   resetPreviewAfterProjectChange();
 }
 
@@ -2012,21 +2658,54 @@ function removeSelectedEmitter() {
   removeEmitter(selectedEmitter.value.id);
 }
 
-function handleGeneratorHotkey(event) {
-  if (isEditableHotkeyTarget(event.target)) return;
-  const isMod = event.ctrlKey || event.metaKey;
-  if (isMod && matchesHotkey(event, 'undo')) {
-    event.preventDefault();
-    if (event.shiftKey) redoProject();
-    else undoProject();
+function selectGeneratorTab(tabId) {
+  if (tabId === 'settings') {
+    toggleGeneratorSettings();
     return;
   }
-  if (isMod && matchesHotkey(event, 'redo')) {
+  project.value.leftTab = tabId;
+}
+
+function toggleGeneratorSettings() {
+  settingsOpen.value = !settingsOpen.value;
+}
+
+function closeGeneratorSettings() {
+  settingsOpen.value = false;
+}
+
+function recordHotkeyFromSettings(key, event) {
+  recordHotkey(key, event);
+}
+
+function resetAllHotkeys() {
+  project.value.settings.hotkeys = { ...GENERATOR_HOTKEY_DEFAULTS };
+}
+
+function handleGeneratorHotkey(event) {
+  if (event.repeat && matchesHotkey(event, 'toggleSettings')) return;
+  if (event.key === 'Escape' && settingsOpen.value) {
+    event.preventDefault();
+    closeGeneratorSettings();
+    return;
+  }
+  if (isEditableHotkeyTarget(event.target)) return;
+  if (matchesHotkey(event, 'toggleSettings')) {
+    event.preventDefault();
+    toggleGeneratorSettings();
+    return;
+  }
+  if (settingsOpen.value) return;
+  if (matchesHotkey(event, 'undo')) {
+    event.preventDefault();
+    undoProject();
+    return;
+  }
+  if (matchesHotkey(event, 'redo') || matchesRedoAlias(event)) {
     event.preventDefault();
     redoProject();
     return;
   }
-  if (isMod || event.altKey || event.shiftKey) return;
   if (matchesHotkey(event, 'playPause')) {
     event.preventDefault();
     togglePreviewPlayback();
@@ -2054,8 +2733,21 @@ function handleGeneratorHotkey(event) {
 }
 
 function matchesHotkey(event, key) {
-  const code = project.value.settings.hotkeys?.[key] || GENERATOR_HOTKEY_DEFAULTS[key];
-  return event.code === code;
+  return hotkeyMatchEvent(event, configuredHotkey(key));
+}
+
+function configuredHotkey(key) {
+  const hotkeys = project.value.settings.hotkeys || {};
+  return Object.prototype.hasOwnProperty.call(hotkeys, key)
+    ? hotkeys[key]
+    : GENERATOR_HOTKEY_DEFAULTS[key];
+}
+
+function matchesRedoAlias(event) {
+  const redoHotkey = configuredHotkey('redo');
+  if (redoHotkey === 'Mod+Shift+KeyZ') return hotkeyMatchEvent(event, 'Mod+KeyY');
+  if (redoHotkey === 'Mod+KeyY') return hotkeyMatchEvent(event, 'Mod+Shift+KeyZ');
+  return false;
 }
 
 function isEditableHotkeyTarget(target) {
@@ -2552,6 +3244,18 @@ function normalizeVector(vector) {
   gap: 16px;
   padding: 16px;
   scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.generator-page :deep(.mc-autocomplete--scrubbable > .input) {
+  cursor: ns-resize;
+  user-select: none;
+}
+
+:global(html.generator-numeric-scrubbing),
+:global(html.generator-numeric-scrubbing *) {
+  cursor: ns-resize !important;
+  user-select: none !important;
 }
 
 .generator-preview {
@@ -2765,7 +3469,7 @@ function normalizeVector(vector) {
 .field span,
 .vector-row > span,
 .mini-field span,
-.bindable-field > span {
+.generator-page :deep(.bindable-field > span) {
   color: var(--text-soft);
   font-size: 12px;
   line-height: 1.25;
@@ -2794,20 +3498,86 @@ function normalizeVector(vector) {
   align-items: end;
 }
 
+.emitter-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.duplicate-sign-badge {
+  border: 1px solid rgba(251, 146, 60, 0.72);
+  border-radius: 3px;
+  background: rgba(251, 146, 60, 0.14);
+  color: #fdba74;
+  padding: 1px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.external-parameter-grid {
+  align-items: start;
+}
+
+.external-parameter-option .check-row {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.duplicate-sign-field :deep(.input) {
+  border-color: rgba(251, 146, 60, 0.86);
+  box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.2);
+}
+
+.duplicate-sign-message {
+  color: #fdba74;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.generator-right .grid3.sign-grid-row {
+  align-items: start;
+}
+
 .generator-right .grid2 {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
 }
 
 .generator-right .grid3 {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
 }
 
 .generator-right .grid4 {
-  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+}
+
+.generator-right .grid2,
+.generator-right .grid3,
+.generator-right .grid4 {
+  align-items: end;
+}
+
+.generator-right .field > span,
+.generator-right :deep(.bindable-field > span),
+.generator-right .mini-field > span {
+  min-height: 30px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.generator-right .physics-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
+}
+
+.generator-right .field .input,
+.generator-right .bindable-field .input,
+.generator-right .mini-field .input {
+  align-self: start;
 }
 
 .generator-right .base-param-grid {
-  grid-template-columns: minmax(140px, 0.8fr) minmax(220px, 1.2fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
 }
 
 .generator-right .base-param-grid > :last-child {
@@ -2898,25 +3668,40 @@ function normalizeVector(vector) {
   width: 100%;
 }
 
-.generator-page :deep(.mc-suggestions) {
-  position: absolute;
-  z-index: 9999;
-  top: calc(100% + 4px);
-  left: 0;
-  width: max(100%, 300px);
-  max-width: min(520px, calc(100vw - 32px));
-  max-height: 284px;
-  overflow: hidden;
-  border: 1px solid rgba(120, 144, 176, 0.78);
-  border-radius: 4px;
-  background: #070b16;
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.62);
-  padding: 3px;
+.generator-page :deep(.mc-autocomplete--invalid > .input),
+.generator-page :deep(.mc-autocomplete > .input.invalid) {
+  border-color: rgba(255, 112, 130, 0.92);
+  box-shadow: 0 0 0 1px rgba(255, 112, 130, 0.22);
 }
 
-.generator-page :deep(.mc-suggestion) {
+.generator-page :deep(.binding-validation) {
+  margin-top: 4px;
+  color: #ff9da9;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+:global(.generator-autocomplete-listbox.mc-suggestions) {
+  position: fixed;
+  z-index: 100000;
+  max-width: calc(100vw - 16px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 214, 232, 0.32);
+  border-radius: 4px;
+  background: #21101a;
+  color: #fff3f8;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.62);
+  padding: 3px;
+  font-family: inherit;
+}
+
+:global(.generator-autocomplete-listbox .mc-suggestion) {
+  appearance: none;
   width: 100%;
-  min-height: 28px;
+  height: 40px;
+  min-height: 40px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
@@ -2928,25 +3713,69 @@ function normalizeVector(vector) {
   font: inherit;
   font-size: 12px;
   text-align: left;
-  padding: 4px 8px;
+  padding: 6px 9px;
+  margin: 0;
+  box-shadow: none;
+  transform: none;
+  cursor: pointer;
 }
 
-.generator-page :deep(.mc-suggestion.active) {
+:global(.generator-autocomplete-listbox .mc-suggestion.active),
+:global(.generator-autocomplete-listbox .mc-suggestion:hover) {
   background: rgba(85, 170, 255, 0.42);
   color: #ffffff;
 }
 
-.generator-page :deep(.mc-suggestion-main),
-.generator-page :deep(.mc-suggestion-label) {
+:global(.generator-autocomplete-listbox .mc-suggestion-main),
+:global(.generator-autocomplete-listbox .mc-suggestion-kind),
+:global(.generator-autocomplete-listbox .mc-suggestion-label) {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.generator-page :deep(.mc-suggestion-label) {
+:global(.generator-autocomplete-listbox .mc-suggestion-meta) {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+:global(.generator-autocomplete-listbox .mc-suggestion-kind) {
+  color: rgba(142, 231, 239, 0.82);
+  font-size: 10px;
+}
+
+:global(.generator-autocomplete-listbox .mc-suggestion-label) {
   color: rgba(226, 232, 240, 0.58);
   font-size: 11px;
+}
+
+:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox.mc-suggestions) {
+  border-color: rgba(86, 49, 62, 0.52);
+  background: #fff7fa;
+  color: #2f1d28;
+  box-shadow: 0 16px 36px rgba(69, 38, 49, 0.2);
+}
+
+:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox .mc-suggestion) {
+  color: #2f1d28;
+}
+
+:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox .mc-suggestion.active),
+:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox .mc-suggestion:hover) {
+  background: rgba(216, 111, 157, 0.25);
+  color: #2f1d28;
+}
+
+:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox .mc-suggestion-kind) {
+  color: #8b4768;
+}
+
+:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox .mc-suggestion-label) {
+  color: rgba(86, 49, 62, 0.68);
 }
 
 .bindable-vector-row {
@@ -3113,74 +3942,33 @@ function normalizeVector(vector) {
   min-width: 0;
 }
 
-.settings-summary,
-.settings-grid,
-.hotkey-grid,
 .axis-curve-content {
   display: grid;
   gap: 10px;
 }
 
-.settings-summary {
-  color: var(--text-soft);
-  font-size: 12px;
+.variable-automation {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
 }
 
-.settings-grid {
-  grid-template-columns: minmax(150px, 1fr) repeat(3, max-content);
-  align-items: end;
-}
-
-.theme-choice-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.theme-choice {
-  min-height: 42px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg-soft);
-  color: inherit;
+.variable-automation > summary {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-}
-
-.theme-choice.selected {
-  border-color: var(--brand);
-}
-
-.theme-swatch {
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: linear-gradient(135deg, var(--brand), var(--brand-2));
-  flex: 0 0 auto;
-}
-
-.theme-choice[data-theme-option='light-pink'] .theme-swatch {
-  background: linear-gradient(135deg, #fff7fa, #ef9ebe);
-}
-
-.hotkey-row {
-  display: grid;
-  grid-template-columns: minmax(110px, 1fr) minmax(100px, 150px) auto;
-  gap: 8px;
-  align-items: center;
-}
-
-.hotkey-row > span {
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
   color: var(--text-soft);
   font-size: 12px;
 }
 
-.hotkey-input {
-  cursor: pointer;
+.variable-automation-body {
+  display: grid;
+  gap: 9px;
+  margin-top: 10px;
 }
+
 
 .axis-curve-box {
   border: 1px solid var(--border);
@@ -3251,6 +4039,7 @@ function normalizeVector(vector) {
 }
 
 .generator-code-page {
+  min-width: 0;
   min-height: 0;
   display: flex;
   overflow: hidden;
@@ -3258,6 +4047,7 @@ function normalizeVector(vector) {
 
 .code-panel-wide {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   padding: 14px;
   flex-direction: column;
@@ -3266,6 +4056,7 @@ function normalizeVector(vector) {
 
 .kotlin-output {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   max-height: none;
   overflow: auto;
@@ -3273,7 +4064,58 @@ function normalizeVector(vector) {
   border: 1px solid var(--border);
   background: var(--bg-panel-strong);
   padding: 14px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.kotlin-output :deep(.tok-kw) {
+  color: #ffc37a;
+}
+
+.kotlin-output :deep(.tok-str) {
+  color: #8fe3c0;
+}
+
+.kotlin-output :deep(.tok-com) {
+  color: #8da0bd;
+}
+
+.kotlin-output :deep(.tok-num) {
+  color: #9ac6ff;
+}
+
+.kotlin-output :deep(.tok-fn) {
+  color: #ff9ccd;
+}
+
+.kotlin-output :deep(.tok-type) {
+  color: #90e1ff;
+}
+
+.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-kw) {
+  color: #7c6147;
+}
+
+.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-str) {
+  color: #5f7868;
+}
+
+.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-com) {
+  color: #7c8793;
+}
+
+.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-num) {
+  color: #6c7f90;
+}
+
+.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-fn) {
+  color: #96655d;
+}
+
+.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-type) {
+  color: #6e817a;
 }
 
 .code-textarea {
@@ -3360,10 +4202,7 @@ function normalizeVector(vector) {
   .command-param-grid,
   .parameter-field-grid,
   .bindable-vector-row,
-  .generator-right .bindable-vector-row,
-  .settings-grid,
-  .theme-choice-grid,
-  .hotkey-row {
+  .generator-right .bindable-vector-row {
     grid-template-columns: 1fr;
   }
 

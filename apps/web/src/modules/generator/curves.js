@@ -90,6 +90,55 @@ export function getSortedKeyframes(curve) {
     .sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
 }
 
+export function getLifecycleCurveDisplayBounds(rawCurve, options = {}) {
+  const curve = rawCurve && typeof rawCurve === 'object' ? rawCurve : {};
+  const frames = getSortedKeyframes(curve);
+  const values = [curve.min, curve.max, options.hardMin, options.hardMax]
+    .map(Number)
+    .filter(Number.isFinite);
+  frames.forEach((frame) => values.push(Number(frame.value || 0)));
+  if (curve.mode === 'bezier') {
+    for (let index = 1; index < frames.length; index += 1) {
+      const previous = frames[index - 1];
+      const next = frames[index];
+      values.push(Number(previous.value || 0) + Number(previous.out?.y || 0));
+      values.push(Number(next.value || 0) + Number(next.in?.y || 0));
+    }
+  }
+  const finiteValues = values.filter(Number.isFinite);
+  if (!finiteValues.length) finiteValues.push(0, 1);
+  const rawMin = Math.min(...finiteValues);
+  const rawMax = Math.max(...finiteValues);
+  if (rawMax - rawMin < 0.01) {
+    return {
+      min: roundCurveBound(rawMin - 0.5),
+      max: roundCurveBound(rawMax + 0.5)
+    };
+  }
+  return {
+    min: niceCurveBound(rawMin, 'min'),
+    max: niceCurveBound(rawMax, 'max')
+  };
+}
+
+function niceCurveBound(value, edge) {
+  const magnitude = Math.abs(Number(value) || 0);
+  const step = magnitude <= 1 ? 0.1
+    : magnitude <= 2 ? 0.2
+      : magnitude <= 5 ? 0.5
+        : magnitude <= 10 ? 1
+          : magnitude <= 50 ? 5
+            : magnitude <= 200 ? 10
+              : 50;
+  const scaled = Number(value) / step;
+  return roundCurveBound((edge === 'min' ? Math.floor(scaled) : Math.ceil(scaled)) * step);
+}
+
+function roundCurveBound(value) {
+  const rounded = Number(Number(value).toFixed(6));
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
 function cubic1d(p0, p1, p2, p3, t) {
   const mt = 1 - t;
   return mt * mt * mt * p0 + 3 * mt * mt * t * p1 + 3 * mt * t * t * p2 + t * t * t * p3;

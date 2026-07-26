@@ -39,11 +39,15 @@ function resetCamera() {
   previewRef.value?.resetCamera();
 }
 
+function alignCameraToPoints() {
+  previewRef.value?.alignCameraToPoints();
+}
+
 async function toggleFullscreen() {
   await previewRef.value?.toggleFullscreen();
 }
 
-defineExpose({ resetCamera, toggleFullscreen });
+defineExpose({ resetCamera, alignCameraToPoints, toggleFullscreen });
 </script>
 
 <style scoped>

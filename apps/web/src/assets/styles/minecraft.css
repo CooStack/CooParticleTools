@@ -271,6 +271,11 @@
   height: auto !important;
 }
 
+.app-shell--minecraft .generator-page .generator-expression-editor textarea.code-textarea {
+  height: 180px !important;
+  min-height: 180px !important;
+}
+
 .app-shell--minecraft .input:focus,
 .app-shell--minecraft .select:focus,
 .app-shell--minecraft .textarea:focus,
@@ -470,12 +475,25 @@
 .app-shell--generator-theme.app-shell--minecraft .code-panel,
 .app-shell--generator-theme.app-shell--minecraft .generator-topbar,
 .app-shell--generator-theme.app-shell--minecraft .generator-panel,
+.app-shell--generator-theme.app-shell--minecraft .generator-settings-modal,
+.app-shell--generator-theme.app-shell--minecraft .generator-settings-panel,
 .app-shell--generator-theme.app-shell--minecraft .legacy-page-frame {
   background:
     linear-gradient(180deg, rgba(255, 218, 235, 0.08), transparent 20%),
     linear-gradient(180deg, rgba(53, 25, 41, 0.96), rgba(31, 14, 24, 0.95)),
     var(--bg-panel) !important;
   color: var(--mc-text) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-settings-modal {
+  border-color: var(--mc-line) !important;
+  border-radius: 0 !important;
+  box-shadow: var(--mc-shadow) !important;
+}
+
+.app-shell--generator-theme.app-shell--minecraft .generator-settings-panel {
+  border: 2px solid var(--mc-line) !important;
+  border-radius: 0 !important;
 }
 
 .app-shell--generator-theme.app-shell--minecraft .generator-brand h1,
@@ -675,6 +693,16 @@ html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--m
     linear-gradient(180deg, #bfe6fb 0%, #fbeaf0 58%, #f7dbe1 100%) !important;
   background-repeat: no-repeat !important;
   background-size: auto, cover, auto !important;
+}
+
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-settings-modal,
+html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-settings-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 20%),
+    linear-gradient(180deg, rgba(255, 236, 242, 0.96), rgba(255, 247, 250, 0.98)),
+    var(--bg-panel) !important;
+  color: var(--mc-text) !important;
+  border-color: var(--mc-line) !important;
 }
 
 html[data-generator-theme='light-pink'] .app-shell--route-generator.app-shell--minecraft .generator-topbar,

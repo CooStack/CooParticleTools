@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createGeneratorProject } from '../src/modules/generator/defaults.js';
 import { generateEmitterKotlin } from '../src/modules/generator/codegen.js';
 import { evaluatePointsProject } from '../src/modules/pointsbuilder/evaluator.js';
-import { generatePointsBuilderKotlin } from '../src/modules/pointsbuilder/codegen.js';
+import { builderFormatters, generatePointsBuilderKotlin } from '../src/modules/pointsbuilder/codegen.js';
 import { normalizePointsBuilderProject } from '../src/modules/pointsbuilder/defaults.js';
 import { applyNoiseOffset, buildFourierSeries } from '../src/modules/pointsbuilder/geometry.js';
 import {
@@ -38,6 +38,49 @@ test('generator bridge maps valid variables and constants into the legacy contex
   assert.equal(context.numericMap.radius, 2.5);
   assert.equal(context.numericMap.segments, 32);
   assert.equal(context.numericMap['2invalid'], undefined);
+});
+
+test('generator bridge keeps first variable semantics for duplicate context names', () => {
+  const context = createGeneratorPointsBuilderVariableContext({
+    variables: [
+      { name: 'shared', type: 'String', value: 'first' },
+      { name: 'shared', type: 'Double', value: 2 }
+    ],
+    constants: [
+      { name: 'shared', type: 'Int', value: 3 },
+      { name: 'radius', type: 'Double', value: 4 },
+      { name: 'radius', type: 'Double', value: 5 }
+    ]
+  });
+
+  assert.deepEqual(context.globalVars.map((item) => [item.name, item.type]), [['shared', 'String']]);
+  assert.deepEqual(context.globalConsts.map((item) => [item.name, item.value]), [['radius', '4']]);
+  assert.equal(context.numericMap.shared, undefined);
+  assert.equal(context.numericMap.radius, 4);
+});
+
+test('PointsBuilder preview keeps first parameter semantics for duplicate names', () => {
+  const project = normalizePointsBuilderProject({
+    state: {
+      root: {
+        children: [{
+          id: 'duplicate-preview-name',
+          kind: 'add_circle',
+          params: { r: 'shared', count: 3 }
+        }]
+      }
+    }
+  });
+  const points = evaluatePointsProject(project, {
+    parameters: {
+      variables: [
+        { name: 'shared', type: 'Double', value: 2 },
+        { name: 'shared', type: 'Double', value: 5 }
+      ]
+    }
+  });
+
+  assert.ok(Math.abs(Math.hypot(points[0].x, points[0].z) - 2) < 1e-9);
 });
 
 test('legacy PointsBuilder completion filters exact scalar target types', () => {
@@ -130,7 +173,7 @@ test('PointsBuilder preview and Kotlin preserve compatible function expressions'
   assert.ok(Math.abs(Math.hypot(points[0].x, points[0].z) - 4) < 1e-9);
 
   const kotlin = generateEmitterKotlin(project);
-  assert.match(kotlin, /\.addCircle\(Math\.max\(radius, 4\), \(Math\.max\(segments, 12\)\)\.toInt\(\)\.coerceAtLeast\(3\)\)/);
+  assert.match(kotlin, /\.addCircle\(Math\.max\(radius, 4\.0\), \(Math\.max\(segments, 12\)\)\.toInt\(\)\.coerceAtLeast\(3\)\)/);
 });
 
 function read(relativePath) {
@@ -254,8 +297,8 @@ test('legacy-only PointsBuilder shapes participate in Generator preview and Kotl
   assert.ok(points.some((point) => Math.abs(point.x - 1) > 1e-6));
 
   const kotlin = generateEmitterKotlin(project);
-  assert.match(kotlin, /\.addBall\(RelativeLocation\(1, 0, 0\), 2, 4\)/);
-  assert.match(kotlin, /\.addRoundShape\(2, 1, 8\)/);
+  assert.match(kotlin, /\.addBall\(RelativeLocation\(1\.0, 0\.0, 0\.0\), 2\.0, 4\)/);
+  assert.match(kotlin, /\.addRoundShape\(2\.0, 1\.0, 8\)/);
 });
 
 test('legacy-only PointsBuilder transforms and masks preserve execution order', () => {
@@ -278,7 +321,7 @@ test('legacy-only PointsBuilder transforms and masks preserve execution order', 
   const points = evaluatePointsProject(builderState);
   assert.deepEqual(points.map((point) => [point.x, point.y, point.z]), [[6, 0, 0]]);
   const kotlin = generateEmitterKotlin({ ...project, emitters: [{ ...project.emitters[0], emitter: { ...project.emitters[0].emitter, type: 'points_builder' } }] });
-  assert.match(kotlin, /\.clearAsBallMask\(RelativeLocation\(0, 0, 0\), 1\)/);
+  assert.match(kotlin, /\.clearAsBallMask\(RelativeLocation\(0\.0, 0\.0, 0\.0\), 1\.0\)/);
   assert.match(kotlin, /\.scale\(2\)/);
   assert.match(kotlin, /\.clearAsMaskAndJoin\(/);
 });
@@ -346,7 +389,73 @@ test('PointsBuilder Fourier preview and Kotlin share sampling and angle units', 
       }
     }
   });
-  assert.match(generatePointsBuilderKotlin(project), /\.addFourier\(1, 1, 90\)/);
+  assert.match(generatePointsBuilderKotlin(project), /\.addFourier\(1\.0, 1\.0, 90\.0\)/);
+});
+
+test('PointsBuilder emits Kotlin numeric literals for the target scalar type', () => {
+  const project = normalizePointsBuilderProject({
+    state: {
+      root: {
+        children: [{
+          id: 'integer-double-inputs',
+          kind: 'add_discrete_circle_xz',
+          params: { r: 5, count: 120, discrete: 1 }
+        }]
+      }
+    }
+  });
+
+  assert.match(generatePointsBuilderKotlin(project), /\.addDiscreteCircleXZ\(5\.0, 120, 1\.0\)/);
+  assert.equal(generatePointsBuilderKotlin(project).includes('5, 120, 1)'), false);
+
+  const { fmtDouble, fmtFloat } = builderFormatters;
+  assert.equal(fmtDouble(5), '5.0');
+  assert.equal(fmtDouble(1.5), '1.5');
+  assert.equal(fmtFloat(5), '5F');
+  assert.equal(fmtFloat(1.5), '1.5F');
+  assert.equal(fmtDouble('Math.max(radius, 4)'), 'Math.max(radius, 4.0)');
+  assert.equal(fmtFloat('Math.max(scale, 4)'), 'Math.max(scale, 4F)');
+});
+
+test('generator embeds PointsBuilder expressions without a nested terminal call', () => {
+  const project = createGeneratorProject();
+  const card = project.emitters[0];
+  card.emitter.type = 'points_builder';
+  card.emitter.builderState.kotlinEndMode = 'clone';
+
+  const standalone = generatePointsBuilderKotlin(card.emitter.builderState);
+  assert.match(standalone, /\.create\(\)$/);
+
+  const kotlin = generateEmitterKotlin(project);
+  assert.doesNotMatch(kotlin, /\.create\(\)/);
+  assert.match(kotlin, /\)\.createWithoutClone\(\)/);
+});
+
+test('PointsBuilder Bezier Kotlin preserves coordinate expressions', () => {
+  const project = normalizePointsBuilderProject({
+    state: {
+      root: {
+        children: [{
+          id: 'expression-bezier',
+          kind: 'add_bezier_4',
+          params: {
+            p1x: 'startX', p1y: 0, p1z: 0,
+            p2x: 'startX + 1', p2y: 2, p2z: 0,
+            p3x: 'endX - 1', p3y: 2, p3z: 0,
+            p4x: 'endX', p4y: 0, p4z: 0,
+            count: 40
+          }
+        }]
+      }
+    }
+  });
+
+  const kotlin = generatePointsBuilderKotlin(project);
+  assert.match(kotlin, /RelativeLocation\(startX, 0\.0, 0\.0\)/);
+  assert.match(kotlin, /RelativeLocation\(endX, 0\.0, 0\.0\)/);
+  assert.match(kotlin, /\(startX \+ 1\.0\)/);
+  assert.match(kotlin, /\(endX - 1\.0\)/);
+  assert.doesNotMatch(kotlin, /generateBezierCurve\(RelativeLocation\(0\.0, 0\.0, 0\.0\)/);
 });
 
 test('generator draft context only matches the same project and emitter', () => {

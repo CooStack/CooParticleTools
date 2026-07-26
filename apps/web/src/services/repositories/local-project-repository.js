@@ -30,6 +30,7 @@ function toMeta(item) {
     name: item.name,
     description: item.description,
     tags: Array.isArray(item.tags) ? item.tags : [],
+    filePath: String(item.filePath || ''),
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     storageMode: 'local'
@@ -67,6 +68,7 @@ export function createLocalProjectRepository() {
         name: String(input.name || 'Untitled Project').trim(),
         description: String(input.description || '').trim(),
         tags: Array.isArray(input.tags) ? input.tags : [],
+        filePath: String(input.filePath || existing?.filePath || '').trim(),
         payload: input.payload || {},
         createdAt: existing?.createdAt || nowIso(),
         updatedAt: nowIso(),

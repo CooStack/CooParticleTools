@@ -1,3 +1,9 @@
+import {
+    getCompositionKotlinTarget,
+    mapCompositionKotlinType,
+    rewriteCompositionKotlinExpression
+} from "./kotlin_mapping.js?v=20260720_1";
+
 export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
     const {
         U,
@@ -35,6 +41,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
     generateKotlin() {
         const className = sanitizeKotlinClassName(this.state.projectName || "NewComposition");
         const packageName = this.normalizeGeneratedPackageName(this.state.packageName || "cn.coostack.compositions");
+        const mappingTarget = getCompositionKotlinTarget(this.state.mapping);
         const sequencedRoot = this.state.compositionType === "sequenced";
         const baseClass = sequencedRoot ? "AutoSequencedParticleComposition" : "AutoParticleComposition";
         const imports = [
@@ -47,8 +54,8 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             "import cn.coostack.cooparticlesapi.particles.impl.*",
             "import cn.coostack.cooparticlesapi.utils.RelativeLocation",
             "import cn.coostack.cooparticlesapi.utils.builder.PointsBuilder",
-            "import net.minecraft.world.level.Level",
-            "import net.minecraft.world.phys.Vec3",
+            mappingTarget.worldImport,
+            mappingTarget.vec3Import,
             "import kotlin.math.PI",
             "import kotlin.random.Random",
             "import java.util.SortedMap",
@@ -68,7 +75,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             imports.push("import cn.coostack.cooparticlesapi.utils.builder.FourierSeriesBuilder");
         }
         if (this.stateUsesTextureSheetParticleRenderType()) {
-            imports.push("import net.minecraft.client.particle.ParticleRenderType");
+            imports.push(mappingTarget.particleRenderImport);
         }
         if (this.stateUsesTextureSheetCooTextureSheet()) {
             imports.push("import cn.coostack.cooparticlesapi.particles.CooParticleTextureSheet");
@@ -77,7 +84,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
 
         const body = [];
         body.push("@CooAutoRegister");
-        body.push(`class ${className}(position: Vec3, world: Level? = null) : ${baseClass}(position, world) {`);
+        body.push(`class ${className}(position: ${mappingTarget.vec3Type}, world: ${mappingTarget.worldType}? = null) : ${baseClass}(position, world) {`);
         const fields = this.buildClassFields(className);
         if (fields) body.push(fields);
         const initBlock = this.buildInitBlock(className, sequencedRoot);
@@ -181,7 +188,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
     }
 
     stateUsesTextureSheetParticleRenderType() {
-        return this.stateUsesTextureSheetLiteral(/\bParticleRenderType\s*\./);
+        return this.stateUsesTextureSheetLiteral(/\b(?:ParticleRenderType|ParticleTextureSheet)\s*\./);
     }
 
     stateUsesTextureSheetCooTextureSheet() {
@@ -204,6 +211,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         for (const v of this.state.globalVars) {
             const name = uniqueName(v.name, "value");
             const type = String(v.type || "Double").trim() || "Double";
+            const outputType = mapCompositionKotlinType(type, this.state.mapping);
             const rawValue = String(v.value || "").trim();
             let value = this.rewriteCodeExpr(rawValue || defaultLiteralForKotlinType(type), className);
             if (/^float$/i.test(type)) {
@@ -213,12 +221,13 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
                 value = normalizeKotlinDoubleLiteralText(value);
             }
             if (v.codec) lines.push("    @CodecField");
-            lines.push(`    ${v.mutable ? "var" : "val"} ${name}: ${type} = ${value}`);
+            lines.push(`    ${v.mutable ? "var" : "val"} ${name}: ${outputType} = ${value}`);
             lines.push("");
         }
         for (const c of this.state.globalConsts) {
             const name = uniqueName(c.name, "constant");
             const type = String(c.type || "Int").trim() || "Int";
+            const outputType = mapCompositionKotlinType(type, this.state.mapping);
             const rawValue = String(c.value || "").trim();
             let value = this.rewriteCodeExpr(rawValue || defaultLiteralForKotlinType(type), className);
             if (/^float$/i.test(type)) {
@@ -227,7 +236,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             } else if (/^double$/i.test(type) && isPlainNumericLiteralText(value)) {
                 value = normalizeKotlinDoubleLiteralText(value);
             }
-            lines.push(`    val ${name}: ${type} = ${value}`);
+            lines.push(`    val ${name}: ${outputType} = ${value}`);
             lines.push("");
         }
 
@@ -414,6 +423,10 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             (m, a, b, c) => rewrite("Vec3", a, b, c)
         );
         out = out.replace(
+            /\bVec3d\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
+            (m, a, b, c) => rewrite("Vec3d", a, b, c)
+        );
+        out = out.replace(
             /\bRelativeLocation\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
             (m, a, b, c) => rewrite("RelativeLocation", a, b, c)
         );
@@ -422,7 +435,8 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
 
     rewriteCodeExpr(exprRaw, className) {
         const qualified = rewriteClassQualifier(String(exprRaw || ""), className);
-        return this.rewriteVectorCtorNumericLiterals(qualified);
+        const normalized = this.rewriteVectorCtorNumericLiterals(qualified);
+        return rewriteCompositionKotlinExpression(normalized, this.state.mapping);
     }
 
     rewriteAnimateConditionExpr(exprRaw, className) {
@@ -432,7 +446,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
     shouldAutoAsRelative(exprRaw, className) {
         const expr = String(exprRaw || "").trim();
         if (!expr || /\.asRelative\(\)\s*$/.test(expr)) return false;
-        if (/^(Vec3|Vector3f)\s*\(/.test(expr)) return true;
+        if (/^(Vec3|Vec3d|Vector3f)\s*\(/.test(expr)) return true;
         const cls = sanitizeKotlinClassName(className || "NewComposition");
         for (const v of (this.state.globalVars || [])) {
             const rawName = String(v?.name || "").trim();
@@ -448,7 +462,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         const expr = this.rewriteCodeExpr(exprRaw, className).trim();
         if (!expr) return "RelativeLocation.yAxis()";
         if (this.shouldAutoAsRelative(expr, className)) {
-            if (/^(Vec3|Vector3f)\s*\(/.test(expr)) return `(${expr}).asRelative()`;
+            if (/^(Vec3|Vec3d|Vector3f)\s*\(/.test(expr)) return `(${expr}).asRelative()`;
             return `${expr}.asRelative()`;
         }
         return expr;
@@ -593,20 +607,21 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             lines.push(`${indentBase}.addParticleControlerInstanceInit {`);
             for (const v of (card.controllerVars || [])) {
                 const vName = sanitizeKotlinIdentifier(v.name || "v", "v");
-                const vType = sanitizeKotlinIdentifier(v.type || "Boolean", "Boolean");
+                const storedType = sanitizeKotlinIdentifier(v.type || "Boolean", "Boolean");
+                const vType = mapCompositionKotlinType(storedType, this.state.mapping);
                 let expr = this.rewriteCodeExpr(String(v.expr || "").trim(), className);
                 expr = rewriteStatus(expr, className);
-                if (!expr) expr = defaultLiteralForKotlinType(vType);
-                if (/^float$/i.test(vType)) {
+                if (!expr) expr = this.rewriteCodeExpr(defaultLiteralForKotlinType(storedType), className);
+                if (/^float$/i.test(storedType)) {
                     if (isPlainNumericLiteralText(expr)) expr = normalizeKotlinFloatLiteralText(expr);
                     else if (!/\.toFloat\(\)\s*$/.test(expr)) expr = `(${expr}).toFloat()`;
-                } else if (/^double$/i.test(vType) && isPlainNumericLiteralText(expr)) {
+                } else if (/^double$/i.test(storedType) && isPlainNumericLiteralText(expr)) {
                     expr = normalizeKotlinDoubleLiteralText(expr);
                 }
                 lines.push(`${indentBase}    var ${vName}: ${vType} = ${expr}`);
             }
             for (const action of actions) {
-                const script = rewriteClassQualifier(String(action.script || "").trim(), className);
+                const script = this.rewriteCodeExpr(String(action.script || "").trim(), className);
                 const patched = rewriteStatus(script, className);
                 if (!patched) continue;
                 lines.push(`${indentBase}    addPreTickAction {`);

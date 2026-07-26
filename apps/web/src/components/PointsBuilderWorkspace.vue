@@ -12,6 +12,7 @@
       <button class="btn primary" type="button" @click="persistProject">{{ saveButtonLabel }}</button>
       <button class="btn secondary" type="button" @click="downloadExport">导出 Kotlin</button>
       <button class="btn secondary" type="button" @click="resetPreviewCamera">重置镜头</button>
+      <button class="btn secondary" type="button" @click="alignPreviewCamera">对齐画面</button>
       <button class="btn secondary" type="button" @click="togglePreviewFullscreen">预览全屏</button>
     </ProjectToolbar>
 
@@ -474,6 +475,10 @@ function clearHotkey(actionId) {
 
 function resetPreviewCamera() {
   previewRef.value?.resetCamera();
+}
+
+function alignPreviewCamera() {
+  previewRef.value?.alignCameraToPoints();
 }
 
 async function togglePreviewFullscreen() {

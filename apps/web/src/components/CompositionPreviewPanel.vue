@@ -6,6 +6,7 @@
         <button class="btn secondary" type="button" @click="$emit('replay')">重播</button>
         <button class="btn secondary" type="button" @click="$emit('jump-end')">跳到末尾</button>
         <button class="btn secondary" type="button" @click="resetCamera">重置镜头</button>
+        <button class="btn secondary" type="button" @click="alignCameraToPoints">对齐画面</button>
         <button class="btn secondary" type="button" @click="toggleFullscreen">全屏</button>
       </div>
     </template>
@@ -70,6 +71,10 @@ const hint = computed(() => props.playing ? '动态预览运行中' : '动态预
 
 function resetCamera() {
   previewRef.value?.resetCamera();
+}
+
+function alignCameraToPoints() {
+  previewRef.value?.alignCameraToPoints();
 }
 
 async function toggleFullscreen() {

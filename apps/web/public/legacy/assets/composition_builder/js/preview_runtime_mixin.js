@@ -54,7 +54,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     const PREVIEW_RENDER_CACHE_WORKER_DEFAULT_MAX_WORKERS = 2;
     const PREVIEW_RENDER_CACHE_WORKER_USER_MAX_WORKERS = 16;
     const PREVIEW_RENDER_CACHE_WORKER_MAX_QUEUE = 8;
-    const PREVIEW_RENDER_CACHE_WORKER_URL = "./preview_render_cache_worker.js?v=20260710_6";
+    const PREVIEW_RENDER_CACHE_WORKER_URL = "./preview_render_cache_worker.js?v=20260725_5";
 
     class PreviewRuntimeMixin {
     rebuildPreview() {
@@ -4523,8 +4523,8 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     doesPreviewExpressionReadVisualState(scriptRaw = "") {
         const src = stripJsForLint(transpileKotlinThisQualifierToJs(scriptRaw));
         if (!src) return false;
-        if (/\b(?:currentAge|lifetime|lifeTime|textureSheet)\b/.test(src)) return true;
-        if (/\bparticle\s*\.\s*(?:currentAge|lifetime|lifeTime|textureSheet)\b/.test(src)) return true;
+        if (/\b(?:currentAge|lifetime|lifeTime|maxAge|textureSheet)\b/.test(src)) return true;
+        if (/\bparticle\s*\.\s*(?:currentAge|lifetime|lifeTime|maxAge|textureSheet)\b/.test(src)) return true;
         return false;
     }
 
@@ -4578,6 +4578,8 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             },
             get lifetime() { return this._ctx.lifetime; },
             set lifetime(v) { this._ctx.lifetime = Math.max(1, int(v)); },
+            get maxAge() { return this._ctx.lifetime; },
+            set maxAge(v) { this._ctx.lifetime = Math.max(1, int(v)); },
             get textureSheet() { return this._ctx.textureSheet; },
             set textureSheet(v) { this._ctx.textureSheet = int(v); },
             get status() { return this._ctx.status; },
@@ -4601,6 +4603,8 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             },
             get lifetime() { return this._ctx.lifetime; },
             set lifetime(v) { this._ctx.lifetime = Math.max(1, int(v)); },
+            get maxAge() { return this._ctx.lifetime; },
+            set maxAge(v) { this._ctx.lifetime = Math.max(1, int(v)); },
             get textureSheet() { return this._ctx.textureSheet; },
             set textureSheet(v) { this._ctx.textureSheet = int(v); }
         };
@@ -4713,6 +4717,12 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             get() { return num(runtimeCtx.lifetime); },
             set(v) { runtimeCtx.lifetime = Math.max(1, int(v)); }
         });
+        Object.defineProperty(vars, "maxAge", {
+            configurable: true,
+            enumerable: true,
+            get() { return num(runtimeCtx.lifetime); },
+            set(v) { runtimeCtx.lifetime = Math.max(1, int(v)); }
+        });
         vars.tick = num(baseVars.tick);
         vars.index = int(baseVars.index);
         vars.thisAt = thisAtVars;
@@ -4786,7 +4796,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     isPreviewVisualTimeDependent(scriptRaw = "") {
         const src = stripJsForLint(transpileKotlinThisQualifierToJs(scriptRaw));
         if (!src) return false;
-        if (/\b(?:age|tick|tickCount|currentAge|lifetime|lifeTime|textureSheet)\b/.test(src)) return true;
+        if (/\b(?:age|tick|tickCount|currentAge|lifetime|lifeTime|maxAge|textureSheet)\b/.test(src)) return true;
         if (this.isPreviewExpressionNonDeterministic(src)) return true;
         return false;
     }
@@ -4812,7 +4822,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             const target = this.normalizePreviewVisualInitTarget(raw?.target || "");
             const exprRaw = String(raw?.expr || "").trim();
             if (!exprRaw) continue;
-            const expr = transpileKotlinThisQualifierToJs(exprRaw).replace(/(\d+(?:\.\d+)?)[fFdDlL]\b/g, "$1");
+            const expr = transpileKotlinThisQualifierToJs(exprRaw).replace(/\b(\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)[fFdDlL]\b/g, "$1");
             const exprPointDependent = this.isPreviewExpressionPointDependent(exprRaw);
             const exprReadsVisualState = this.doesPreviewExpressionReadVisualState(exprRaw);
             particleInit.push({ target, exprRaw, expr });
@@ -5060,7 +5070,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
 
     isScriptAgeDependent(scriptRaw = "") {
         const src = stripJsForLint(transpileKotlinThisQualifierToJs(scriptRaw));
-        return /\b(?:age|currentAge|index|textureSheet|lifetime)\b/.test(src);
+        return /\b(?:age|currentAge|index|textureSheet|lifetime|maxAge)\b/.test(src);
     }
 
     isCardVisualAgeDependent(card) {
@@ -5387,9 +5397,9 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     tryParseFoldableStaticVecExpr(exprRaw, elapsedTick = 0) {
         const src = String(exprRaw || "").trim();
         if (!src) return null;
-        if (src === "Vec3.ZERO") return U.v(0, 0, 0);
+        if (src === "Vec3.ZERO" || src === "Vec3d.ZERO") return U.v(0, 0, 0);
         if (src === "RelativeLocation.yAxis()") return U.v(0, 1, 0);
-        const m = src.match(/^(?:Vec3|RelativeLocation|Vector3f)\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)(?:\s*\.asRelative\(\))?$/i);
+        const m = src.match(/^(?:Vec3|Vec3d|RelativeLocation|Vector3f)\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)(?:\s*\.asRelative\(\))?$/i);
         if (!m) return null;
         const xExpr = String(m[1] || "").trim();
         const yExpr = String(m[2] || "").trim();
@@ -5545,7 +5555,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 && Number.isFinite(nativeAction.to.z))
                 ? nativeAction.to
                 : null;
-            if (direct) return direct;
+            if (direct) return this.parseJsVec(direct);
             const directExpr = String(nativeAction.to || "").trim();
             if (directExpr) {
                 const parsed = this.parseJsVec(directExpr);
@@ -5844,7 +5854,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     evaluateExpressionWithRuntime(exprRaw, runtimeVars = null, opts = {}) {
         const srcRaw = String(exprRaw || "").trim();
         if (!srcRaw) return null;
-        const src = transpileKotlinThisQualifierToJs(srcRaw).replace(/(\d+(?:\.\d+)?)[fFdDlL]\b/g, "$1");
+        const src = transpileKotlinThisQualifierToJs(srcRaw).replace(/\b(\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)[fFdDlL]\b/g, "$1");
         const elapsedTick = num(opts.elapsedTick);
         const ageTick = num(opts.ageTick);
         const pointIndex = int(opts.pointIndex || 0);
@@ -5880,8 +5890,8 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     parseVecLikeValueWithRuntime(rawExpr, runtimeVars = null, opts = {}) {
         const srcRaw = String(rawExpr || "").trim();
         if (!srcRaw) return U.v(0, 0, 0);
-        const src = transpileKotlinThisQualifierToJs(srcRaw).replace(/(\d+(?:\.\d+)?)[fFdDlL]\b/g, "$1");
-        if (src === "Vec3.ZERO") return U.v(0, 0, 0);
+        const src = transpileKotlinThisQualifierToJs(srcRaw).replace(/\b(\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)[fFdDlL]\b/g, "$1");
+        if (src === "Vec3.ZERO" || src === "Vec3d.ZERO") return U.v(0, 0, 0);
         if (src === "RelativeLocation.yAxis()") return U.v(0, 1, 0);
         if (src.endsWith(".asRelative()")) {
             return this.parseVecLikeValueWithRuntime(src.slice(0, -".asRelative()".length), runtimeVars, opts);
@@ -5929,7 +5939,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             const vec = resolveRuntimeVec(thisAtVars, thisAtMatch[1]);
             if (vec) return vec;
         }
-        const m = src.match(/(?:Vec3|RelativeLocation|Vector3f)\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/i);
+        const m = src.match(/(?:Vec3|Vec3d|RelativeLocation|Vector3f)\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/i);
         if (m) {
             const evalOpts = { elapsedTick, ageTick, pointIndex, thisAtVars, runtimeScope };
             return U.v(
@@ -5967,17 +5977,23 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     }
 
     rotatePointToDirection(point, toDir, fromAxis = null) {
-        const axis = (fromAxis && U.len(fromAxis) > 1e-6) ? U.norm(fromAxis) : this.resolveCompositionAxisDirection();
+        const axis = this.parseJsVec(
+            (fromAxis && U.len(fromAxis) > 1e-6)
+                ? fromAxis
+                : this.resolveCompositionAxisDirection()
+        );
         const dir = this.parseJsVec(toDir);
-        const dot = num(axis.x) * num(dir.x) + num(axis.y) * num(dir.y) + num(axis.z) * num(dir.z);
+        const dot = Math.max(-1, Math.min(1,
+            num(axis.x) * num(dir.x) + num(axis.y) * num(dir.y) + num(axis.z) * num(dir.z)
+        ));
         if (dot >= 0.999999) return point;
-        const points = [U.clone(point)];
-        if (typeof U.rotatePointsToPoint === "function") {
-            U.rotatePointsToPoint(points, dir, axis);
-        } else {
-            rotatePointsToPointUpright(points, dir, axis);
+
+        let rotationAxis = U.cross(axis, dir);
+        if (U.len(rotationAxis) <= 1e-9) {
+            const reference = Math.abs(num(axis.x)) < 0.9 ? U.v(1, 0, 0) : U.v(0, 1, 0);
+            rotationAxis = U.cross(axis, reference);
         }
-        return points[0] || point;
+        return this.rotateAroundUnitAxis(point, U.norm(rotationAxis), Math.acos(dot));
     }
 
     rotateAroundUnitAxis(point, axisUnit, angleRad) {
@@ -6058,6 +6074,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 const rot = toTau(accumAngle);
                 api.point = this.rotateAroundUnitAxis(api.point, dir, rot);
                 api.axis = U.clone(dir);
+                vars.axis = U.clone(dir);
             },
             addSingle: () => {},
             addMultiple: () => {}

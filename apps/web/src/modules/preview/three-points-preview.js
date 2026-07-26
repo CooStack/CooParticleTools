@@ -271,7 +271,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
   const scene = new THREE.Scene();
 
   const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 2000);
-  camera.position.set(8, 8, 8);
+  camera.position.set(2.4, 1.8, 2.4);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -331,7 +331,6 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
   let viewportHeight = 1;
   let fpsLastTs = 0;
   let fpsFrames = 0;
-  let hasFramedScene = false;
   let interpolationStart = 0;
   let interpolationDuration = DEFAULT_INTERPOLATION_MS;
   let interpolationAlpha = 1;
@@ -429,8 +428,6 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     if (!points.length) {
       clearPoints();
       finishInterpolation();
-      hasFramedScene = false;
-      resetCamera();
       return;
     }
 
@@ -447,11 +444,6 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
       clearOrientedMesh();
     }
     restartInterpolation();
-
-    if (!hasFramedScene) {
-      resetCamera();
-      hasFramedScene = true;
-    }
   }
 
   function updateBufferPoints(data) {
@@ -459,8 +451,6 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     if (!count) {
       clearPoints();
       finishInterpolation();
-      hasFramedScene = false;
-      resetCamera();
       return;
     }
 
@@ -473,11 +463,6 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     updateBillboardBufferPoints(data, count);
     clearOrientedMesh();
     restartInterpolation();
-
-    if (!hasFramedScene) {
-      resetCamera();
-      hasFramedScene = true;
-    }
   }
 
   function updateBillboardPoints() {
@@ -835,13 +820,14 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
   }
 
   function resetCamera() {
+    camera.position.set(2.4, 1.8, 2.4);
+    controls.target.set(0, 0, 0);
+    controls.update();
+  }
+
+  function alignCameraToPoints() {
     const box = getCameraFocusBounds();
-    if (box.isEmpty()) {
-      camera.position.set(2.4, 1.8, 2.4);
-      controls.target.set(0, 0, 0);
-      controls.update();
-      return;
-    }
+    if (box.isEmpty()) return;
 
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
@@ -979,6 +965,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     resize,
     updatePoints,
     resetCamera,
+    alignCameraToPoints,
     toggleFullscreen,
     setGridVisible,
     setAxesVisible,

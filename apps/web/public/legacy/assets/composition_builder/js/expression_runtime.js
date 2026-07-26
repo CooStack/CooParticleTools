@@ -7,7 +7,7 @@ export function createExpressionRuntime(options = {}) {
 
     if (!U) throw new Error("createExpressionRuntime requires U");
 
-    const vectorTypes = new Set(["Vec3", "RelativeLocation", "Vector3f"]);
+    const vectorTypes = new Set(["Vec3", "Vec3d", "RelativeLocation", "Vector3f"]);
     const numericTypes = new Set(["Int", "Long", "Float", "Double"]);
     const numericExprFnCache = new Map();
     const RESOLVE_STACK_LIMIT = 128;
@@ -36,8 +36,10 @@ export function createExpressionRuntime(options = {}) {
         };
     };
     const runtimeVector3f = (x = 0, y = 0, z = 0) => ({ x: toNum(x), y: toNum(y), z: toNum(z) });
+    const randomSignedInt32 = () => Math.floor(Math.random() * 0x100000000) - 0x80000000;
     const runtimeRandom = {
         nextInt(fromOrUntil, until) {
+            if (arguments.length === 0) return randomSignedInt32();
             if (until === undefined) {
                 const u = Math.floor(toNum(fromOrUntil, 1));
                 if (u <= 0) return 0;
@@ -66,6 +68,8 @@ export function createExpressionRuntime(options = {}) {
             return Math.random() < 0.5;
         },
         nextLong(fromOrUntil, until) {
+            if (arguments.length === 0) return randomSignedInt32();
+            if (arguments.length === 1) return runtimeRandom.nextInt(fromOrUntil);
             return runtimeRandom.nextInt(fromOrUntil, until);
         }
     };
@@ -73,6 +77,7 @@ export function createExpressionRuntime(options = {}) {
         PI: Math.PI,
         RelativeLocation: runtimeRelativeLocation,
         Vec3: runtimeVec3,
+        Vec3d: runtimeVec3,
         Vector3f: runtimeVector3f,
         Random: runtimeRandom
     });
@@ -80,6 +85,7 @@ export function createExpressionRuntime(options = {}) {
         PI: Math.PI,
         RelativeLocation: runtimeRelativeLocation,
         Vec3: runtimeVec3,
+        Vec3d: runtimeVec3,
         Vector3f: runtimeVector3f,
         Random: runtimeRandom
     });
@@ -138,6 +144,7 @@ export function createExpressionRuntime(options = {}) {
             PI: Math.PI,
             RelativeLocation: runtimeRelativeLocation,
             Vec3: runtimeVec3,
+            Vec3d: runtimeVec3,
             Vector3f: runtimeVector3f,
             Random: runtimeRandom
         };
@@ -260,7 +267,7 @@ export function createExpressionRuntime(options = {}) {
     }
 
     function evaluateNumericExpression(exprRaw, opts = {}) {
-        const expr = String(exprRaw || "").trim().replace(/(\d+(?:\.\d+)?)[fFdDlL]\b/g, "$1");
+        const expr = String(exprRaw || "").trim().replace(/\b(\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)[fFdDlL]\b/g, "$1");
         if (!expr) return 0;
 
         const elapsedTick = isFiniteNumber(opts.elapsedTick) ? Number(opts.elapsedTick) : 0;
@@ -288,7 +295,7 @@ export function createExpressionRuntime(options = {}) {
         if (!opts.skipEnsure && !staticCacheBuilding) ensureStaticCache();
         const s = String(rawExpr || "").trim();
         if (!s) return U.v(0, 0, 0);
-        if (s === "Vec3.ZERO") return U.v(0, 0, 0);
+        if (s === "Vec3.ZERO" || s === "Vec3d.ZERO") return U.v(0, 0, 0);
         if (s === "RelativeLocation.yAxis()") return U.v(0, 1, 0);
         const depth = Number.isFinite(Number(opts.depth)) ? Number(opts.depth) : 0;
         if (depth > RESOLVE_STACK_LIMIT) return U.v(0, 0, 0);
@@ -331,7 +338,7 @@ export function createExpressionRuntime(options = {}) {
             }
         }
 
-        const m = s.match(/(?:Vec3|RelativeLocation|Vector3f)\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/i);
+        const m = s.match(/(?:Vec3|Vec3d|RelativeLocation|Vector3f)\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/i);
         if (m) {
             return U.v(
                 evaluateNumericExpression(m[1], { elapsedTick, ageTick, pointIndex, includeVectors: false }),

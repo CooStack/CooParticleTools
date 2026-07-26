@@ -2,8 +2,46 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createKindDefs } from "../../points_builder/js/kinds.js";
 import { createBuilderTools } from "../../points_builder/js/builder.js";
-import { createExpressionRuntime } from "./expression_runtime.js?v=20260221_2";
-import { InlineCodeEditor, mergeCompletionGroups } from "./code_editor.js?v=20260312_3";
+import {
+    COMPOSITION_CARD_SECTION_KEYS as CARD_SECTION_KEYS,
+    COMPOSITION_CONTROLLER_ACTION_TYPES as CONTROLLER_ACTION_TYPES,
+    COMPOSITION_DISPLAY_ACTION_TYPES as DISPLAY_ACTION_TYPES,
+    COMPOSITION_GLOBAL_VALUE_TYPES as GLOBAL_VAR_TYPES,
+    DEFAULT_COMPOSITION_EFFECT_CLASS as DEFAULT_EFFECT_CLASS,
+    DEFAULT_COMPOSITION_HOTKEYS as DEFAULT_HOTKEYS,
+    cloneCompositionValue as deepClone,
+    createCompositionCard as createDefaultCard,
+    createCompositionCardSectionCollapse as createDefaultCardSectionCollapse,
+    createCompositionId as uid,
+    createCompositionProject as createDefaultState,
+    createEmbeddedPointsBuilderState as createDefaultBuilderState,
+    normalizeCompositionAnimate as normalizeAnimate,
+    normalizeCompositionCard as normalizeCard,
+    normalizeCompositionCardSectionCollapse as normalizeCardSectionCollapse,
+    normalizeCompositionControllerAction as normalizeControllerAction,
+    normalizeCompositionDisplayAction as normalizeDisplayAction,
+    normalizeCompositionGlobalConstant as normalizeGlobalConst,
+    normalizeCompositionGlobalVariable as normalizeGlobalVar,
+    normalizeCompositionNestedLevel as normalizeShapeNestedLevel,
+    normalizeCompositionPackageName as normalizeKotlinPackageName,
+    normalizeCompositionProject as normalizeStateShape,
+    normalizeCompositionShapeNode as normalizeShapeTreeNode,
+    normalizeEmbeddedPointsBuilderState as normalizeBuilderState
+} from "./model.js?v=20260720_1";
+import {
+    applyCompositionPreferences,
+    extractCompositionPreferences,
+    extractCompositionProjectState,
+    loadCompositionStateFromStorage,
+    saveCompositionPreferencesToStorage,
+    saveCompositionStateToStorage
+} from "./preferences.js?v=20260725_2";
+import {
+    getCompositionKotlinTarget,
+    normalizeCompositionMapping
+} from "./kotlin_mapping.js?v=20260720_1";
+import { createExpressionRuntime } from "./expression_runtime.js?v=20260725_3";
+import { InlineCodeEditor, mergeCompletionGroups } from "./code_editor.js?v=20260725_1";
 import {
     normalizeAlphaHelperConfig,
     ALPHA_HELPER_TYPES,
@@ -17,7 +55,7 @@ import {
     vectorToHex01,
     hexToVector01,
     formatNumberCompact
-} from "./vector_value_utils.js";
+} from "./vector_value_utils.js?v=20260720_1";
 import {
     normalizeScaleHelperConfig,
     SCALE_HELPER_TYPES,
@@ -34,12 +72,17 @@ import {
     hasAngleOffsetEaseSpecialParams,
     formatAngleValue
 } from "./angle_offset_utils.js";
-import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260710_6";
-import { installKotlinCodegenMethods } from "./kotlin_codegen_mixin.js?v=20260313_1";
+import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260725_6";
+import { installKotlinCodegenMethods } from "./kotlin_codegen_mixin.js?v=20260720_1";
 import { installCodeOutputMethods } from "./code_output_mixin.js";
-import { installExpressionEditorMethods } from "./expression_editor_mixin.js?v=20260316_1";
+import { installExpressionEditorMethods } from "./expression_editor_mixin.js?v=20260725_2";
 import { installCodeCompileMethods } from "./code_compile_mixin.js?v=20260309_2";
 import { installTargetPresetMethods } from "./target_preset_mixin.js";
+import { installCompositionPresetMethods } from "./composition_preset_mixin.js?v=20260726_3";
+import {
+    handleCompositionHistoryShortcut,
+    isCompositionTextEditingTarget
+} from "./history_hotkeys.js?v=20260725_1";
 import {
     loadAllParticleData,
     getParticleDataByName,
@@ -53,7 +96,6 @@ import { minecraftThemeFor, normalizeWorkbenchTheme } from "./theme.js";
 const U = globalThis.Utils;
 if (!U) throw new Error("Utils 未加载：请先加载 points_builder/utils.js");
 
-const STORAGE_KEY = "cb_state_v1";
 const EXPORTED_SIG_KEY = "cb_export_sig_v1";
 const CPB_PREFIX = "cpb_";
 const CPB_STATE_KEY = `${CPB_PREFIX}pb_state_v1`;
@@ -62,26 +104,6 @@ const CPB_THEME_KEY = `${CPB_PREFIX}pb_theme_v2`;
 const CPB_RETURN_CARD_KEY = `${CPB_PREFIX}return_card_v1`;
 const CPB_RETURN_TARGET_KEY = `${CPB_PREFIX}return_target_v1`;
 const CPB_COMP_CONTEXT_KEY = `${CPB_PREFIX}pb_comp_context_v1`;
-
-const DEFAULT_HOTKEYS = {
-    version: 1,
-    actions: {
-        addCard: "KeyW",
-        switchEditor: "KeyE",
-        switchCode: "KeyC",
-        toggleSettings: "KeyH",
-        toggleHotkeys: "Shift+KeyH",
-        generateCode: "KeyK",
-        copyCode: "Mod+Shift+KeyC",
-        toggleRealtime: "KeyR",
-        openBuilderEditor: "KeyB",
-        openMeasureTool: "KeyM",
-        deleteCard: "Backspace",
-        fullscreen: "KeyF",
-        undo: "Mod+KeyZ",
-        redo: "Mod+Shift+KeyZ"
-    }
-};
 
 const HOTKEY_ACTION_DEFS = [
     { id: "addCard", title: "添加卡片", desc: "默认 W" },
@@ -99,20 +121,6 @@ const HOTKEY_ACTION_DEFS = [
     { id: "undo", title: "撤销", desc: "默认 Ctrl/Cmd+Z" },
     { id: "redo", title: "重做", desc: "默认 Ctrl/Cmd+Shift+Z" }
 ];
-
-const GLOBAL_VAR_TYPES = [
-    "Int",
-    "Long",
-    "Float",
-    "Double",
-    "Boolean",
-    "String",
-    "Vec3",
-    "RelativeLocation",
-    "Vector3f"
-];
-
-const DEFAULT_EFFECT_CLASS = "ControlableEndRodEffect";
 
 const EFFECT_CLASS_OPTIONS = [
     "ControlableEndRodEffect",
@@ -141,53 +149,6 @@ const PARTICLE_INIT_TARGET_OPTIONS = [
     "textureSheet"
 ];
 
-const CONTROLLER_ACTION_TYPES = [
-    { id: "tick_js", title: "每帧动作 (JS)" }
-];
-
-const DISPLAY_ACTION_TYPES = [
-    { id: "rotateToPoint", title: "rotateToPoint(dir)" },
-    { id: "rotateAsAxis", title: "rotateAsAxis(angle)" },
-    { id: "rotateToWithAngle", title: "rotateToWithAngle(to, angle)" },
-    { id: "expression", title: "表达式" }
-];
-
-const CARD_SECTION_KEYS = [
-    "base",
-    "source",
-    "single_particle_init",
-    "single_controller_init",
-    "shape_base",
-    "shape_child_params",
-    "shape_axis",
-    "shape_display",
-    "shape_scale",
-    "growth"
-];
-
-function createDefaultCardSectionCollapse() {
-    const out = {};
-    for (const key of CARD_SECTION_KEYS) out[key] = false;
-    return out;
-}
-
-function normalizeCardSectionCollapse(raw) {
-    const base = createDefaultCardSectionCollapse();
-    if (!raw || typeof raw !== "object") return base;
-    for (const key of CARD_SECTION_KEYS) {
-        if (raw[key] === true) base[key] = true;
-    }
-    return base;
-}
-
-function normalizeKotlinPackageName(raw, fallback = "cn.coostack.compositions") {
-    let text = String(raw || "").trim();
-    if (!text) text = fallback;
-    text = text.replace(/^package\s+/i, "").replace(/;+\s*$/g, "").trim();
-    if (!text) text = fallback;
-    return text;
-}
-
 const KOTLIN_IDENTIFIER_KEYWORDS = new Set([
     "as", "break", "class", "continue", "do", "else", "false", "for", "fun", "if", "in", "interface", "is",
     "null", "object", "package", "return", "super", "this", "throw", "true", "try", "typealias", "typeof",
@@ -208,14 +169,6 @@ function normalizeKotlinSymbolName(name, fallback = "value") {
     return id;
 }
 
-
-function uid() {
-    return (Math.random().toString(16).slice(2) + Date.now().toString(16)).slice(0, 16);
-}
-
-function deepClone(v) {
-    return JSON.parse(JSON.stringify(v));
-}
 
 function num(v) {
     const n = Number(v);
@@ -350,26 +303,6 @@ function hotkeyMatchEvent(e, hk) {
     return eventToHotkey(e) === normalizeHotkey(hk);
 }
 
-function parseVectorLiteralNumbers(rawExpr, fallback = { x: 0, y: 1, z: 0 }) {
-    const text = String(rawExpr || "").trim();
-    const base = {
-        x: Number.isFinite(Number(fallback?.x)) ? num(fallback.x) : 0,
-        y: Number.isFinite(Number(fallback?.y)) ? num(fallback.y) : 1,
-        z: Number.isFinite(Number(fallback?.z)) ? num(fallback.z) : 0
-    };
-    const m = text.match(/(?:Vec3|RelativeLocation|Vector3f)\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/i);
-    if (!m) return base;
-    const read = (raw, fb) => {
-        const n = Number(String(raw || "").trim().replace(/[fFdDlL]/g, ""));
-        return Number.isFinite(n) ? n : fb;
-    };
-    return {
-        x: read(m[1], base.x),
-        y: read(m[2], base.y),
-        z: read(m[3], base.z)
-    };
-}
-
 function ensureStatusHelperMethods(rawStatus) {
     let status = (rawStatus && typeof rawStatus === "object") ? rawStatus : {};
     if (!Object.isExtensible(status)) status = Object.assign({}, status);
@@ -407,13 +340,13 @@ const JS_LINT_GLOBALS = new Set([
     "rotateToPoint", "rotateAsAxis", "rotateToWithAngle", "addSingle", "addMultiple", "addPreTickAction",
     "setReversedScaleOnCompositionStatus", "particle",
     "thisAt", "status",
-    "color", "size", "alpha", "particleColor", "particleSize", "particleAlpha", "currentAge", "lifetime", "textureSheet",
-    "RelativeLocation", "Vec3", "Vector3f"
+    "color", "size", "alpha", "particleColor", "particleSize", "particleAlpha", "currentAge", "lifetime", "lifeTime", "maxAge", "textureSheet",
+    "RelativeLocation", "Vec3", "Vec3d", "Vector3f"
 ]);
 
 const CONTROLLER_SCOPE_RESERVED = new Set([
     "color", "particleColor", "size", "particleSize", "alpha", "particleAlpha",
-    "age", "currentAge", "lifetime", "lifeTime", "textureSheet",
+    "age", "currentAge", "lifetime", "lifeTime", "maxAge", "textureSheet",
     "tick", "tickCount", "index", "status", "particle", "thisAt"
 ]);
 function stripJsForLint(raw) {
@@ -516,513 +449,11 @@ function safeNumberLiteral(value, kotlinType) {
     return raw;
 }
 
-function normalizeGlobalVar(v) {
-    const x = Object.assign({}, v || {});
-    x.id = x.id || uid();
-    x.name = String(x.name || "value");
-    const typeRaw = String(x.type || "Double");
-    x.type = GLOBAL_VAR_TYPES.includes(typeRaw) ? typeRaw : "Double";
-    const defaultValue = defaultLiteralForKotlinType(x.type);
-    x.value = String(x.value ?? defaultValue);
-    if (isVectorLiteralType(x.type)) {
-        const parsed = parseVectorLiteralNumbers(x.value, { x: 0, y: 0, z: 0 });
-        x.value = formatVectorLiteral(x.type, parsed.x, parsed.y, parsed.z);
-    } else {
-        x.value = safeNumberLiteral(x.value, x.type);
-    }
-    x.codec = x.codec !== false;
-    x.mutable = x.mutable !== false;
-    return x;
-}
-
-function normalizeGlobalConst(v) {
-    const x = Object.assign({}, v || {});
-    x.id = x.id || uid();
-    x.name = String(x.name || "constant");
-    const typeRaw = String(x.type || "Int");
-    x.type = GLOBAL_VAR_TYPES.includes(typeRaw) ? typeRaw : "Int";
-    const defaultValue = defaultLiteralForKotlinType(x.type);
-    x.value = String(x.value ?? defaultValue);
-    if (isVectorLiteralType(x.type)) {
-        const parsed = parseVectorLiteralNumbers(x.value, { x: 0, y: 0, z: 0 });
-        x.value = formatVectorLiteral(x.type, parsed.x, parsed.y, parsed.z);
-    } else {
-        x.value = safeNumberLiteral(x.value, x.type);
-    }
-    return x;
-}
-
-function normalizeAnimate(a) {
-    const x = Object.assign({}, a || {});
-    x.id = x.id || uid();
-    x.count = Math.max(1, int(x.count || 1));
-    x.condition = String(x.condition || "");
-    return x;
-}
-
-function normalizeControllerAction(raw) {
-    const x = Object.assign({}, raw || {});
-    x.id = x.id || uid();
-    x.type = CONTROLLER_ACTION_TYPES.some((it) => it.id === x.type) ? x.type : "tick_js";
-    x.script = String(x.script || "");
-    return x;
-}
-
-function normalizeDisplayAction(a) {
-    const x = Object.assign({}, a || {});
-    x.id = x.id || uid();
-    if (x.type === "rotateTo") x.type = "rotateToPoint";
-    x.type = DISPLAY_ACTION_TYPES.some((it) => it.id === x.type) ? x.type : "rotateToWithAngle";
-    x.toUsePreset = x.toUsePreset === true;
-    x.toPreset = String(x.toPreset || "RelativeLocation.yAxis()");
-    x.toExpr = String(x.toExpr || x.toPreset || "RelativeLocation.yAxis()");
-    x.toManualCtor = normalizeVectorCtor(x.toManualCtor || parseCtorInLiteral(x.toExpr, "RelativeLocation"));
-    x.toManualX = Number.isFinite(Number(x.toManualX)) ? num(x.toManualX) : 0;
-    x.toManualY = Number.isFinite(Number(x.toManualY)) ? num(x.toManualY) : 1;
-    x.toManualZ = Number.isFinite(Number(x.toManualZ)) ? num(x.toManualZ) : 0;
-    x.angleMode = x.angleMode === "expr" ? "expr" : "numeric";
-    x.angleValue = Number.isFinite(Number(x.angleValue)) ? num(x.angleValue) : 0.05;
-    x.angleUnit = normalizeAngleUnit(x.angleUnit || "rad");
-    x.angleExpr = String(x.angleExpr || "speed / 180 * PI");
-    x.angleExprPreset = String(x.angleExprPreset || x.angleExpr || "speed / 180 * PI");
-    x.expression = String(x.expression || "");
-    return x;
-}
-
-function createDefaultBuilderState() {
-    return {
-        root: {
-            id: "root",
-            kind: "ROOT",
-            children: []
-        }
-    };
-}
-
-function normalizeBuilderState(raw) {
-    const base = createDefaultBuilderState();
-    if (!raw || typeof raw !== "object") return base;
-    const cloneExtras = (src, next) => {
-        if (!src || typeof src !== "object") return next;
-        if (src.variables !== undefined) next.variables = deepClone(src.variables);
-        if (src.presets !== undefined) next.presets = deepClone(src.presets);
-        if (src.settings !== undefined) next.settings = deepClone(src.settings);
-        if (src.hotkeys !== undefined) next.hotkeys = deepClone(src.hotkeys);
-        return next;
-    };
-    if (raw.root && Array.isArray(raw.root.children)) {
-        return cloneExtras(raw, { root: { id: "root", kind: "ROOT", children: deepClone(raw.root.children) } });
-    }
-    if (raw.state && raw.state.root && Array.isArray(raw.state.root.children)) {
-        return cloneExtras(raw.state, { root: { id: "root", kind: "ROOT", children: deepClone(raw.state.root.children) } });
-    }
-    if (Array.isArray(raw.children)) {
-        return cloneExtras(raw, { root: { id: "root", kind: "ROOT", children: deepClone(raw.children) } });
-    }
-    if (Array.isArray(raw)) {
-        return { root: { id: "root", kind: "ROOT", children: deepClone(raw) } };
-    }
-    return base;
-}
-
-function normalizeShapeNestedLevel(raw, index = 0) {
-    const x = Object.assign({}, raw || {});
-    x.id = x.id || uid();
-    x.collapsed = !!x.collapsed;
-    x.type = ["single", "particle_shape", "sequenced_shape"].includes(String(x.type || "")) ? String(x.type) : "single";
-    x.effectClass = String(x.effectClass || DEFAULT_EFFECT_CLASS);
-    x.useTexture = x.useTexture !== false;
-    x.bindMode = x.bindMode === "point" ? "point" : "builder";
-    x.point = x.point && typeof x.point === "object" ? x.point : { x: 0, y: 0, z: 0 };
-    x.point.x = num(x.point.x);
-    x.point.y = num(x.point.y);
-    x.point.z = num(x.point.z);
-    x.builderState = normalizeBuilderState(x.builderState);
-    x.axisPreset = String(x.axisPreset || "RelativeLocation.yAxis()");
-    x.axisExpr = String(x.axisExpr || x.axisPreset || "RelativeLocation.yAxis()");
-    x.axisManualCtor = normalizeVectorCtor(x.axisManualCtor || parseCtorInLiteral(x.axisExpr, "RelativeLocation"));
-    x.axisManualX = Number.isFinite(Number(x.axisManualX)) ? num(x.axisManualX) : 0;
-    x.axisManualY = Number.isFinite(Number(x.axisManualY)) ? num(x.axisManualY) : 1;
-    x.axisManualZ = Number.isFinite(Number(x.axisManualZ)) ? num(x.axisManualZ) : 0;
-    x.displayActions = Array.isArray(x.displayActions) ? x.displayActions.map((a) => normalizeDisplayAction(a)) : [];
-    x.angleOffsetEnabled = x.angleOffsetEnabled === true;
-    x.angleOffsetCount = Math.max(1, int(x.angleOffsetCount || 1));
-    x.angleOffsetGlowTick = Math.max(1, int(x.angleOffsetGlowTick || 20));
-    x.angleOffsetEase = normalizeAngleOffsetEaseName(x.angleOffsetEase || "outCubic");
-    Object.assign(x, normalizeAngleOffsetEaseSpecialParams(x));
-    x.angleOffsetReverseOnDisable = x.angleOffsetReverseOnDisable === true;
-    x.angleOffsetAngleMode = x.angleOffsetAngleMode === "expr" ? "expr" : "numeric";
-    x.angleOffsetAngleValue = Number.isFinite(Number(x.angleOffsetAngleValue)) ? num(x.angleOffsetAngleValue) : 360;
-    x.angleOffsetAngleUnit = normalizeAngleUnit(x.angleOffsetAngleUnit || "deg");
-    x.angleOffsetAngleExpr = String(x.angleOffsetAngleExpr || "PI * 2");
-    x.angleOffsetAnglePreset = String(x.angleOffsetAnglePreset || x.angleOffsetAngleExpr || "PI * 2");
-    x.scale = normalizeScaleHelperConfig(x.scale, { type: "none" });
-    x.scale.runMode = "auto";
-    x.growthAnimates = Array.isArray(x.growthAnimates) ? x.growthAnimates.map((it) => normalizeAnimate(it)) : [];
-    x.name = String(x.name || `嵌套层${index + 2}`);
-    return x;
-}
-
-function normalizeShapeTreeNode(raw = {}, index = 0) {
-    const x = Object.assign({}, raw || {});
-    x.id = x.id || uid();
-    x.name = String(x.name || `子节点 ${index + 1}`);
-    x.type = ["single", "particle_shape", "sequenced_shape"].includes(String(x.type || "")) ? String(x.type) : "single";
-    x.bindMode = x.bindMode === "point" ? "point" : "builder";
-    x.point = x.point && typeof x.point === "object" ? x.point : { x: 0, y: 0, z: 0 };
-    x.point.x = num(x.point.x);
-    x.point.y = num(x.point.y);
-    x.point.z = num(x.point.z);
-    x.builderState = normalizeBuilderState(x.builderState);
-    x.axisPreset = String(x.axisPreset || "RelativeLocation.yAxis()");
-    x.axisExpr = String(x.axisExpr || x.axisPreset || "RelativeLocation.yAxis()");
-    x.axisManualCtor = normalizeVectorCtor(x.axisManualCtor || parseCtorInLiteral(x.axisExpr, "RelativeLocation"));
-    x.axisManualX = Number.isFinite(Number(x.axisManualX)) ? num(x.axisManualX) : 0;
-    x.axisManualY = Number.isFinite(Number(x.axisManualY)) ? num(x.axisManualY) : 1;
-    x.axisManualZ = Number.isFinite(Number(x.axisManualZ)) ? num(x.axisManualZ) : 0;
-    x.displayActions = Array.isArray(x.displayActions) ? x.displayActions.map((a) => normalizeDisplayAction(a)) : [];
-    x.angleOffsetEnabled = x.angleOffsetEnabled === true;
-    x.angleOffsetCount = Math.max(1, int(x.angleOffsetCount || 1));
-    x.angleOffsetGlowTick = Math.max(1, int(x.angleOffsetGlowTick || 20));
-    x.angleOffsetEase = normalizeAngleOffsetEaseName(x.angleOffsetEase || "outCubic");
-    Object.assign(x, normalizeAngleOffsetEaseSpecialParams(x));
-    x.angleOffsetReverseOnDisable = x.angleOffsetReverseOnDisable === true;
-    x.angleOffsetAngleMode = x.angleOffsetAngleMode === "expr" ? "expr" : "numeric";
-    x.angleOffsetAngleValue = Number.isFinite(Number(x.angleOffsetAngleValue)) ? num(x.angleOffsetAngleValue) : 360;
-    x.angleOffsetAngleUnit = normalizeAngleUnit(x.angleOffsetAngleUnit || "deg");
-    x.angleOffsetAngleExpr = String(x.angleOffsetAngleExpr || "PI * 2");
-    x.angleOffsetAnglePreset = String(x.angleOffsetAnglePreset || x.angleOffsetAngleExpr || "PI * 2");
-    x.scale = normalizeScaleHelperConfig(x.scale, { type: "none" });
-    x.scale.runMode = "auto";
-    x.growthAnimates = Array.isArray(x.growthAnimates) ? x.growthAnimates.map((it) => normalizeAnimate(it)) : [];
-    x.effectClass = String(x.effectClass || DEFAULT_EFFECT_CLASS);
-    x.useTexture = x.useTexture !== false;
-    x.particleInit = Array.isArray(x.particleInit) ? x.particleInit.map((it) => {
-        const exprPreset = String(it?.exprPreset || "");
-        const codegenExprPreset = String(it?.codegenExprPreset || "");
-        return {
-            id: it?.id || uid(),
-            target: String(it?.target || "size"),
-            expr: String(it?.expr || exprPreset || ""),
-            exprPreset,
-            codegenExpr: String(it?.codegenExpr || codegenExprPreset || ""),
-            codegenExprPreset
-        };
-    }) : [];
-    x.controllerVars = Array.isArray(x.controllerVars) ? x.controllerVars.map((it) => ({
-        id: it?.id || uid(),
-        name: String(it?.name || "tick"),
-        type: String(it?.type || "Boolean"),
-        expr: String(it?.expr || "true")
-    })) : [];
-    x.controllerActions = Array.isArray(x.controllerActions) ? x.controllerActions.map((it) => normalizeControllerAction(it)) : [];
-    if (x.type !== "single") {
-        x.children = Array.isArray(x.children) ? x.children.map((c, i) => normalizeShapeTreeNode(c, i)) : [];
-    } else {
-        x.children = [];
-    }
-    return x;
-}
-
-function normalizeCard(card, index = 0) {
-    const x = Object.assign({}, card || {});
-    x.id = x.id || uid();
-    x.name = String(x.name || `卡片 ${index + 1}`);
-    x.folded = !!x.folded;
-    x.previewVisible = x.previewVisible !== false;
-    x.previewSolo = x.previewSolo === true;
-    x.sectionCollapse = normalizeCardSectionCollapse(x.sectionCollapse);
-    x.bindMode = x.bindMode === "point" ? "point" : "builder";
-    x.point = x.point && typeof x.point === "object" ? x.point : { x: 0, y: 0, z: 0 };
-    x.point.x = num(x.point.x);
-    x.point.y = num(x.point.y);
-    x.point.z = num(x.point.z);
-    x.builderState = normalizeBuilderState(x.builderState);
-    x.builderKotlinOverride = String(x.builderKotlinOverride || "");
-    x.dataType = ["single", "particle_shape", "sequenced_shape"].includes(x.dataType) ? x.dataType : "single";
-    x.singleEffectClass = String(x.singleEffectClass || DEFAULT_EFFECT_CLASS);
-    x.singleUseTexture = x.singleUseTexture !== false;
-    x.particleInit = Array.isArray(x.particleInit) ? x.particleInit : [];
-    x.controllerVars = Array.isArray(x.controllerVars) ? x.controllerVars : [];
-    x.particleInit = x.particleInit.map((it) => {
-        const preset = String(it?.exprPreset || "");
-        const codegenPreset = String(it?.codegenExprPreset || "");
-        const expr = String(it?.expr || preset || "");
-        return {
-            id: it?.id || uid(),
-            target: String(it?.target || "size"),
-            expr,
-            exprPreset: preset,
-            codegenExpr: String(it?.codegenExpr || codegenPreset || ""),
-            codegenExprPreset: codegenPreset
-        };
-    });
-    x.controllerVars = x.controllerVars.map((it) => ({ id: it.id || uid(), name: String(it.name || "tick"), type: String(it.type || "Boolean"), expr: String(it.expr || "true") }));
-    x.controllerActions = Array.isArray(x.controllerActions) ? x.controllerActions.map((it) => normalizeControllerAction(it)) : [];
-    const legacyControllerScript = String(x.controllerTickScript || "").trim();
-    if (!x.controllerActions.length && legacyControllerScript) {
-        x.controllerActions.push(normalizeControllerAction({ type: "tick_js", script: legacyControllerScript }));
-    }
-    x.controllerTickScript = "";
-    x.controllerInitScript = "";
-    x.rotateToWithAngle = !!x.rotateToWithAngle;
-    x.rotateToUsePreset = x.rotateToUsePreset === true;
-    x.rotateToPreset = String(x.rotateToPreset || "RelativeLocation.yAxis()");
-    x.rotateToExpr = String(x.rotateToExpr || x.rotateToPreset || "RelativeLocation.yAxis()");
-    x.rotateToManualCtor = normalizeVectorCtor(x.rotateToManualCtor || parseCtorInLiteral(x.rotateToExpr, "RelativeLocation"));
-    x.rotateToManualX = Number.isFinite(Number(x.rotateToManualX)) ? num(x.rotateToManualX) : 0;
-    x.rotateToManualY = Number.isFinite(Number(x.rotateToManualY)) ? num(x.rotateToManualY) : 1;
-    x.rotateToManualZ = Number.isFinite(Number(x.rotateToManualZ)) ? num(x.rotateToManualZ) : 0;
-    x.rotateAngleMode = x.rotateAngleMode === "expr" ? "expr" : "numeric";
-    x.rotateAngleValue = Number.isFinite(Number(x.rotateAngleValue)) ? num(x.rotateAngleValue) : 0.05;
-    x.rotateAngleUnit = normalizeAngleUnit(x.rotateAngleUnit || "rad");
-    x.rotateAngleExpr = String(x.rotateAngleExpr || "speed / 180 * PI");
-    x.rotateAnglePreset = String(x.rotateAnglePreset || x.rotateAngleExpr || "speed / 180 * PI");
-    x.angleOffsetEnabled = x.angleOffsetEnabled === true;
-    x.angleOffsetCount = Math.max(1, int(x.angleOffsetCount || 1));
-    x.angleOffsetGlowTick = Math.max(1, int(x.angleOffsetGlowTick || 20));
-    x.angleOffsetEase = normalizeAngleOffsetEaseName(x.angleOffsetEase || "outCubic");
-    Object.assign(x, normalizeAngleOffsetEaseSpecialParams(x));
-    x.angleOffsetReverseOnDisable = x.angleOffsetReverseOnDisable === true;
-    x.angleOffsetAngleMode = x.angleOffsetAngleMode === "expr" ? "expr" : "numeric";
-    x.angleOffsetAngleValue = Number.isFinite(Number(x.angleOffsetAngleValue)) ? num(x.angleOffsetAngleValue) : 360;
-    x.angleOffsetAngleUnit = normalizeAngleUnit(x.angleOffsetAngleUnit || "deg");
-    x.angleOffsetAngleExpr = String(x.angleOffsetAngleExpr || "PI * 2");
-    x.angleOffsetAnglePreset = String(x.angleOffsetAnglePreset || x.angleOffsetAngleExpr || "PI * 2");
-    x.growthAnimates = Array.isArray(x.growthAnimates) ? x.growthAnimates.map((it) => normalizeAnimate(it)) : [];
-    x.sequencedAnimates = Array.isArray(x.sequencedAnimates) ? x.sequencedAnimates.map((it) => normalizeAnimate(it)) : [];
-    x.shapeAxisPreset = String(x.shapeAxisPreset || "RelativeLocation.yAxis()");
-    x.shapeAxisExpr = String(x.shapeAxisExpr || x.shapeAxisPreset || "RelativeLocation.yAxis()");
-    x.shapeAxisManualCtor = normalizeVectorCtor(x.shapeAxisManualCtor || parseCtorInLiteral(x.shapeAxisExpr, "RelativeLocation"));
-    x.shapeAxisManualX = Number.isFinite(Number(x.shapeAxisManualX)) ? num(x.shapeAxisManualX) : 0;
-    x.shapeAxisManualY = Number.isFinite(Number(x.shapeAxisManualY)) ? num(x.shapeAxisManualY) : 1;
-    x.shapeAxisManualZ = Number.isFinite(Number(x.shapeAxisManualZ)) ? num(x.shapeAxisManualZ) : 0;
-    x.shapeDisplayActions = Array.isArray(x.shapeDisplayActions) ? x.shapeDisplayActions.map((a) => normalizeDisplayAction(a)) : [];
-    x.shapeScale = normalizeScaleHelperConfig(x.shapeScale, { type: "none" });
-    x.shapeScale.runMode = "auto";
-    x.shapeChildren = Array.isArray(x.shapeChildren)
-        ? x.shapeChildren.map((c, i) => normalizeShapeTreeNode(c, i))
-        : [];
-    x.viewPath = Array.isArray(x.viewPath) ? x.viewPath.map(v => int(v)) : [];
-    return x;
-}
-
-function createDefaultCard(index = 0) {
-    return normalizeCard({
-        name: `卡片 ${index + 1}`,
-        bindMode: "builder",
-        point: { x: 0, y: 0, z: 0 },
-        builderState: createDefaultBuilderState(),
-        dataType: "single",
-        singleEffectClass: DEFAULT_EFFECT_CLASS,
-        singleUseTexture: true,
-        particleInit: [],
-        controllerVars: [],
-        controllerActions: [],
-        controllerInitScript: "",
-        controllerTickScript: "",
-        rotateToWithAngle: false,
-        rotateToUsePreset: false,
-        rotateToPreset: "RelativeLocation.yAxis()",
-        rotateToExpr: "RelativeLocation.yAxis()",
-        rotateAngleMode: "numeric",
-        rotateAngleValue: 0.05,
-        rotateAngleUnit: "rad",
-        rotateAnglePreset: "speed / 180 * PI",
-        rotateAngleExpr: "speed / 180 * PI",
-        angleOffsetEnabled: false,
-        angleOffsetCount: 1,
-        angleOffsetGlowTick: 20,
-        angleOffsetEase: "outCubic",
-        angleOffsetReverseOnDisable: false,
-        angleOffsetAngleMode: "numeric",
-        angleOffsetAngleValue: 360,
-        angleOffsetAngleUnit: "deg",
-        angleOffsetAnglePreset: "PI * 2",
-        angleOffsetAngleExpr: "PI * 2",
-        growthAnimates: [],
-        sequencedAnimates: [],
-        shapeAxisPreset: "RelativeLocation.yAxis()",
-        shapeAxisExpr: "RelativeLocation.yAxis()",
-        shapeAxisManualCtor: "RelativeLocation",
-        shapeAxisManualX: 0,
-        shapeAxisManualY: 1,
-        shapeAxisManualZ: 0,
-        shapeDisplayActions: [],
-        shapeScale: { type: "none" },
-        shapeChildren: [],
-        sectionCollapse: createDefaultCardSectionCollapse()
-    }, index);
-}
-
-function normalizeStateShape(state) {
-    const next = deepClone(state || {});
-    if (!next.settings || typeof next.settings !== "object") next.settings = {};
-    if (!next.hotkeys || typeof next.hotkeys !== "object") next.hotkeys = {};
-    if (!next.hotkeys.actions || typeof next.hotkeys.actions !== "object") next.hotkeys.actions = {};
-    next.hotkeys.version = DEFAULT_HOTKEYS.version;
-    next.hotkeys.actions = Object.assign({}, DEFAULT_HOTKEYS.actions, next.hotkeys.actions);
-
-    if (!Array.isArray(next.globalVars)) next.globalVars = [];
-    if (!Array.isArray(next.globalConsts)) next.globalConsts = [];
-    if (!Array.isArray(next.compositionAnimates)) next.compositionAnimates = [];
-    if (!Array.isArray(next.displayActions)) next.displayActions = [];
-    if (!Array.isArray(next.cards)) next.cards = [];
-
-    next.projectName = String(next.projectName || "NewComposition");
-    next.packageName = normalizeKotlinPackageName(next.packageName, "cn.coostack.compositions");
-    next.enableRemoveStatusOverride = next.enableRemoveStatusOverride === true;
-    next.compositionType = next.compositionType === "sequenced" ? "sequenced" : "particle";
-    next.previewPlayTicks = Math.max(1, int(next.previewPlayTicks || 70));
-    next.disabledInterval = Math.max(0, int(next.disabledInterval || 0));
-    next.compositionAxisPreset = String(next.compositionAxisPreset || "RelativeLocation.yAxis()");
-    next.compositionAxisExpr = String(next.compositionAxisExpr || next.compositionAxisPreset || "RelativeLocation.yAxis()");
-    next.compositionAxisManualCtor = normalizeVectorCtor(next.compositionAxisManualCtor || parseCtorInLiteral(next.compositionAxisExpr, "RelativeLocation"));
-    const axisParsed = parseVectorLiteralNumbers(next.compositionAxisExpr, { x: 0, y: 1, z: 0 });
-    next.compositionAxisManualX = Number.isFinite(Number(next.compositionAxisManualX)) ? num(next.compositionAxisManualX) : axisParsed.x;
-    next.compositionAxisManualY = Number.isFinite(Number(next.compositionAxisManualY)) ? num(next.compositionAxisManualY) : axisParsed.y;
-    next.compositionAxisManualZ = Number.isFinite(Number(next.compositionAxisManualZ)) ? num(next.compositionAxisManualZ) : axisParsed.z;
-
-    next.settings.theme = normalizeWorkbenchTheme(next.settings.theme);
-    next.settings.paramStep = Math.max(0.000001, num(next.settings.paramStep || 0.1));
-    next.settings.pointSize = Math.max(0.001, num(next.settings.pointSize || 0.5));
-    next.settings.previewRenderCacheEnabled = next.settings.previewRenderCacheEnabled !== false;
-    next.settings.previewCacheWorkerCount = clamp(int(next.settings.previewCacheWorkerCount || 0), 0, 16);
-    next.settings.showAxes = next.settings.showAxes !== false;
-    next.settings.showGrid = next.settings.showGrid === true ? true : false;
-    next.settings.realtimeCode = next.settings.realtimeCode !== false;
-    next.settings.previewFocusSingleCard = false;
-    next.settings.leftPanelTab = "cards";
-    {
-        const rawLeftWidth = num(next.settings.leftPanelWidth || 0);
-        next.settings.leftPanelWidth = clamp((rawLeftWidth < 820 || rawLeftWidth > 960) ? 900 : rawLeftWidth, 620, 1400);
-    }
-    next.settings.compositionLayerWidth = clamp(num(next.settings.compositionLayerWidth || 300), 260, 420);
-    next.settings.compositionLayersOpen = true;
-    next.settings.projectSectionHeight = clamp(num(next.settings.projectSectionHeight || 42), 20, 70);
-    next.projectAlpha = normalizeAlphaHelperConfig(next.projectAlpha, { type: "none" });
-    next.projectScale = normalizeScaleHelperConfig(next.projectScale, { type: "none" });
-
-    next.globalVars = next.globalVars.map((v) => normalizeGlobalVar(v));
-    next.globalConsts = next.globalConsts.map((v) => normalizeGlobalConst(v));
-    next.compositionAnimates = next.compositionAnimates.map((v) => normalizeAnimate(v));
-    next.displayActions = next.displayActions.map((a) => normalizeDisplayAction(a));
-    next.cards = next.cards.map((c, i) => normalizeCard(c, i));
-    const hasDirectionVar = next.globalVars.some((v) => String(v?.name || "").trim() === "direction");
-    if (!hasDirectionVar) {
-        for (const act of next.displayActions) {
-            if (String(act.toExpr || "").trim() === "direction.asRelative()") {
-                act.toExpr = "RelativeLocation.yAxis()";
-                act.toPreset = "RelativeLocation.yAxis()";
-            }
-        }
-        for (const card of next.cards) {
-            if (String(card.rotateToExpr || "").trim() === "direction.asRelative()") {
-                card.rotateToExpr = "RelativeLocation.yAxis()";
-                card.rotateToPreset = "RelativeLocation.yAxis()";
-            }
-            for (const act of (card.shapeDisplayActions || [])) {
-                if (String(act.toExpr || "").trim() === "direction.asRelative()") {
-                    act.toExpr = "RelativeLocation.yAxis()";
-                    act.toPreset = "RelativeLocation.yAxis()";
-                }
-            }
-        }
-    }
-    next.globalVars = next.globalVars.filter((v) => {
-        const name = String(v?.name || "").trim();
-        if (name !== "direction") return true;
-        const type = String(v?.type || "").trim();
-        const value = String(v?.value || "").trim();
-        if (type !== "Vec3" || value !== "Vec3.ZERO") return true;
-        const used = next.displayActions.some((a) => String(a?.toExpr || "").includes("direction"))
-            || next.cards.some((card) => String(card?.rotateToExpr || "").includes("direction")
-                || (card?.shapeDisplayActions || []).some((a) => String(a?.toExpr || "").includes("direction")));
-        return used;
-    });
-    if (!next.cards.length) next.cards.push(createDefaultCard(0));
-
-    return next;
-}
-
-function createDefaultState() {
-    return normalizeStateShape({
-        projectName: "NewComposition",
-        packageName: "cn.coostack.compositions",
-        enableRemoveStatusOverride: false,
-        compositionType: "particle",
-        previewPlayTicks: 70,
-        disabledInterval: 0,
-        compositionAxisPreset: "RelativeLocation.yAxis()",
-        compositionAxisExpr: "RelativeLocation.yAxis()",
-        compositionAxisManualCtor: "RelativeLocation",
-        compositionAxisManualX: 0,
-        compositionAxisManualY: 1,
-        compositionAxisManualZ: 0,
-        projectAlpha: {
-            type: "none",
-            runMode: "auto",
-            min: 0.0,
-            max: 1.0,
-            tick: 20,
-            startMax: false,
-            decreaseOnDisable: false
-        },
-        projectScale: {
-            type: "none",
-            runMode: "auto",
-            min: 0.01,
-            max: 4.0,
-            tick: 18,
-            c1x: 0.17106,
-            c1y: 0.49026,
-            c1z: 0.0,
-            c2x: -0.771523,
-            c2y: -0.116883,
-            c2z: 0.0,
-            reversedOnDisable: false
-        },
-        globalVars: [],
-        globalConsts: [],
-        compositionAnimates: [],
-        displayActions: [],
-        cards: [createDefaultCard(0)],
-        settings: {
-            theme: "dark-1",
-            paramStep: 0.1,
-            pointSize: 0.5,
-            previewRenderCacheEnabled: true,
-            previewCacheWorkerCount: 0,
-            showAxes: true,
-            showGrid: false,
-            realtimeCode: true,
-            previewFocusSingleCard: false,
-            leftPanelTab: "cards",
-            leftPanelWidth: 900,
-            compositionLayerWidth: 300,
-            compositionLayersOpen: true,
-            projectSectionHeight: 42
-        },
-        hotkeys: deepClone(DEFAULT_HOTKEYS)
-    });
-}
-
 function normalizeBuilderTarget(targetRaw) {
     const target = String(targetRaw || "").trim();
     if (/^tree_node:/.test(target)) return target;
     if (target === "shape") return target;
     return "root";
-}
-
-function loadStateFromStorage() {
-    try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return createDefaultState();
-        return normalizeStateShape(JSON.parse(raw));
-    } catch (e) {
-        console.warn("load state failed:", e);
-        return createDefaultState();
-    }
 }
 
 function rotatePointsToPointUpright(points, toPoint, axis, upRef = U.v(0, 1, 0)) {
@@ -1066,7 +497,7 @@ const BUILDER_EXPR_TAG = "__pbExprNum";
 let builderNumericContextProvider = () => ({});
 
 function stripNumericSuffix(raw) {
-    return String(raw || "").replace(/(\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)[fFdDlL]\b/g, "$1");
+    return String(raw || "").replace(/\b(\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)[fFdDlL]\b/g, "$1");
 }
 
 function isNumericLiteralText(raw) {
@@ -1191,7 +622,7 @@ const { evalBuilderWithMeta, emitKotlin: emitPointsBuilderKotlin } = builderTool
 
 class CompositionBuilderApp {
     constructor() {
-        this.state = loadStateFromStorage();
+        this.state = loadCompositionStateFromStorage(localStorage);
         this.selectedCardIds = new Set();
         this.focusedCardId = this.state.cards[0]?.id || null;
         if (this.focusedCardId) this.selectedCardIds.add(this.focusedCardId);
@@ -1281,6 +712,8 @@ class CompositionBuilderApp {
         };
         this.codeEditors = new Map();
         this.pendingCodeApplyOpts = new Map();
+        this.editorWorkspaceView = "cards";
+        this.initCompositionPresetState();
 
         this.exprRuntime = createExpressionRuntime({
             U,
@@ -1301,6 +734,7 @@ class CompositionBuilderApp {
         this.switchPage("editor");
         this.renderProjectSection();
         this.renderCards();
+        this.setEditorWorkspaceView(this.editorWorkspaceView);
         this.rebuildPreview();
         this.generateCodeAndRender(true);
         this.writeBuilderCompositionContext();
@@ -1330,9 +764,6 @@ class CompositionBuilderApp {
             btnRedo: document.getElementById("btnRedo"),
             btnSettings: document.getElementById("btnSettings"),
             btnHotkeys: document.getElementById("btnHotkeys"),
-            btnImportProject: document.getElementById("btnImportProject"),
-            btnExportProject: document.getElementById("btnExportProject"),
-            fileProject: document.getElementById("fileProject"),
             chkRealtimeCode: document.getElementById("chkRealtimeCode"),
             btnGenerateCode: document.getElementById("btnGenerateCode"),
             btnCopyCode: document.getElementById("btnCopyCode"),
@@ -1342,6 +773,9 @@ class CompositionBuilderApp {
             btnPausePreview: document.getElementById("btnPausePreview"),
             btnReplayPreview: document.getElementById("btnReplayPreview"),
             btnCompileExpr: document.getElementById("btnCompileExpr"),
+            btnProjectEditorTab: document.getElementById("btnProjectEditorTab"),
+            btnCardEditorTab: document.getElementById("btnCardEditorTab"),
+            activeCardTabLabel: document.getElementById("activeCardTabLabel"),
             projectSection: document.getElementById("projectSection"),
             projectCardsResizer: document.getElementById("projectCardsResizer"),
             compositionSideWorkbench: document.querySelector(".composition-side-workbench"),
@@ -1385,6 +819,22 @@ class CompositionBuilderApp {
             btnCloseHotkeys: document.getElementById("btnCloseHotkeys"),
             btnCloseHotkeys2: document.getElementById("btnCloseHotkeys2"),
             btnHotkeysReset: document.getElementById("btnHotkeysReset"),
+            cardPresetMask: document.getElementById("cardPresetMask"),
+            cardPresetModal: document.getElementById("cardPresetModal"),
+            cardPresetContext: document.getElementById("cardPresetContext"),
+            cardPresetSearch: document.getElementById("cardPresetSearch"),
+            cardPresetList: document.getElementById("cardPresetList"),
+            cardPresetStatus: document.getElementById("cardPresetStatus"),
+            btnCloseCardPreset: document.getElementById("btnCloseCardPreset"),
+            btnCloseCardPreset2: document.getElementById("btnCloseCardPreset2"),
+            nodePresetMask: document.getElementById("nodePresetMask"),
+            nodePresetModal: document.getElementById("nodePresetModal"),
+            nodePresetContext: document.getElementById("nodePresetContext"),
+            nodePresetSearch: document.getElementById("nodePresetSearch"),
+            nodePresetList: document.getElementById("nodePresetList"),
+            nodePresetStatus: document.getElementById("nodePresetStatus"),
+            btnCloseNodePreset: document.getElementById("btnCloseNodePreset"),
+            btnCloseNodePreset2: document.getElementById("btnCloseNodePreset2"),
             builderMask: document.getElementById("builderMask"),
             builderModal: document.getElementById("builderModal"),
             builderFrame: document.getElementById("builderFrame"),
@@ -1439,9 +889,6 @@ class CompositionBuilderApp {
         d.btnRedo.addEventListener("click", () => this.redo());
         d.btnSettings.addEventListener("click", () => this.showSettings());
         d.btnHotkeys.addEventListener("click", () => this.showHotkeys());
-        d.btnImportProject.addEventListener("click", () => d.fileProject.click());
-        d.btnExportProject.addEventListener("click", () => this.exportProject());
-        d.fileProject.addEventListener("change", () => this.importProjectFromFile());
         if (d.chkRealtimeCode) d.chkRealtimeCode.addEventListener("change", () => this.setRealtimeCode(d.chkRealtimeCode.checked));
         d.btnGenerateCode.addEventListener("click", () => this.generateCodeAndRender(true));
         d.btnGenerateCode2.addEventListener("click", () => this.generateCodeAndRender(true));
@@ -1450,6 +897,10 @@ class CompositionBuilderApp {
         d.btnDownloadCode.addEventListener("click", () => this.downloadCode());
         if (d.btnPausePreview) d.btnPausePreview.addEventListener("click", () => this.togglePreviewPause());
         if (d.btnReplayPreview) d.btnReplayPreview.addEventListener("click", () => this.replayPreview());
+        d.btnProjectEditorTab?.addEventListener("click", () => this.setEditorWorkspaceView("project"));
+        d.btnCardEditorTab?.addEventListener("click", () => this.setEditorWorkspaceView("cards"));
+        d.btnProjectEditorTab?.addEventListener("keydown", (e) => this.onEditorWorkspaceTabKeydown(e));
+        d.btnCardEditorTab?.addEventListener("keydown", (e) => this.onEditorWorkspaceTabKeydown(e));
 
         d.projectSection.addEventListener("click", (e) => this.onProjectClick(e));
         d.projectSection.addEventListener("input", (e) => this.onProjectInput(e));
@@ -1542,6 +993,14 @@ class CompositionBuilderApp {
         d.btnCloseHotkeys?.addEventListener("click", () => this.hideHotkeys());
         d.btnCloseHotkeys2?.addEventListener("click", () => this.hideHotkeys());
         d.btnHotkeysReset?.addEventListener("click", () => this.resetHotkeys());
+
+        d.cardPresetMask?.addEventListener("click", () => this.hideCardPresetModal());
+        d.btnCloseCardPreset?.addEventListener("click", () => this.hideCardPresetModal());
+        d.btnCloseCardPreset2?.addEventListener("click", () => this.hideCardPresetModal());
+        d.nodePresetMask?.addEventListener("click", () => this.hideNodePresetModal());
+        d.btnCloseNodePreset?.addEventListener("click", () => this.hideNodePresetModal());
+        d.btnCloseNodePreset2?.addEventListener("click", () => this.hideNodePresetModal());
+        this.bindCompositionPresetEvents();
 
         d.builderMask.addEventListener("click", () => this.hideBuilderModal());
         d.btnCloseBuilderModal.addEventListener("click", () => this.hideBuilderModal());
@@ -1783,6 +1242,31 @@ class CompositionBuilderApp {
         if (!isCode) this.onResize();
     }
 
+    setEditorWorkspaceView(view) {
+        const showProject = view === "project";
+        this.editorWorkspaceView = showProject ? "project" : "cards";
+        this.dom.projectSection?.classList.toggle("hidden", !showProject);
+        this.dom.cardsRoot?.classList.toggle("hidden", showProject);
+        this.dom.btnProjectEditorTab?.classList.toggle("active", showProject);
+        this.dom.btnCardEditorTab?.classList.toggle("active", !showProject);
+        this.dom.btnProjectEditorTab?.setAttribute("aria-selected", String(showProject));
+        this.dom.btnCardEditorTab?.setAttribute("aria-selected", String(!showProject));
+        this.dom.btnProjectEditorTab?.setAttribute("tabindex", showProject ? "0" : "-1");
+        this.dom.btnCardEditorTab?.setAttribute("tabindex", showProject ? "-1" : "0");
+        this.dom.projectSection?.setAttribute("aria-hidden", String(!showProject));
+        this.dom.cardsRoot?.setAttribute("aria-hidden", String(showProject));
+        requestAnimationFrame(() => this.onResize());
+    }
+
+    onEditorWorkspaceTabKeydown(event) {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const nextView = event.key === "ArrowLeft" || event.key === "Home" ? "project" : "cards";
+        this.setEditorWorkspaceView(nextView);
+        const target = nextView === "project" ? this.dom.btnProjectEditorTab : this.dom.btnCardEditorTab;
+        target?.focus();
+    }
+
     showSettings() {
         this.dom.settingsModal.classList.remove("hidden");
         this.dom.settingsMask.classList.remove("hidden");
@@ -1808,6 +1292,47 @@ class CompositionBuilderApp {
         }
         this.dom.hkModal.classList.add("hidden");
         this.dom.hkMask.classList.add("hidden");
+    }
+
+    showCardPresetModal(cardId) {
+        const card = this.getCardById(cardId);
+        if (!card) return;
+        if (this.dom.cardPresetContext) {
+            this.dom.cardPresetContext.textContent = `当前卡片：${card.name || "未命名卡片"}`;
+        }
+        this.dom.cardPresetModal?.classList.remove("hidden");
+        this.dom.cardPresetMask?.classList.remove("hidden");
+        this.dom.btnCloseCardPreset?.focus();
+    }
+
+    hideCardPresetModal() {
+        this.dom.cardPresetModal?.classList.add("hidden");
+        this.dom.cardPresetMask?.classList.add("hidden");
+    }
+
+    showNodePresetModal(cardId, rawTreePath) {
+        const card = this.getCardById(cardId);
+        if (!card) return;
+        let treePath = [];
+        try {
+            const parsed = JSON.parse(rawTreePath || "[]");
+            if (Array.isArray(parsed)) treePath = parsed;
+        } catch (_error) {
+            return;
+        }
+        const node = this.getShapeNodeByPath(card, treePath);
+        if (!node) return;
+        if (this.dom.nodePresetContext) {
+            this.dom.nodePresetContext.textContent = `当前子节点：${node.name || "未命名子节点"}`;
+        }
+        this.dom.nodePresetModal?.classList.remove("hidden");
+        this.dom.nodePresetMask?.classList.remove("hidden");
+        this.dom.btnCloseNodePreset?.focus();
+    }
+
+    hideNodePresetModal() {
+        this.dom.nodePresetModal?.classList.add("hidden");
+        this.dom.nodePresetMask?.classList.add("hidden");
     }
 
     askThemeConfirm(options = {}) {
@@ -1966,31 +1491,18 @@ class CompositionBuilderApp {
     }
 
     captureUserPreferences(stateLike = null) {
-        const source = stateLike || this.state || {};
-        return {
-            settings: deepClone(source.settings || {}),
-            hotkeys: deepClone(source.hotkeys || {})
-        };
+        return extractCompositionPreferences(stateLike || this.state || {});
     }
 
     applyUserPreferences(stateLike, prefLike = null) {
-        const next = normalizeStateShape(stateLike || {});
-        const pref = prefLike || this.captureUserPreferences();
-        if (pref?.settings && typeof pref.settings === "object") {
-            next.settings = deepClone(pref.settings);
-        }
-        if (pref?.hotkeys && typeof pref.hotkeys === "object") {
-            next.hotkeys = deepClone(pref.hotkeys);
-        }
-        return normalizeStateShape(next);
+        return applyCompositionPreferences(
+            stateLike || {},
+            prefLike || this.captureUserPreferences()
+        );
     }
 
     extractProjectState(stateLike = null) {
-        const normalized = normalizeStateShape(deepClone(stateLike || this.state || {}));
-        const out = deepClone(normalized);
-        delete out.settings;
-        delete out.hotkeys;
-        return out;
+        return extractCompositionProjectState(stateLike || this.state || {});
     }
 
     computeStateSignature(stateLike = null) {
@@ -2057,29 +1569,14 @@ class CompositionBuilderApp {
     async handleNewProjectClick() {
         const dirty = this.isProjectDirtyForExport();
         if (dirty) {
-            const saveFirst = await this.askThemeConfirm({
+            const discard = await this.askThemeConfirm({
                 title: "新建合成项目",
-                message: "当前合成项目有未导出的修改，是否先导出项目文件？",
-                okText: "先导出",
-                cancelText: "不导出"
+                message: "新建项目会替换当前合成内容，确定继续吗？",
+                okText: "继续新建",
+                cancelText: "继续编辑",
+                danger: true
             });
-            if (saveFirst) {
-                const result = await this.exportProject({ silent: true });
-                if (!result?.ok) {
-                    if (result?.canceled) this.showToast("已取消新建合成项目", "info");
-                    else this.showToast("项目导出失败，未新建合成项目", "error");
-                    return;
-                }
-            } else {
-                const discard = await this.askThemeConfirm({
-                    title: "确认丢弃未导出修改",
-                    message: "未导出的合成修改将丢失，确定新建合成项目吗？",
-                    okText: "仍要新建",
-                    cancelText: "继续编辑",
-                    danger: true
-                });
-                if (!discard) return;
-            }
+            if (!discard) return;
         }
 
         this.pushHistory();
@@ -2324,6 +1821,10 @@ class CompositionBuilderApp {
         if (field === "packageName") {
             this.state.packageName = normalizeKotlinPackageName(target.value, "cn.coostack.compositions");
             if (target && document.activeElement !== target) target.value = this.state.packageName;
+            return;
+        }
+        if (field === "mapping") {
+            this.state.mapping = normalizeCompositionMapping(target.value);
             return;
         }
         if (field === "enableRemoveStatusOverride") {
@@ -2838,6 +2339,15 @@ class CompositionBuilderApp {
             }
             if (act === "select-card") {
                 this.selectCardById(cardId, e.ctrlKey || e.metaKey, e.shiftKey);
+                this.setEditorWorkspaceView("cards");
+                return;
+            }
+            if (act === "open-card-preset") {
+                this.showCardPresetModal(cardId);
+                return;
+            }
+            if (act === "open-node-preset") {
+                this.showNodePresetModal(cardId, btn.dataset.treePath || "[]");
                 return;
             }
             if (act === "toggle-fold") {
@@ -4233,6 +3743,7 @@ class CompositionBuilderApp {
         this.selectedCardIds = new Set([card.id]);
         this.selectionAnchorCardId = card.id;
         this.afterStructureMutate({ rerenderProject: false, rerenderCards: true, rebuildPreview: true });
+        this.setEditorWorkspaceView("cards");
     }
 
     deleteSelectedCards() {
@@ -4667,10 +4178,18 @@ class CompositionBuilderApp {
 
     saveStateNow() {
         try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+            saveCompositionStateToStorage(localStorage, this.state);
             this.writeBuilderCompositionContext();
         } catch (e) {
             console.warn("save state failed:", e);
+        }
+    }
+
+    savePreferencesNow() {
+        try {
+            saveCompositionPreferencesToStorage(localStorage, this.state);
+        } catch (e) {
+            console.warn("save preferences failed:", e);
         }
     }
 
@@ -4815,80 +4334,6 @@ class CompositionBuilderApp {
         }
     }
 
-    async exportProject(opts = {}) {
-        const filename = `${sanitizeFileBase(this.state.projectName || "composition_builder") || "composition_builder"}.composition.json`;
-        const projectState = this.extractProjectState(this.state);
-        const result = await this.saveTextWithPicker({
-            filename,
-            text: JSON.stringify(projectState, null, 2),
-            mime: "application/json",
-            description: "Composition Builder 项目",
-            extensions: [".json"]
-        });
-        if (result.ok) {
-            this.writeExportedSignature(this.computeStateSignature(projectState));
-            if (!opts.silent) this.showToast("项目已导出", "success");
-        } else if (result.canceled) {
-            if (!opts.silent) this.showToast("已取消导出", "info");
-        } else if (!opts.silent) {
-            this.showToast(`导出失败: ${result.error?.message || result.error || "未知错误"}`, "error");
-        }
-        return result;
-    }
-
-    async importProjectFromFile() {
-        const file = this.dom.fileProject.files?.[0];
-        if (!file) return;
-        const prevState = deepClone(this.state);
-        const prevExportSig = String(this.lastExportedStateSig || "");
-        try {
-            const text = await file.text();
-            const parsed = JSON.parse(text);
-            this.pushHistory();
-            const prefs = this.captureUserPreferences(this.state);
-            const projectRaw = parsed?.state || parsed;
-            const projectState = this.extractProjectState(projectRaw);
-            this.state = this.applyUserPreferences(projectState, prefs);
-            if (this.exprRuntime?.invalidateCache) this.exprRuntime.invalidateCache();
-            this.writeExportedSignature(this.computeStateSignature(projectState));
-            this.applySettingsToDom();
-            this.ensureSelectionValid();
-            this.renderProjectSection();
-            this.renderCards();
-            this.rebuildPreview();
-            let codegenError = null;
-            try {
-                this.generateCodeAndRender(true);
-            } catch (e) {
-                codegenError = e;
-                console.error("generateCodeAndRender after import failed:", e);
-            }
-            this.scheduleSave();
-            if (codegenError) {
-                this.showToast(`项目已导入，但代码生成失败: ${codegenError?.message || codegenError}`, "error");
-            } else {
-                this.showToast("项目导入成功", "success");
-            }
-        } catch (e) {
-            this.state = normalizeStateShape(deepClone(prevState));
-            this.writeExportedSignature(prevExportSig);
-            if (this.exprRuntime?.invalidateCache) this.exprRuntime.invalidateCache();
-            this.applySettingsToDom();
-            this.ensureSelectionValid();
-            this.renderProjectSection();
-            this.renderCards();
-            this.rebuildPreview();
-            try {
-                this.generateCodeAndRender(true);
-            } catch (rollbackErr) {
-                console.error("restore state after import failure failed:", rollbackErr);
-            }
-            this.showToast(`导入失败: ${e?.message || e}`, "error");
-        } finally {
-            this.dom.fileProject.value = "";
-        }
-    }
-
     async exportSettings() {
         const out = {
             settings: deepClone(this.state.settings),
@@ -5011,8 +4456,9 @@ class CompositionBuilderApp {
     }
 
     renderGlobalVarRow(v, i) {
+        const mappingTarget = getCompositionKotlinTarget(this.state.mapping);
         const typeOptions = GLOBAL_VAR_TYPES
-            .map((t) => `<option value="${esc(t)}" ${v.type === t ? "selected" : ""}>${esc(t)}</option>`)
+            .map((t) => `<option value="${esc(t)}" ${v.type === t ? "selected" : ""}>${esc(t === "Vec3" ? mappingTarget.vec3Type : t)}</option>`)
             .join("");
 
         const actionRow = `
@@ -5038,10 +4484,11 @@ class CompositionBuilderApp {
 
         const parsed = this.exprRuntime.parseVecLikeValue(v.value || "");
         const ctor = this.vectorCtorForVarType(v.type);
+        const ctorLabel = ctor === "Vec3" ? mappingTarget.vec3Type : ctor;
         const colorHex = vectorToHex01(parsed.x, parsed.y, parsed.z);
         const vectorInputs = `
             <div class="vector-inputs">
-                <div class="vector-ctor-label">${esc(ctor)}</div>
+                <div class="vector-ctor-label">${esc(ctorLabel)}</div>
                 <input class="input" type="number" step="${this.state.settings.paramStep}" data-var-vec-idx="${i}" data-var-vec-axis="x" value="${esc(formatNumberCompact(parsed.x))}" placeholder="x"/>
                 <input class="input" type="number" step="${this.state.settings.paramStep}" data-var-vec-idx="${i}" data-var-vec-axis="y" value="${esc(formatNumberCompact(parsed.y))}" placeholder="y"/>
                 <input class="input" type="number" step="${this.state.settings.paramStep}" data-var-vec-idx="${i}" data-var-vec-axis="z" value="${esc(formatNumberCompact(parsed.z))}" placeholder="z"/>
@@ -5067,7 +4514,8 @@ class CompositionBuilderApp {
     renderProjectSection() {
         const s = this.state;
         const seq = s.compositionType === "sequenced";
-        const typeOptions = GLOBAL_VAR_TYPES.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+        const mappingTarget = getCompositionKotlinTarget(s.mapping);
+        const typeOptions = GLOBAL_VAR_TYPES.map((t) => `<option value="${esc(t)}">${esc(t === "Vec3" ? mappingTarget.vec3Type : t)}</option>`).join("");
         const varRows = s.globalVars.map((v, i) => this.renderGlobalVarRow(v, i)).join("");
         const axisPresetOptions = this.getRelativeTargetPresetOptionsHtml(s.compositionAxisPreset || s.compositionAxisExpr);
         const constRows = s.globalConsts.map((v, i) => `
@@ -5107,6 +4555,13 @@ class CompositionBuilderApp {
                         <input class="input" data-pf="packageName" value="${esc(s.packageName || "cn.coostack.compositions")}" placeholder="cn.coostack.compositions"/>
                     </label>
                     <label class="field">
+                        <span>映射</span>
+                        <select class="input" data-pf="mapping">
+                            <option value="yarn" ${s.mapping === "yarn" ? "selected" : ""}>Yarn (Fabric)</option>
+                            <option value="mojmap" ${s.mapping === "mojmap" ? "selected" : ""}>Mojang / Mojmap</option>
+                        </select>
+                    </label>
+                    <label class="field">
                         <span>消散延迟 (tick)</span>
                         <input class="input" type="number" min="0" step="1" data-pf="disabledInterval" value="${esc(String(s.disabledInterval))}"/>
                     </label>
@@ -5133,7 +4588,7 @@ class CompositionBuilderApp {
                     </div>
                     <div class="grid5 vector-inputs">
                         <select class="input vector-ctor" data-axis-field="axisManualCtor">
-                            ${["Vec3", "RelativeLocation", "Vector3f"].map((it) => `<option value="${it}" ${s.compositionAxisManualCtor === it ? "selected" : ""}>${it}</option>`).join("")}
+                            ${["Vec3", "RelativeLocation", "Vector3f"].map((it) => `<option value="${it}" ${s.compositionAxisManualCtor === it ? "selected" : ""}>${it === "Vec3" ? mappingTarget.vec3Type : it}</option>`).join("")}
                         </select>
                         <input class="input" type="number" step="${this.state.settings.paramStep}" data-axis-field="axisManualX" value="${esc(formatNumberCompact(s.compositionAxisManualX))}" placeholder="x"/>
                         <input class="input" type="number" step="${this.state.settings.paramStep}" data-axis-field="axisManualY" value="${esc(formatNumberCompact(s.compositionAxisManualY))}" placeholder="y"/>
@@ -5707,12 +5162,17 @@ class CompositionBuilderApp {
             const typeName = child.type === "particle_shape" ? "形状" : (child.type === "sequenced_shape" ? "序列形状" : "单粒子");
             return `
                 <div class="child-row" data-card-id="${cardId}" data-tree-path="${esc(JSON.stringify(childPath))}">
-                    <span class="child-name">${esc(child.name || `子节点 ${idx + 1}`)}</span>
-                    <span class="child-type badge">${typeName}</span>
-                    <button class="btn small primary" data-act="shape-tree-drill-into" data-card-id="${cardId}" data-child-idx="${idx}">进入</button>
-                    <button class="btn small" data-act="shape-tree-move-child-up" data-card-id="${cardId}" data-tree-path="${tp}" data-child-idx="${idx}">上移</button>
-                    <button class="btn small" data-act="shape-tree-move-child-down" data-card-id="${cardId}" data-tree-path="${tp}" data-child-idx="${idx}">下移</button>
-                    <button class="btn small" data-act="shape-tree-remove-child" data-card-id="${cardId}" data-tree-path="${tp}" data-child-idx="${idx}">删除</button>
+                    <div class="child-row-main">
+                        <span class="child-name">${esc(child.name || `子节点 ${idx + 1}`)}</span>
+                        <span class="child-type badge">${typeName}</span>
+                    </div>
+                    <div class="child-row-actions">
+                        <button class="btn small primary child-action child-enter" data-act="shape-tree-drill-into" data-card-id="${cardId}" data-child-idx="${idx}" title="进入子节点">进入</button>
+                        <button class="btn small child-action child-preset" data-act="open-node-preset" data-card-id="${cardId}" data-tree-path="${esc(JSON.stringify(childPath))}">预设</button>
+                        <button class="iconbtn child-action" data-act="shape-tree-move-child-up" data-card-id="${cardId}" data-tree-path="${tp}" data-child-idx="${idx}" title="上移" aria-label="上移">↑</button>
+                        <button class="iconbtn child-action" data-act="shape-tree-move-child-down" data-card-id="${cardId}" data-tree-path="${tp}" data-child-idx="${idx}" title="下移" aria-label="下移">↓</button>
+                        <button class="iconbtn child-action child-action-danger" data-act="shape-tree-remove-child" data-card-id="${cardId}" data-tree-path="${tp}" data-child-idx="${idx}" title="删除" aria-label="删除">×</button>
+                    </div>
                 </div>`;
         }).join("");
         return `
@@ -6384,6 +5844,9 @@ class CompositionBuilderApp {
         this.ensureSelectionValid();
         const activeCard = this.getFocusedCard() || this.state.cards[0] || null;
         const activeIdx = activeCard ? this.getCardIndexById(activeCard.id) : -1;
+        if (this.dom.activeCardTabLabel) {
+            this.dom.activeCardTabLabel.textContent = activeIdx >= 0 ? `卡片 ${activeIdx + 1}` : "无卡片";
+        }
         if (this.dom.compositionLayersRoot) {
             this.dom.compositionLayersRoot.innerHTML = this.renderCompositionLayersHtml();
         }
@@ -6464,6 +5927,9 @@ class CompositionBuilderApp {
                             placeholder="卡片备注 / 名称"
                             title="可编辑卡片备注名称"
                         />
+                    </div>
+                    <div class="card-head-preset">
+                        <button class="btn small primary" data-act="open-card-preset" data-card-id="${card.id}">卡片预设</button>
                     </div>
                     <div class="card-head-actions">
                         <button class="btn small" data-act="collapse-all-sections" data-card-id="${card.id}" title="折叠全部分区">折叠属性</button>
@@ -6982,12 +6448,17 @@ class CompositionBuilderApp {
             const typeName = child.type === "particle_shape" ? "形状" : (child.type === "sequenced_shape" ? "序列形状" : "单粒子");
             return `
                 <div class="child-row" data-card-id="${cardId}">
-                    <span class="child-name">${esc(child.name || `子节点 ${idx + 1}`)}</span>
-                    <span class="child-type badge">${typeName}</span>
-                    <button class="btn small primary" data-act="shape-tree-drill-into" data-card-id="${cardId}" data-child-idx="${idx}">进入</button>
-                    <button class="btn small" data-act="shape-tree-move-child-up" data-card-id="${cardId}" data-tree-path="[]" data-child-idx="${idx}">上移</button>
-                    <button class="btn small" data-act="shape-tree-move-child-down" data-card-id="${cardId}" data-tree-path="[]" data-child-idx="${idx}">下移</button>
-                    <button class="btn small" data-act="shape-tree-remove-child" data-card-id="${cardId}" data-tree-path="[]" data-child-idx="${idx}">删除</button>
+                    <div class="child-row-main">
+                        <span class="child-name">${esc(child.name || `子节点 ${idx + 1}`)}</span>
+                        <span class="child-type badge">${typeName}</span>
+                    </div>
+                    <div class="child-row-actions">
+                        <button class="btn small primary child-action child-enter" data-act="shape-tree-drill-into" data-card-id="${cardId}" data-child-idx="${idx}" title="进入子节点">进入</button>
+                        <button class="btn small child-action child-preset" data-act="open-node-preset" data-card-id="${cardId}" data-tree-path="${esc(JSON.stringify([idx]))}">预设</button>
+                        <button class="iconbtn child-action" data-act="shape-tree-move-child-up" data-card-id="${cardId}" data-tree-path="[]" data-child-idx="${idx}" title="上移" aria-label="上移">↑</button>
+                        <button class="iconbtn child-action" data-act="shape-tree-move-child-down" data-card-id="${cardId}" data-tree-path="[]" data-child-idx="${idx}" title="下移" aria-label="下移">↓</button>
+                        <button class="iconbtn child-action child-action-danger" data-act="shape-tree-remove-child" data-card-id="${cardId}" data-tree-path="[]" data-child-idx="${idx}" title="删除" aria-label="删除">×</button>
+                    </div>
                 </div>`;
         }).join("");
         return `
@@ -8494,7 +7965,7 @@ class CompositionBuilderApp {
     evaluateNumericExpressionWithRuntime(exprRaw, runtimeVars = null, opts = {}) {
         const srcRaw = String(exprRaw || "").trim();
         if (!srcRaw) return 0;
-        const src = transpileKotlinThisQualifierToJs(srcRaw).replace(/(\d+(?:\.\d+)?)[fFdDlL]\b/g, "$1");
+        const src = transpileKotlinThisQualifierToJs(srcRaw).replace(/\b(\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)[fFdDlL]\b/g, "$1");
         const elapsedTick = num(opts.elapsedTick);
         const ageTick = num(opts.ageTick);
         const pointIndex = int(opts.pointIndex || 0);
@@ -9352,6 +8823,7 @@ class CompositionBuilderApp {
 
     getExprCompletions() {
         const projectClass = sanitizeKotlinClassName(this.state.projectName || "NewComposition");
+        const mappingTarget = getCompositionKotlinTarget(this.state.mapping);
         const base = [
             "age",
             "tick",
@@ -9369,7 +8841,7 @@ class CompositionBuilderApp {
             "particle.particleAlpha",
             "particle.particleColor",
             "particle.particleSize",
-            "Vec3($0)",
+            `${mappingTarget.vec3Type}($0)`,
             "RelativeLocation.yAxis()",
             "RelativeLocation($0)",
             "Vector3f($0)"
@@ -9639,7 +9111,7 @@ class CompositionBuilderApp {
         }
         lines.push("declare function RelativeLocation(...args: any[]): any;");
         lines.push("declare namespace RelativeLocation { function yAxis(...args: any[]): any; }");
-        lines.push("declare function Vec3(...args: any[]): any;");
+        lines.push(`declare function ${getCompositionKotlinTarget(this.state.mapping).vec3Type}(...args: any[]): any;`);
         lines.push("declare function Vector3f(...args: any[]): any;");
 
         for (const name of Array.from(allowed).sort((a, b) => a.localeCompare(b))) {
@@ -9716,6 +9188,7 @@ class CompositionBuilderApp {
     getCodeEditorCompletions(textarea) {
         const isControllerScript = this.isControllerScriptEditor(textarea);
         const projectClass = sanitizeKotlinClassName(this.state.projectName || "NewComposition");
+        const mappingTarget = getCompositionKotlinTarget(this.state.mapping);
         const scopeInfo = this.getCodeEditorScopeInfo(textarea);
         const allowGrowthApi = this.isGrowthApiAllowedForCodeEditor(textarea);
         const base = isControllerScript
@@ -9734,7 +9207,7 @@ class CompositionBuilderApp {
                 { label: "status.displayStatus = 2", insertText: "status.displayStatus = $0", detail: "Composition lifecycle", priority: 258 },
                 { label: `this@${projectClass}.status.displayStatus`, insertText: `this@${projectClass}.status.displayStatus`, detail: "Composition lifecycle", priority: 257 },
                 { label: "RelativeLocation(x, y, z)", insertText: "RelativeLocation($0)", detail: "向量构造", priority: 220 },
-                { label: "Vec3(x, y, z)", insertText: "Vec3($0)", detail: "向量构造", priority: 220 },
+                { label: `${mappingTarget.vec3Type}(x, y, z)`, insertText: `${mappingTarget.vec3Type}($0)`, detail: "向量构造", priority: 220 },
                 { label: "Vector3f(x, y, z)", insertText: "Vector3f($0)", detail: "向量构造", priority: 220 },
                 { label: "PI", detail: "数学常量", priority: 210 },
                 { label: "Math.sin(x)", insertText: "Math.sin($0)", detail: "数学函数", priority: 180 },
@@ -9758,7 +9231,7 @@ class CompositionBuilderApp {
                 { label: "addMultiple(n)", insertText: "addMultiple($0)", detail: "粒子生成 API", priority: 260 },
                 { label: "addPreTickAction(() => {})", insertText: "addPreTickAction(() => {\\n    $0\\n})", detail: "控制器 API", priority: 220 },
                 { label: "RelativeLocation(x, y, z)", insertText: "RelativeLocation($0)", detail: "向量构造", priority: 225 },
-                { label: "Vec3(x, y, z)", insertText: "Vec3($0)", detail: "向量构造", priority: 225 },
+                { label: `${mappingTarget.vec3Type}(x, y, z)`, insertText: `${mappingTarget.vec3Type}($0)`, detail: "向量构造", priority: 225 },
                 { label: "Vector3f(x, y, z)", insertText: "Vector3f($0)", detail: "向量构造", priority: 225 },
                 { label: "RelativeLocation.yAxis()", insertText: "RelativeLocation.yAxis()", detail: "轴向向量", priority: 225 },
                 { label: "setReversedScaleOnCompositionStatus(comp)", insertText: "setReversedScaleOnCompositionStatus($0)", detail: "Scale API", priority: 215 },
@@ -9899,47 +9372,23 @@ class CompositionBuilderApp {
             return;
         }
 
-        const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.platform);
-        const mod = isMac ? e.metaKey : e.ctrlKey;
-        const key = String(e.key || "").toLowerCase();
-        const code = String(e.code || "");
-        const hitSave = key === "s" || code === "KeyS";
-        const hitNew = key === "n" || code === "KeyN";
-        const hitImport = key === "o" || code === "KeyO";
-        if (mod && !e.shiftKey && !e.altKey && (hitNew || hitSave || hitImport)) {
-            e.preventDefault();
-            e.stopPropagation();
-            if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
-            if (!e.repeat && !this.isModalOpen()) {
-                if (hitSave) {
-                    this.exportProject();
-                } else if (hitImport) {
-                    this.dom.fileProject?.click();
-                }
-            }
-            return;
-        }
-
         if (e.key === "Escape" && this.closeAnyModalWithEsc()) {
             e.preventDefault();
             return;
         }
-        if (this.isEditableTarget(e.target)) return;
-        if (this.isModalOpen()) return;
-
         const h = this.state.hotkeys.actions || {};
         const hit = (id) => hotkeyMatchEvent(e, h[id] || "");
-
-        if (hit("undo")) {
-            e.preventDefault();
-            this.undo();
-            return;
-        }
-        if (hit("redo")) {
-            e.preventDefault();
-            this.redo();
-            return;
-        }
+        const modalOpen = this.isModalOpen();
+        if (handleCompositionHistoryShortcut(e, {
+            modalOpen,
+            textEditing: this.isTextEditingTarget(e.target),
+            undoMatched: hit("undo"),
+            redoMatched: hit("redo"),
+            undo: () => this.undo(),
+            redo: () => this.redo()
+        })) return;
+        if (this.isEditableTarget(e.target)) return;
+        if (modalOpen) return;
         if (hit("switchEditor")) {
             e.preventDefault();
             this.switchPage("editor");
@@ -10005,6 +9454,14 @@ class CompositionBuilderApp {
     }
 
     closeAnyModalWithEsc() {
+        if (!this.dom.nodePresetModal?.classList.contains("hidden")) {
+            this.hideNodePresetModal();
+            return true;
+        }
+        if (!this.dom.cardPresetModal?.classList.contains("hidden")) {
+            this.hideCardPresetModal();
+            return true;
+        }
         if (!this.dom.builderModal.classList.contains("hidden")) {
             this.hideBuilderModal();
             return true;
@@ -10021,7 +9478,9 @@ class CompositionBuilderApp {
     }
 
     isModalOpen() {
-        return !this.dom.settingsModal.classList.contains("hidden")
+        return !this.dom.cardPresetModal?.classList.contains("hidden")
+            || !this.dom.nodePresetModal?.classList.contains("hidden")
+            || !this.dom.settingsModal.classList.contains("hidden")
             || !this.dom.hkModal.classList.contains("hidden")
             || !this.dom.builderModal.classList.contains("hidden");
     }
@@ -10039,6 +9498,13 @@ class CompositionBuilderApp {
         if (isEditableNode(document.activeElement)) return true;
         const focusedMonaco = document.querySelector(".editor-shell-monaco .monaco-editor.focused");
         return !!focusedMonaco;
+    }
+
+    isTextEditingTarget(target) {
+        return isCompositionTextEditingTarget(target, document.activeElement, {
+            ElementCtor: Element,
+            hasFocusedMonaco: () => !!document.querySelector(".editor-shell-monaco .monaco-editor.focused")
+        });
     }
 
     openBuilderEditor(cardId, target = "root") {
@@ -11419,6 +10885,10 @@ function rewriteVectorCtorNumericLiteralsInLine(line) {
         (m, a, b, c) => rewrite("Vec3", a, b, c)
     );
     out = out.replace(
+        /\bVec3d\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
+        (m, a, b, c) => rewrite("Vec3d", a, b, c)
+    );
+    out = out.replace(
         /\bRelativeLocation\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
         (m, a, b, c) => rewrite("RelativeLocation", a, b, c)
     );
@@ -11494,6 +10964,7 @@ installExpressionEditorMethods(CompositionBuilderApp, {
     int,
     esc,
     normalizeAlphaHelperConfig,
+    getCompositionKotlinTarget,
     sanitizeKotlinClassName,
     transpileKotlinThisQualifierToJs,
     findFirstUnknownJsIdentifier,
@@ -11564,6 +11035,12 @@ installPreviewRuntimeMethods(CompositionBuilderApp, {
     textureEffectWhitelist: EFFECT_CLASS_OPTIONS
 });
 
+installCompositionPresetMethods(CompositionBuilderApp, {
+    esc,
+    normalizeCard,
+    normalizeShapeTreeNode
+});
+
 const app = new CompositionBuilderApp();
 try {
     const perfDebug = new URLSearchParams(globalThis?.location?.search || "").has("__perfDebug");
@@ -11576,6 +11053,10 @@ window.addEventListener("coo-legacy-before-route-leave", () => {
     app.saveStateNow();
 });
 
+window.addEventListener("pagehide", () => {
+    app.savePreferencesNow();
+});
+
 window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
     if (event.origin && event.origin !== window.location.origin) return;
@@ -11583,10 +11064,6 @@ window.addEventListener("message", (event) => {
     const commandType = String(command?.type || "");
     if (commandType === "new-project") {
         app.handleNewProjectClick();
-    } else if (commandType === "open-project") {
-        app.dom.fileProject?.click();
-    } else if (commandType === "save-project" || commandType === "save-as-project") {
-        app.exportProject();
     } else if (commandType === "export-kotlin") {
         app.downloadCode();
     }

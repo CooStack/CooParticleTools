@@ -16,13 +16,16 @@ class ProjectStoreTests(unittest.TestCase):
                     "name": "Meteorite",
                     "description": "Trail composition",
                     "tags": ["demo"],
+                    "filePath": "D:/particles/Meteorite.json",
                     "payload": {"cards": []},
                 }
             )
 
             self.assertEqual(saved["tool"], "composition")
             self.assertEqual(saved["storageMode"], "desktop")
+            self.assertEqual(saved["filePath"], "D:/particles/Meteorite.json")
             self.assertEqual(len(store.list_projects({"tool": "composition"})), 1)
+            self.assertEqual(store.list_projects({"tool": "composition"})[0]["filePath"], "D:/particles/Meteorite.json")
             self.assertEqual(store.list_projects({"q": "meteor"})[0]["id"], saved["id"])
             self.assertEqual(store.get_project("composition", saved["id"])["payload"], {"cards": []})
             self.assertEqual(store.recent_projects(1)[0]["id"], saved["id"])
