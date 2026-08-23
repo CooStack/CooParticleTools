@@ -1019,8 +1019,20 @@ body {
 }
 
 .card.multi-selected {
-    border-color: color-mix(in srgb, var(--accent) 72%, transparent);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 38%, transparent), var(--shadow);
+    border-color: color-mix(in srgb, var(--accent) 88%, white 12%);
+    background: color-mix(in srgb, var(--accent) 18%, var(--card));
+    box-shadow:
+        inset 4px 0 0 color-mix(in srgb, var(--accent) 82%, white 18%),
+        0 0 0 2px color-mix(in srgb, var(--accent) 44%, transparent),
+        var(--shadow);
+}
+
+.card.multi-selected > .card-head {
+    background: color-mix(in srgb, var(--accent) 24%, var(--card));
+}
+
+.card.multi-selected > .card-head .title-text {
+    color: color-mix(in srgb, var(--accent) 32%, white 68%);
 }
 
 .pb-select-box {
@@ -1773,6 +1785,26 @@ body.resizing-panels .panel.right {
     min-width: 0;
     justify-content: flex-start;
     font-size: 12px;
+}
+
+.preset-ring-random {
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.preset-ring-random-toggle {
+    white-space: nowrap;
+}
+
+.preset-ring-random .input:disabled {
+    opacity: .55;
 }
 
 .preset-ring-slots {
@@ -2791,8 +2823,12 @@ body.resizing-panels .panel.right {
 
 /* ✅ 聚焦高亮：让用户一眼看出当前聚焦的卡片 */
 .card.focused {
-    border-color: rgba(78, 161, 255, .55);
-    box-shadow: 0 0 0 1px rgba(78, 161, 255, .18), 0 12px 30px rgba(0, 0, 0, .32);
+    border-color: rgba(95, 214, 255, .92);
+    background: color-mix(in srgb, rgba(78, 161, 255, .24) 78%, var(--card));
+    box-shadow:
+        inset 4px 0 0 rgba(95, 214, 255, .9),
+        0 0 0 2px rgba(78, 161, 255, .38),
+        0 12px 30px rgba(0, 0, 0, .32);
 }
 
 .card.focused .card-head {

@@ -17,6 +17,7 @@ import {
   createGeneratorPointsBuilderSnapshot,
   matchesGeneratorPointsBuilderContext,
   mergeGeneratorPointsBuilderSnapshot,
+  saveGeneratorPointsBuilderProject,
   shouldReuseGeneratorPointsBuilderDraft
 } from '../src/modules/generator/pointsbuilder-bridge.js';
 
@@ -83,7 +84,7 @@ test('PointsBuilder preview keeps first parameter semantics for duplicate names'
   assert.ok(Math.abs(Math.hypot(points[0].x, points[0].z) - 2) < 1e-9);
 });
 
-test('legacy PointsBuilder completion filters exact scalar target types', () => {
+test('legacy PointsBuilder completion allows Int values in Double fields', () => {
   const suggestions = [
     { value: 'segments', type: 'Int' },
     { value: 'radius', type: 'Double' },
@@ -95,7 +96,7 @@ test('legacy PointsBuilder completion filters exact scalar target types', () => 
   );
   assert.deepEqual(
     filterExpressionSuggestionsByType(suggestions, 'Double').map((item) => item.value),
-    ['radius', 'origin.x']
+    ['segments', 'radius', 'origin.x']
   );
 });
 
@@ -225,6 +226,157 @@ test('generator bridge round-trips legacy PointsBuilder state without losing pro
   assert.equal(merged.state.root.children[0].params.r, 7);
   assert.deepEqual(merged.state.variables, snapshot.state.variables);
   assert.equal(merged.tool, 'generator-pointsbuilder');
+});
+
+test('Generator keeps an Int variable in PointsBuilder and Emitter Double parameters', () => {
+  const project = createGeneratorProject({
+    parameters: {
+      variables: [{ name: 'radius', type: 'Int', value: 3 }]
+    }
+  });
+  const card = project.emitters[0];
+  card.emitter.type = 'points_builder';
+  card.bindings['particle.speedMin'] = 'radius';
+  card.emitter.builderState.state.root.children = [{
+    id: 'circle-with-int-radius',
+    kind: 'add_circle',
+    params: { r: 'radius', count: 8 },
+    children: [],
+    terms: []
+  }];
+
+  const kotlin = generateEmitterKotlin(project);
+
+  assert.match(kotlin, /minSpeed = \(radius\)\.toDouble\(\)/);
+  assert.match(kotlin, /\.addCircle\(\(radius\)\.toDouble\(\), 8\)/);
+  assert.doesNotMatch(kotlin, /minSpeed = 0\.2/);
+  assert.doesNotMatch(kotlin, /\.addCircle\(3\.0, 8\)/);
+});
+
+test('Generator widens external Int expressions in PointsBuilder Double fields', () => {
+  const project = createGeneratorProject({
+    parameters: {
+      variables: [
+        { name: 'radius', type: 'Int', value: 3 },
+        { name: 'scale', type: 'Double', value: 0.5 }
+      ]
+    }
+  });
+  const card = project.emitters[0];
+  card.emitter.type = 'points_builder';
+  card.emitter.builderState.state.root.children = [{
+    id: 'circle-with-int-expression',
+    kind: 'add_circle',
+    params: { r: 'radius + scale', count: 8 },
+    children: [],
+    terms: []
+  }];
+
+  const kotlin = generateEmitterKotlin(project);
+
+  assert.match(kotlin, /\.addCircle\(\(radius\)\.toDouble\(\) \+ scale, 8\)/);
+  assert.doesNotMatch(kotlin, /\.addCircle\(3\.5, 8\)/);
+});
+
+test('generator bridge preserves an explicitly empty PointsBuilder', () => {
+  const project = createGeneratorProject();
+  const builderState = project.emitters[0].emitter.builderState;
+  const snapshot = createGeneratorPointsBuilderSnapshot(builderState);
+  snapshot.state.root.children = [];
+
+  const merged = mergeGeneratorPointsBuilderSnapshot(
+    builderState,
+    { state: snapshot.state, ts: Date.now() }
+  );
+
+  assert.deepEqual(merged.state.root.children, []);
+  assert.equal(merged.state.selection.focusedNodeId, '');
+});
+
+test('generator PointsBuilder return persists file-backed projects before updating the repository', async () => {
+  const project = createGeneratorProject();
+  project.emitters[0].emitter.builderState.state.root.children = [{
+    id: 'line-after-edit',
+    kind: 'add_line',
+    params: { direction: { x: 1, y: 0, z: 0 }, count: 8, step: 0.5 },
+    children: [],
+    terms: []
+  }];
+  const calls = [];
+  const repository = {
+    async get(tool, id) {
+      calls.push(['get', tool, id]);
+      return { id, tool, filePath: 'D:/effects/edited-generator.json', payload: {} };
+    },
+    async save(record) {
+      calls.push(['repository-save', record]);
+      return record;
+    }
+  };
+  const shell = {
+    async saveProjectFile(options) {
+      calls.push(['file-save', options]);
+      return { ok: true, filePath: options.filePath };
+    }
+  };
+
+  await saveGeneratorPointsBuilderProject({
+    projectRepository: repository,
+    shell,
+    projectId: 'generator-file-project',
+    project
+  });
+
+  assert.deepEqual(calls.map(([name]) => name), ['get', 'file-save', 'repository-save']);
+  assert.equal(calls[1][1].filePath, 'D:/effects/edited-generator.json');
+  assert.equal(JSON.parse(calls[1][1].text).emitters[0].emitter.builderState.state.root.children[0].kind, 'add_line');
+  assert.equal(calls[2][1].filePath, 'D:/effects/edited-generator.json');
+  assert.equal(calls[2][1].payload.emitters[0].emitter.builderState.state.root.children[0].kind, 'add_line');
+});
+
+test('generator PointsBuilder return keeps browser-only projects independent from Electron', async () => {
+  const saved = [];
+  const repository = {
+    async get() {
+      return { id: 'browser-project', tool: 'generator', payload: {} };
+    },
+    async save(record) {
+      saved.push(record);
+      return record;
+    }
+  };
+
+  await saveGeneratorPointsBuilderProject({
+    projectRepository: repository,
+    projectId: 'browser-project',
+    project: createGeneratorProject()
+  });
+
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].filePath, '');
+});
+
+test('generator PointsBuilder return does not update the repository after a disk save failure', async () => {
+  let repositorySaved = false;
+  const repository = {
+    async get() {
+      return { id: 'failed-file-project', tool: 'generator', filePath: 'D:/effects/read-only.json', payload: {} };
+    },
+    async save() {
+      repositorySaved = true;
+    }
+  };
+
+  await assert.rejects(
+    saveGeneratorPointsBuilderProject({
+      projectRepository: repository,
+      shell: { async saveProjectFile() { return { ok: false, message: 'disk write failed' }; } },
+      projectId: 'failed-file-project',
+      project: createGeneratorProject()
+    }),
+    /disk write failed/
+  );
+  assert.equal(repositorySaved, false);
 });
 
 test('generator bridge preserves legacy-only PointsBuilder nodes and nested metadata', () => {

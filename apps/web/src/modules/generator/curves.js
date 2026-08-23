@@ -59,6 +59,7 @@ export function normalizeLifecycleCurve(raw = {}) {
   keyframes.sort((a, b) => a.time - b.time);
   return {
     id: String(source.id || makeCurveId('curve')),
+    enabled: source.enabled === true,
     mode,
     min,
     max: Math.max(min + 0.0001, max),
@@ -144,28 +145,33 @@ function cubic1d(p0, p1, p2, p3, t) {
   return mt * mt * mt * p0 + 3 * mt * mt * t * p1 + 3 * mt * t * t * p2 + t * t * t * p3;
 }
 
-function sampleBezierSegment(a, b, percent) {
+export function sampleBezierSegment(a, b, percent) {
   const x0 = Number(a.time || 0);
   const y0 = Number(a.value || 0);
   const x3 = Number(b.time || 0);
   const y3 = Number(b.value || 0);
-  const x1 = clampPercent(x0 + Number(a.out?.x || 0), x0);
-  const y1 = y0 + Number(a.out?.y || 0);
-  const x2 = clampPercent(x3 + Number(b.in?.x || 0), x3);
-  const y2 = y3 + Number(b.in?.y || 0);
-  let best = { distance: Infinity, value: y0 };
-  for (let i = 0; i <= 80; i += 1) {
-    const t = i / 80;
-    const x = cubic1d(x0, x1, x2, x3, t);
-    const distance = Math.abs(x - percent);
-    if (distance < best.distance) {
-      best = {
-        distance,
-        value: cubic1d(y0, y1, y2, y3, t)
-      };
-    }
+  const gap = Math.max(0.0001, x3 - x0);
+  let outX = clampNumber(a.out?.x, 0, gap, 0);
+  let inX = clampNumber(b.in?.x, -gap, 0, 0);
+  const handleSpan = outX - inX;
+  if (handleSpan >= gap) {
+    const scale = (gap * 0.999) / handleSpan;
+    outX *= scale;
+    inX *= scale;
   }
-  return best.value;
+  const x1 = x0 + outX;
+  const y1 = y0 + Number(a.out?.y || 0);
+  const x2 = x3 + inX;
+  const y2 = y3 + Number(b.in?.y || 0);
+  const target = clampNumber(percent, x0, x3, x0);
+  let low = 0;
+  let high = 1;
+  for (let i = 0; i < 28; i += 1) {
+    const t = (low + high) / 2;
+    if (cubic1d(x0, x1, x2, x3, t) < target) low = t;
+    else high = t;
+  }
+  return cubic1d(y0, y1, y2, y3, (low + high) / 2);
 }
 
 export function sampleLifecycleCurve(rawCurve, percent) {

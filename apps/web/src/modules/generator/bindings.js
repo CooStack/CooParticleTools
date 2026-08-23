@@ -101,7 +101,7 @@ export function generatorBindingType(valueType = 'number') {
 export function filterGeneratorBindingsByType(items = [], valueType = 'number') {
   const expectedType = generatorBindingType(valueType);
   if (!expectedType) return [];
-  return Array.from(items || []).filter((item) => String(item?.type || '') === expectedType);
+  return Array.from(items || []).filter((item) => acceptsGeneratorType(String(item?.type || ''), expectedType));
 }
 
 /**
@@ -234,6 +234,7 @@ export function createGeneratorBindingResolver(parameters = {}) {
   const values = createGeneratorValueIndex(parameters);
   const expressionSymbols = Array.from(values.values());
   return {
+    parameters,
     resolve(bindings, path, expectedTypes = '') {
       const name = String(bindings?.[path] || '').trim();
       if (!name) return { status: 'unbound', name, value: null, type: '' };
@@ -269,16 +270,31 @@ export function createGeneratorBindingResolver(parameters = {}) {
       if (!acceptsGeneratorType(type, expectedTypes)) {
         return { status: 'type_mismatch', name, value, type };
       }
-      return { status: 'resolved', name, value, type };
+      const kotlin = generatorBindingKotlin(name, type, expectedTypes);
+      return kotlin
+        ? { status: 'resolved', name, value, type, kotlin }
+        : { status: 'resolved', name, value, type };
     }
   };
 }
 
 function acceptsGeneratorType(type, expectedTypes) {
   if (!expectedTypes) return true;
-  if (expectedTypes instanceof Set) return expectedTypes.has(type);
-  if (Array.isArray(expectedTypes)) return expectedTypes.includes(type);
-  return type === String(expectedTypes);
+  return expectedGeneratorTypes(expectedTypes).some((expectedType) => (
+    type === expectedType || type === 'Int' && expectedType === 'Double'
+  ));
+}
+
+function generatorBindingKotlin(name, type, expectedTypes) {
+  return type === 'Int' && expectedGeneratorTypes(expectedTypes).includes('Double')
+    ? `(${name}).toDouble()`
+    : '';
+}
+
+function expectedGeneratorTypes(expectedTypes) {
+  if (expectedTypes instanceof Set) return Array.from(expectedTypes, String);
+  if (Array.isArray(expectedTypes)) return expectedTypes.map(String);
+  return [String(expectedTypes)];
 }
 
 function normalizeGeneratorLongFallback(fallback) {

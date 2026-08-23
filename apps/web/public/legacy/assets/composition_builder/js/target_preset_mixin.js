@@ -2,7 +2,8 @@ export function installTargetPresetMethods(CompositionBuilderApp, deps = {}) {
     const {
         esc,
         sanitizeKotlinClassName,
-        PARTICLE_INIT_TARGET_OPTIONS
+        PARTICLE_INIT_TARGET_OPTIONS,
+        CPARTICLE_INIT_TARGET_OPTIONS
     } = deps;
 
     if (!CompositionBuilderApp || !CompositionBuilderApp.prototype) {
@@ -57,10 +58,13 @@ export function installTargetPresetMethods(CompositionBuilderApp, deps = {}) {
         return uniq.map((expr) => `<option value="${esc(expr)}" ${expr === selected ? "selected" : ""}>${esc(expr)}</option>`).join("");
     }
 
-    getParticleInitTargetOptionsHtml(selectedTarget = "") {
+    getParticleInitTargetOptionsHtml(selectedTarget = "", particleType = "single") {
         const selected = String(selectedTarget || "").trim() || "size";
         const rows = [];
-        const options = Array.isArray(PARTICLE_INIT_TARGET_OPTIONS) ? PARTICLE_INIT_TARGET_OPTIONS : [];
+        const sourceOptions = particleType === "cparticle"
+            ? CPARTICLE_INIT_TARGET_OPTIONS
+            : PARTICLE_INIT_TARGET_OPTIONS;
+        const options = Array.isArray(sourceOptions) ? sourceOptions : [];
         if (!options.includes(selected)) {
             rows.push({ value: selected, label: `${selected} (自定义)` });
         }
@@ -113,6 +117,7 @@ export function installTargetPresetMethods(CompositionBuilderApp, deps = {}) {
         if (target === "size" || target === "particlesize" || target === "particle.particlesize") return "0.2";
         if (target === "alpha" || target === "particlealpha" || target === "particle.particlealpha") return "1.0";
         if (target === "currentage" || target === "age") return "0";
+        if (target === "maxage" || target === "lifetime") return "20";
         if (target === "texturesheet") return "0";
         if (target === "color" || target === "particlecolor" || target === "particle.particlecolor") return "Vector3f(1F, 1F, 1F)";
         return "0";

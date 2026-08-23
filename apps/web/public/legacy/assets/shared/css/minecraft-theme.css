@@ -442,7 +442,7 @@ body[data-mc-theme="deep-pink"] {
     --input-option-text: var(--mc-field-text);
     --input-arrow: var(--mc-field-text);
     --grid-color: #7b3d5a;
-    --point-color: #ffd76a;
+    --point-color: #ffffff;
     --point-focus: var(--mc-gold);
     --point-sync: var(--mc-diamond);
     --point-offset: #ff7a88;

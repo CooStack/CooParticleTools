@@ -355,23 +355,78 @@
             return res;
         },
 
-        getBallLocations(r, countPow) {
-            const rr = Number(r) || 0;
-            const n = Math.max(1, Math.trunc(Number(countPow) || 1));
+        getBallSurfaceLocations(r, count) {
+            const radius = Number(r) || 0;
+            const total = Math.max(1, Math.trunc(Number(count) || 1));
+            const goldenAngle = Math.PI * (3 - Math.sqrt(5));
             const res = [];
-            const step = Math.PI / n;
-            let ry = -Math.PI / 2;
-            for (let i = 1; i <= n; i++) {
-                let rx = 0;
-                for (let j = 1; j <= n; j++) {
-                    res.push({
-                        x: rr * Math.cos(ry) * Math.cos(rx),
-                        y: rr * Math.sin(ry),
-                        z: rr * Math.cos(ry) * Math.sin(rx),
-                    });
-                    rx += (2 * Math.PI) / n;
+            for (let index = 0; index < total; index++) {
+                const y = 1 - 2 * (index + 0.5) / total;
+                const ringRadius = Math.sqrt(Math.max(0, 1 - y * y));
+                const angle = goldenAngle * index;
+                res.push({
+                    x: radius * ringRadius * Math.cos(angle),
+                    y: radius * y,
+                    z: radius * ringRadius * Math.sin(angle),
+                });
+            }
+            return res;
+        },
+
+        getBallSolidLocations(r, count) {
+            const radius = Number(r) || 0;
+            const total = Math.max(1, Math.trunc(Number(count) || 1));
+            return Utils.getBallSurfaceLocations(1, total).map((point, index) => {
+                const scale = radius * Math.pow((index + 0.5) / total, 1 / 3);
+                return { x: point.x * scale, y: point.y * scale, z: point.z * scale };
+            });
+        },
+
+        getBallLocations(r, countPow) {
+            const resolution = Math.max(1, Math.trunc(Number(countPow) || 1));
+            return Utils.getBallSurfaceLocations(r, resolution * resolution);
+        },
+
+        getCubeSurfaceLocations(width, height, depth, count) {
+            const w = Number(width) || 0;
+            const h = Number(height) || 0;
+            const d = Number(depth) || 0;
+            if (w < 0 || h < 0 || d < 0) return [];
+
+            const total = Math.max(1, Math.trunc(Number(count) || 1));
+            const halfX = w / 2;
+            const halfY = h / 2;
+            const halfZ = d / 2;
+            const areas = [w * d, w * d, w * h, w * h, h * d, h * d];
+            const totalArea = areas.reduce((sum, area) => sum + area, 0);
+            const res = [];
+
+            for (let index = 0; index < total; index++) {
+                let selectedFace = 0;
+                if (totalArea > 0) {
+                    const target = totalArea * (index + 0.5) / total;
+                    let accumulated = 0;
+                    while (selectedFace < areas.length - 1 && target > accumulated + areas[selectedFace]) {
+                        accumulated += areas[selectedFace];
+                        selectedFace++;
+                    }
                 }
-                ry += step;
+
+                const u = (index * 0.6180339887498949) % 1;
+                const v = (index * 0.7548776662466927) % 1;
+                const xU = -halfX + w * u;
+                const xV = -halfX + w * v;
+                const yU = -halfY + h * u;
+                const yV = -halfY + h * v;
+                const zU = -halfZ + d * u;
+                const zV = -halfZ + d * v;
+
+                if (selectedFace === 0) res.push({ x: xU, y: -halfY, z: zV });
+                else if (selectedFace === 1) res.push({ x: xU, y: halfY, z: zV });
+                else if (selectedFace === 2) res.push({ x: xU, y: yV, z: -halfZ });
+                else if (selectedFace === 3) res.push({ x: xU, y: yV, z: halfZ });
+                else if (selectedFace === 4) res.push({ x: -halfX, y: yU, z: zV });
+                else res.push({ x: halfX, y: yU, z: zV });
             }
             return res;
         },

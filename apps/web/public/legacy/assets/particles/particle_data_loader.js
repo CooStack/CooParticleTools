@@ -30,6 +30,7 @@ function createEntry(json) {
         atlas: null,
         atlasReady: false,
         atlasTexture: null,
+        atlasPromise: null,
         loadedFrames: 0,
         failedFrames: 0,
         textureLoadOk: textures.length > 0,
@@ -38,10 +39,10 @@ function createEntry(json) {
 
 function resolveBasePath() {
     // 根据当前页面路径推断 base
-    const path = window.location.pathname;
-    if (path.includes("/assets/")) {
+    const pathname = String(globalThis.location?.pathname || "");
+    if (pathname.includes("/assets/")) {
         // 从子目录页面访问，需要回退
-        const depth = path.split("/assets/")[1].split("/").length;
+        const depth = pathname.split("/assets/")[1].split("/").length;
         return "../".repeat(depth);
     }
     return "";
@@ -113,10 +114,28 @@ function buildAtlas(entry, onDone) {
     }
 }
 
+export function ensureParticleAtlas(entryOrName) {
+    const entry = typeof entryOrName === "string"
+        ? particleDataCache.get(String(entryOrName || ""))
+        : entryOrName;
+    if (!entry) return Promise.resolve(null);
+    if (entry.atlasReady) return Promise.resolve(entry);
+    if (entry.atlasPromise) return entry.atlasPromise;
+    entry.atlasPromise = new Promise((resolve) => {
+        buildAtlas(entry, () => {
+            fireReadyCallbacks();
+            resolve(entry);
+        });
+    }).finally(() => {
+        entry.atlasPromise = null;
+    });
+    return entry.atlasPromise;
+}
+
 /**
  * 加载所有粒子数据（从 index.json 发现）
  */
-export async function loadAllParticleData() {
+export async function loadAllParticleData(options = {}) {
     if (loaded) return;
     if (loadPromise) return loadPromise;
 
@@ -150,9 +169,9 @@ export async function loadAllParticleData() {
                 if (!json) continue;
                 const entry = createEntry(json);
                 particleDataCache.set(entry.name, entry);
-                buildAtlas(entry, () => {
-                    fireReadyCallbacks();
-                });
+                if (!options.lazyAtlases) {
+                    void ensureParticleAtlas(entry);
+                }
             }
         } catch (e) {
             console.warn("loadAllParticleData error:", e);

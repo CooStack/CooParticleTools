@@ -8,6 +8,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const { createProjectCloseGuard } = require('./project-close-guard');
 const { createProjectPresetFileStore } = require('./project-preset-files');
 const { createPreferencesStore } = require('./preferences-store');
+const { writeProjectAutoSave } = require('./project-auto-save');
 const { writeTextFileAtomic } = require('./atomic-text-file');
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
@@ -652,6 +653,10 @@ ipcMain.handle('shell:saveProjectFile', (event, payload = {}) => withIpcErrors((
   ...payload,
   addToRecent: payload.addToRecent !== false,
 }, projectFilters)));
+ipcMain.handle('shell:autoSaveProjectFile', (_event, payload = {}) => withIpcErrors(() => writeProjectAutoSave(
+  payload.filePath,
+  payload.text
+)));
 ipcMain.handle('shell:saveTextFile', (event, payload) => withIpcErrors(() => saveTextFile(event, payload, kotlinFilters)));
 ipcMain.handle('shell:listProjectPresetFolders', (_event, payload) => withIpcErrors(() => listProjectPresetFolders(payload)));
 ipcMain.handle('shell:createProjectPresetFolder', (_event, payload) => withIpcErrors(() => createProjectPresetFolder(payload)));

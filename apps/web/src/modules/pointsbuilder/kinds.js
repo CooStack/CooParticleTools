@@ -18,6 +18,9 @@ import {
   getRadianXZCenter,
   getRadianXZ,
   getBallLocations,
+  getBallSurfaceLocations,
+  getBallSolidLocations,
+  getCubeSurfaceLocations,
   getRoundShapeLocations,
   getRoundShapeLocationsRange,
   getPolygonInCircleLocations,
@@ -472,9 +475,9 @@ export const POINTS_NODE_KINDS = {
     }
   },
   add_ball: {
-    title: '球面点集',
+    title: '旧版球面点集',
     group: '形状',
-    description: '添加球面采样点。',
+    description: '兼容旧版 addBall；最终点数为 countPow 的平方。',
     defaultParams: { r: 2, countPow: 24, ox: 0, oy: 0, oz: 0 },
     fields: numericFields(['r', 'countPow', 'ox', 'oy', 'oz']),
     apply(ctx, node) {
@@ -482,6 +485,88 @@ export const POINTS_NODE_KINDS = {
     },
     kotlin(node) {
       return kotlinCall('addBall', [fmtDouble(node.params.r), intExpr(node.params.countPow, 24, 1)], node.params);
+    }
+  },
+  add_ball_surface: {
+    title: '均匀球面点集',
+    group: '形状',
+    description: '使用黄金角在球面均匀采样，count 是最终点数。',
+    defaultParams: { r: 2, count: 600, ox: 0, oy: 0, oz: 0 },
+    fields: [
+      numberField('r', '半径'),
+      numberField('count', '点数', { step: 1, min: 1 }),
+      ...numericFields(['ox', 'oy', 'oz'])
+    ],
+    apply(ctx, node) {
+      appendWithOffset(ctx, getBallSurfaceLocations(node.params.r, node.params.count), node.params);
+    },
+    kotlin(node) {
+      return kotlinCall('addBallSurface', [fmtDouble(node.params.r), intExpr(node.params.count, 600, 1)], node.params);
+    }
+  },
+  add_ball_solid: {
+    title: '球体内部点集',
+    group: '形状',
+    description: '在整个球体内部均匀采样，count 是最终点数。',
+    defaultParams: { r: 2, count: 600, ox: 0, oy: 0, oz: 0 },
+    fields: [
+      numberField('r', '半径'),
+      numberField('count', '点数', { step: 1, min: 1 }),
+      ...numericFields(['ox', 'oy', 'oz'])
+    ],
+    apply(ctx, node) {
+      appendWithOffset(ctx, getBallSolidLocations(node.params.r, node.params.count), node.params);
+    },
+    kotlin(node) {
+      return kotlinCall('addBallSolid', [fmtDouble(node.params.r), intExpr(node.params.count, 600, 1)], node.params);
+    }
+  },
+  add_ball_volume: {
+    title: '球体体积点集',
+    group: '形状',
+    description: 'addBallSolid 的公开别名，在球体内部均匀采样。',
+    defaultParams: { r: 2, count: 600, ox: 0, oy: 0, oz: 0 },
+    fields: [
+      numberField('r', '半径'),
+      numberField('count', '点数', { step: 1, min: 1 }),
+      ...numericFields(['ox', 'oy', 'oz'])
+    ],
+    apply(ctx, node) {
+      appendWithOffset(ctx, getBallSolidLocations(node.params.r, node.params.count), node.params);
+    },
+    kotlin(node) {
+      return kotlinCall('addBallVolume', [fmtDouble(node.params.r), intExpr(node.params.count, 600, 1)], node.params);
+    }
+  },
+  add_cube_surface: {
+    title: '方块表面点集',
+    group: '形状',
+    description: '按面积权重在方块或长方体的六个表面采样。',
+    defaultParams: { sizeMode: 'uniform', size: 2, width: 2, height: 2, depth: 2, count: 600, ox: 0, oy: 0, oz: 0 },
+    fields: [
+      selectField('sizeMode', '尺寸模式', [
+        { label: '等边尺寸', value: 'uniform' },
+        { label: '长 / 高 / 深', value: 'dimensions' }
+      ]),
+      numberField('size', '尺寸', { min: 0 }),
+      numberField('width', '长度', { min: 0 }),
+      numberField('height', '高度', { min: 0 }),
+      numberField('depth', '深度', { min: 0 }),
+      numberField('count', '点数', { step: 1, min: 1 }),
+      ...numericFields(['ox', 'oy', 'oz'])
+    ],
+    apply(ctx, node) {
+      const dimensions = node.params.sizeMode === 'dimensions'
+        ? [node.params.width, node.params.height, node.params.depth]
+        : [node.params.size, node.params.size, node.params.size];
+      appendWithOffset(ctx, getCubeSurfaceLocations(...dimensions, node.params.count), node.params);
+    },
+    kotlin(node) {
+      const args = node.params.sizeMode === 'dimensions'
+        ? [fmtDouble(node.params.width), fmtDouble(node.params.height), fmtDouble(node.params.depth)]
+        : [fmtDouble(node.params.size)];
+      args.push(intExpr(node.params.count, 600, 1));
+      return kotlinCall('addCubeSurface', args, node.params);
     }
   },
   add_round_shape: {

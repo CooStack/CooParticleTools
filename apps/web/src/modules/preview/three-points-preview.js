@@ -15,7 +15,7 @@ const pointVertexShader = `
 attribute vec3 prevPosition;
 attribute vec3 pointColor;
 attribute float pointAlpha;
-attribute float pointSize;
+attribute vec2 pointScale;
 attribute float pointFrame;
 attribute float pointRoll;
 uniform float uViewportHeight;
@@ -24,16 +24,19 @@ varying vec3 vColor;
 varying float vAlpha;
 varying float vFrame;
 varying float vRoll;
+varying vec2 vPointScale;
 
 void main() {
   vColor = pointColor;
   vAlpha = pointAlpha;
   vFrame = pointFrame;
   vRoll = pointRoll;
+  vPointScale = pointScale;
   vec3 renderPosition = mix(prevPosition, position, clamp(uLerpAlpha, 0.0, 1.0));
   vec4 mvPosition = modelViewMatrix * vec4(renderPosition, 1.0);
   float depth = max(0.001, -mvPosition.z);
-  gl_PointSize = clamp(pointSize * projectionMatrix[1][1] * uViewportHeight * 0.5 / depth, 1.0, 512.0);
+  float spriteExtent = length(pointScale);
+  gl_PointSize = clamp(spriteExtent * projectionMatrix[1][1] * uViewportHeight * 0.5 / depth, 1.0, 512.0);
   gl_Position = projectionMatrix * mvPosition;
 }
 `;
@@ -43,9 +46,11 @@ varying vec3 vColor;
 varying float vAlpha;
 varying float vFrame;
 varying float vRoll;
+varying vec2 vPointScale;
 uniform sampler2D uAtlas;
 uniform int uFrameCount;
 uniform int uUseTexture;
+uniform int uPremultiplyRgbByAlpha;
 
 vec2 rotateUv(vec2 uv, float angle) {
   vec2 centered = uv - vec2(0.5);
@@ -60,7 +65,11 @@ float particleMask(vec2 coord) {
 }
 
 void main() {
-  vec2 uv = rotateUv(gl_PointCoord, vRoll);
+  vec2 localUv = rotateUv(gl_PointCoord, vRoll) - vec2(0.5);
+  float spriteExtent = length(vPointScale);
+  localUv *= spriteExtent / max(vPointScale, vec2(0.0001));
+  vec2 uv = localUv + vec2(0.5);
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) discard;
   if (uUseTexture == 1 && uFrameCount > 0) {
     float fc = float(uFrameCount);
     float fi = clamp(floor(vFrame + 0.5), 0.0, fc - 1.0);
@@ -70,13 +79,17 @@ void main() {
     vec4 texel = texture2D(uAtlas, uv);
     if (texel.a <= 0.01 || vAlpha <= 0.01) discard;
     float intensity = clamp(vAlpha * texel.a, 0.0, 1.0);
-    gl_FragColor = vec4(vColor * texel.rgb * (0.22 + intensity * 0.78), intensity);
+    vec3 color = vColor * texel.rgb * (0.22 + intensity * 0.78);
+    if (uPremultiplyRgbByAlpha == 1) color *= intensity;
+    gl_FragColor = vec4(color, intensity);
     return;
   }
   float mask = particleMask(uv);
   if (mask <= 0.01 || vAlpha <= 0.01) discard;
   float intensity = clamp(vAlpha * mask, 0.0, 1.0);
-  gl_FragColor = vec4(vColor * (0.22 + intensity * 0.78), intensity);
+  vec3 color = vColor * (0.22 + intensity * 0.78);
+  if (uPremultiplyRgbByAlpha == 1) color *= intensity;
+  gl_FragColor = vec4(color, intensity);
 }
 `;
 
@@ -106,6 +119,7 @@ varying vec2 vUv;
 uniform sampler2D uAtlas;
 uniform int uFrameCount;
 uniform int uUseTexture;
+uniform int uPremultiplyRgbByAlpha;
 
 float particleMask(vec2 coord) {
   float r = length(coord - vec2(0.5));
@@ -123,13 +137,17 @@ void main() {
     vec4 texel = texture2D(uAtlas, uv);
     if (texel.a <= 0.01 || vAlpha <= 0.01) discard;
     float intensity = clamp(vAlpha * texel.a, 0.0, 1.0);
-    gl_FragColor = vec4(vColor * texel.rgb * (0.22 + intensity * 0.78), intensity);
+    vec3 color = vColor * texel.rgb * (0.22 + intensity * 0.78);
+    if (uPremultiplyRgbByAlpha == 1) color *= intensity;
+    gl_FragColor = vec4(color, intensity);
     return;
   }
   float mask = particleMask(vUv);
   if (mask <= 0.01 || vAlpha <= 0.01) discard;
   float intensity = clamp(vAlpha * mask, 0.0, 1.0);
-  gl_FragColor = vec4(vColor * (0.22 + intensity * 0.78), intensity);
+  vec3 color = vColor * (0.22 + intensity * 0.78);
+  if (uPremultiplyRgbByAlpha == 1) color *= intensity;
+  gl_FragColor = vec4(color, intensity);
 }
 `;
 
@@ -205,10 +223,50 @@ function resolvePointScale(point, fallback) {
   );
 }
 
-function resolvePointWorldSize(point, fallback) {
-  const raw = Number(point?.size);
-  const size = Number.isFinite(raw) && raw > 0 ? raw : Math.max(0.01, Number(fallback) || 0.07);
-  return Math.max(0.001, size * PREVIEW_SPRITE_SCALE);
+function writePointWorldScale(target, offset, point, fallback) {
+  const fallbackSize = Math.max(0.01, Number(fallback) || 0.07);
+  const sx = Number(point?.scaleX);
+  const sy = Number(point?.scaleY);
+  target[offset] = (Number.isFinite(sx) && sx > 0 ? sx : fallbackSize) * PREVIEW_SPRITE_SCALE;
+  target[offset + 1] = (Number.isFinite(sy) && sy > 0 ? sy : fallbackSize) * PREVIEW_SPRITE_SCALE;
+}
+
+function resolveTextureSheet(points) {
+  if (typeof points?.textureSheet === 'string') return points.textureSheet;
+  let textureSheet = '';
+  for (const point of points || []) {
+    const next = String(point?.textureSheet || 'PARTICLE_SHEET_TRANSLUCENT');
+    if (!textureSheet) textureSheet = next;
+    else if (next !== textureSheet) return '';
+  }
+  return textureSheet;
+}
+
+function applyTextureSheet(material, textureSheet) {
+  if (!material) return;
+  const sheet = String(textureSheet || 'PARTICLE_SHEET_TRANSLUCENT');
+  const noDepthWrite = sheet.endsWith('_NO_DEPTH_WRITE');
+  const additive = sheet.startsWith('ADDITION_BLEND');
+  const bounded = additive && sheet.includes('_NOT_HDR');
+  const translucentAdditive = additive && sheet.includes('_TRANSLUCENT');
+
+  material.depthWrite = noDepthWrite ? false : sheet !== 'CUSTOM';
+  material.uniforms.uPremultiplyRgbByAlpha.value = bounded && translucentAdditive ? 1 : 0;
+
+  if (sheet === 'PARTICLE_SHEET_OPAQUE' || sheet === 'PARTICLE_SHEET_LIT' || sheet === 'TERRAIN_SHEET') {
+    material.blending = THREE.NoBlending;
+  } else if (additive) {
+    material.blending = THREE.CustomBlending;
+    material.blendEquation = THREE.AddEquation;
+    material.blendEquationAlpha = THREE.AddEquation;
+    material.blendSrc = bounded || !translucentAdditive ? THREE.OneFactor : THREE.SrcAlphaFactor;
+    material.blendDst = bounded ? THREE.OneMinusSrcColorFactor : THREE.OneFactor;
+    material.blendSrcAlpha = bounded ? THREE.ZeroFactor : material.blendSrc;
+    material.blendDstAlpha = THREE.OneFactor;
+  } else {
+    material.blending = THREE.NormalBlending;
+  }
+  material.needsUpdate = true;
 }
 
 function createTextureUniforms() {
@@ -216,6 +274,7 @@ function createTextureUniforms() {
     uAtlas: { value: null },
     uFrameCount: { value: 0 },
     uUseTexture: { value: 0 },
+    uPremultiplyRgbByAlpha: { value: 0 },
     uViewportHeight: { value: 1 },
     uLerpAlpha: { value: 1 }
   };
@@ -324,6 +383,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
   let hasDynamicOrientedBillboards = false;
   let textureConfig = null;
   let textureSignature = '';
+  let textureSheet = '';
   let textureLoadStarted = false;
   let frameId = 0;
   let disposed = false;
@@ -472,14 +532,14 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     const prevPositions = billboardPoints.geometry.getAttribute('prevPosition');
     const colors = billboardPoints.geometry.getAttribute('pointColor');
     const alphas = billboardPoints.geometry.getAttribute('pointAlpha');
-    const sizes = billboardPoints.geometry.getAttribute('pointSize');
+    const scales = billboardPoints.geometry.getAttribute('pointScale');
     const frames = billboardPoints.geometry.getAttribute('pointFrame');
     const rolls = billboardPoints.geometry.getAttribute('pointRoll');
     const positionArray = positions.array;
     const prevPositionArray = prevPositions.array;
     const colorArray = colors.array;
     const alphaArray = alphas.array;
-    const sizeArray = sizes.array;
+    const scaleArray = scales.array;
     const frameArray = frames.array;
     const rollArray = rolls.array;
 
@@ -493,7 +553,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
       prevPositionArray[offset + 2] = Number(point?.prevZ ?? point?.z ?? 0);
       writePointColor(colorArray, offset, point);
       alphaArray[index] = clamp01(point?.alpha, 1);
-      sizeArray[index] = resolvePointWorldSize(point, currentPointSize);
+      writePointWorldScale(scaleArray, index * 2, point, currentPointSize);
       frameArray[index] = resolveParticleFrameIndex(point, textureConfig);
       rollArray[index] = degToRad(point?.roll);
     });
@@ -502,7 +562,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     prevPositions.needsUpdate = true;
     colors.needsUpdate = true;
     alphas.needsUpdate = true;
-    sizes.needsUpdate = true;
+    scales.needsUpdate = true;
     frames.needsUpdate = true;
     rolls.needsUpdate = true;
   }
@@ -513,7 +573,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     const prevPositions = billboardPoints.geometry.getAttribute('prevPosition');
     const colors = billboardPoints.geometry.getAttribute('pointColor');
     const alphas = billboardPoints.geometry.getAttribute('pointAlpha');
-    const sizes = billboardPoints.geometry.getAttribute('pointSize');
+    const scales = billboardPoints.geometry.getAttribute('pointScale');
     const frames = billboardPoints.geometry.getAttribute('pointFrame');
     const rolls = billboardPoints.geometry.getAttribute('pointRoll');
     positions.array.set(data.positions.subarray(0, count * 3));
@@ -524,7 +584,10 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     }
     colors.array.set(data.colors.subarray(0, count * 3));
     alphas.array.set(data.alphas.subarray(0, count));
-    sizes.array.set(data.sizes.subarray(0, count));
+    for (let index = 0; index < count; index += 1) {
+      const fallback = Number(data.sizes?.[index] || currentPointSize);
+      scales.setXY(index, Number(data.scaleXs?.[index] || fallback), Number(data.scaleYs?.[index] || fallback));
+    }
     rolls.array.set(data.rolls.subarray(0, count));
     fillBufferFrames(frames.array, data, count);
     billboardPoints.geometry.setDrawRange(0, count);
@@ -532,7 +595,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     prevPositions.needsUpdate = true;
     colors.needsUpdate = true;
     alphas.needsUpdate = true;
-    sizes.needsUpdate = true;
+    scales.needsUpdate = true;
     frames.needsUpdate = true;
     rolls.needsUpdate = true;
   }
@@ -546,21 +609,21 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     const prevPositions = new THREE.BufferAttribute(new Float32Array(billboardCapacity * 3), 3);
     const colors = new THREE.BufferAttribute(new Float32Array(billboardCapacity * 3), 3);
     const alphas = new THREE.BufferAttribute(new Float32Array(billboardCapacity), 1);
-    const sizes = new THREE.BufferAttribute(new Float32Array(billboardCapacity), 1);
+    const scales = new THREE.BufferAttribute(new Float32Array(billboardCapacity * 2), 2);
     const frames = new THREE.BufferAttribute(new Float32Array(billboardCapacity), 1);
     const rolls = new THREE.BufferAttribute(new Float32Array(billboardCapacity), 1);
     positions.setUsage(THREE.DynamicDrawUsage);
     prevPositions.setUsage(THREE.DynamicDrawUsage);
     colors.setUsage(THREE.DynamicDrawUsage);
     alphas.setUsage(THREE.DynamicDrawUsage);
-    sizes.setUsage(THREE.DynamicDrawUsage);
+    scales.setUsage(THREE.DynamicDrawUsage);
     frames.setUsage(THREE.DynamicDrawUsage);
     rolls.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute('position', positions);
     geometry.setAttribute('prevPosition', prevPositions);
     geometry.setAttribute('pointColor', colors);
     geometry.setAttribute('pointAlpha', alphas);
-    geometry.setAttribute('pointSize', sizes);
+    geometry.setAttribute('pointScale', scales);
     geometry.setAttribute('pointFrame', frames);
     geometry.setAttribute('pointRoll', rolls);
     geometry.setDrawRange(0, count);
@@ -574,6 +637,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
         depthTest: true,
         blending: THREE.NormalBlending
       });
+      applyTextureSheet(billboardMaterial, textureSheet);
       applyViewportUniforms(billboardMaterial);
     }
     billboardPoints = new THREE.Points(geometry, billboardMaterial);
@@ -606,6 +670,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
       depthTest: true,
       blending: THREE.NormalBlending
     });
+    applyTextureSheet(material, textureSheet);
     applyViewportUniforms(material);
     orientedMesh = new THREE.InstancedMesh(geometry, material, orientedCapacity);
     orientedMesh.count = count;
@@ -662,9 +727,9 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
       updateBillboardBufferPoints(currentBufferPoints, currentBufferPoints.count || 0);
       return;
     }
-    const attr = billboardPoints.geometry.getAttribute('pointSize');
+    const attr = billboardPoints.geometry.getAttribute('pointScale');
     currentBillboardPoints.forEach((point, index) => {
-      attr.setX(index, resolvePointWorldSize(point, currentPointSize));
+      writePointWorldScale(attr.array, index * 2, point, currentPointSize);
     });
     attr.needsUpdate = true;
   }
@@ -696,9 +761,15 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
 
   function syncTextureUniforms(force = false) {
     const nextSignature = resolveEffectSignature(currentPoints);
+    const nextTextureSheet = resolveTextureSheet(currentPoints);
     if (force || nextSignature !== textureSignature) {
       textureSignature = nextSignature;
       textureConfig = nextSignature ? getMergedParticleAtlas(nextSignature.split('|')) : null;
+    }
+    if (force || nextTextureSheet !== textureSheet) {
+      textureSheet = nextTextureSheet;
+      applyTextureSheet(billboardMaterial, textureSheet);
+      applyTextureSheet(orientedMesh?.material, textureSheet);
     }
     applyTextureUniforms(billboardMaterial, textureConfig);
     applyTextureUniforms(orientedMesh?.material, textureConfig);
@@ -790,7 +861,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
   function resolveParticleQuaternion(point, target) {
     const mode = point?.billboardMode || 'face_camera';
     if (mode === 'none') {
-      target.setFromEuler(new THREE.Euler(degToRad(point?.pitch), degToRad(point?.yaw), degToRad(point?.roll), 'YXZ'));
+      target.setFromEuler(new THREE.Euler(degToRad(point?.pitch), degToRad(point?.yaw), degToRad(point?.roll), 'XYZ'));
       return target;
     }
     if (mode === 'axis_billboard') {

@@ -1,3 +1,8 @@
+import {
+    isCardVisibleForBoxSelection,
+    selectionRectIntersects
+} from "./card-selection.js";
+
 const EXPRESSION_VALUE_TYPES = new Set(["Int", "Long", "Float", "Double"]);
 const INTEGER_ROW_LABELS = new Set([
     "count", "count1", "count2", "counts", "countW", "countH",
@@ -30,7 +35,10 @@ export function filterExpressionSuggestionsByType(items, valueType = "Double") {
     const result = [];
     for (const item of Array.isArray(items) ? items : []) {
         const normalized = normalizeExpressionSuggestion(item);
-        if (!normalized || normalized.type !== expectedType || seen.has(normalized.value)) continue;
+        if (!normalized) continue;
+        const compatible = normalized.type === expectedType
+            || normalized.type === "Int" && expectedType === "Double";
+        if (!compatible || seen.has(normalized.value)) continue;
         seen.add(normalized.value);
         result.push(normalized);
     }
@@ -217,8 +225,32 @@ export function createCardInputs(ctx) {
             },
             add_ball: {
                 r: "球半径。",
-                count: "采样点数量（越大越密）。",
-                discrete: "离散间距（影响稀疏度）。"
+                countPow: "旧版分辨率参数，最终点数为 countPow 的平方。",
+                offset: "球面点集的中心偏移。"
+            },
+            add_ball_surface: {
+                r: "球半径。",
+                count: "球面的最终采样点数量。",
+                offset: "球面点集的中心偏移。"
+            },
+            add_ball_solid: {
+                r: "球半径。",
+                count: "球体内部的最终采样点数量。",
+                offset: "球体点集的中心偏移。"
+            },
+            add_ball_volume: {
+                r: "球半径。",
+                count: "球体体积内的最终采样点数量。",
+                offset: "球体点集的中心偏移。"
+            },
+            add_cube_surface: {
+                "尺寸模式": "使用等边尺寸，或分别设置长、高、深。",
+                size: "等边方块的边长。",
+                width: "长方体沿 X 轴的长度。",
+                height: "长方体沿 Y 轴的高度。",
+                depth: "长方体沿 Z 轴的深度。",
+                count: "六个表面的总采样点数量，按各面面积分配。",
+                offset: "方块表面点集的中心偏移。"
             },
             add_ring: {
                 r: "外环半径。",
@@ -1984,10 +2016,9 @@ export function initCardSystem(ctx = {}) {
         const hits = [];
         const cards = elCardsRoot.querySelectorAll(".card[data-id]");
         cards.forEach((card) => {
+            if (!isCardVisibleForBoxSelection(card, elCardsRoot)) return;
             const r = card.getBoundingClientRect();
-            if (r.width <= 0 || r.height <= 0) return;
-            const overlap = !(r.right < rect.left || r.left > rect.right || r.bottom < rect.top || r.top > rect.bottom);
-            if (!overlap) return;
+            if (!selectionRectIntersects(rect, r)) return;
             hits.push({ id: card.dataset.id, top: r.top, left: r.left });
         });
         hits.sort((a, b) => (a.top - b.top) || (a.left - b.left));
@@ -3665,6 +3696,54 @@ export function initCardSystem(ctx = {}) {
                 })));
                 body.appendChild(row("countPow", inputNum(p.countPow, v => {
                     p.countPow = v;
+                    rebuildPreviewAndKotlin();
+                })));
+                body.appendChild(row("offset", makeVec3Editor(p, "o", rebuildPreviewAndKotlin, "offset")));
+                break;
+
+            case "add_ball_surface":
+            case "add_ball_solid":
+            case "add_ball_volume":
+                body.appendChild(row("r", inputNum(p.r, v => {
+                    p.r = v;
+                    rebuildPreviewAndKotlin();
+                })));
+                body.appendChild(row("count", inputNum(p.count, v => {
+                    p.count = v;
+                    rebuildPreviewAndKotlin();
+                })));
+                body.appendChild(row("offset", makeVec3Editor(p, "o", rebuildPreviewAndKotlin, "offset")));
+                break;
+
+            case "add_cube_surface":
+                body.appendChild(row("尺寸模式", select([
+                    ["uniform", "等边尺寸"],
+                    ["dimensions", "长 / 高 / 深"]
+                ], p.sizeMode, v => {
+                    p.sizeMode = v;
+                    renderAll();
+                })));
+                if (p.sizeMode === "dimensions") {
+                    body.appendChild(row("width", inputNum(p.width, v => {
+                        p.width = v;
+                        rebuildPreviewAndKotlin();
+                    })));
+                    body.appendChild(row("height", inputNum(p.height, v => {
+                        p.height = v;
+                        rebuildPreviewAndKotlin();
+                    })));
+                    body.appendChild(row("depth", inputNum(p.depth, v => {
+                        p.depth = v;
+                        rebuildPreviewAndKotlin();
+                    })));
+                } else {
+                    body.appendChild(row("size", inputNum(p.size, v => {
+                        p.size = v;
+                        rebuildPreviewAndKotlin();
+                    })));
+                }
+                body.appendChild(row("count", inputNum(p.count, v => {
+                    p.count = v;
                     rebuildPreviewAndKotlin();
                 })));
                 body.appendChild(row("offset", makeVec3Editor(p, "o", rebuildPreviewAndKotlin, "offset")));

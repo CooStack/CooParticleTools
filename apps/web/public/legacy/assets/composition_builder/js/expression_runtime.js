@@ -22,20 +22,115 @@ export function createExpressionRuntime(options = {}) {
         const n = Number(v);
         return Number.isFinite(n) ? n : fb;
     };
-    const runtimeRelativeLocation = (x = 0, y = 0, z = 0) => ({ x: toNum(x), y: toNum(y), z: toNum(z) });
-    runtimeRelativeLocation.yAxis = () => ({ x: 0, y: 1, z: 0 });
-    const runtimeVec3 = (x = 0, y = 0, z = 0) => {
-        const vx = toNum(x);
-        const vy = toNum(y);
-        const vz = toNum(z);
-        return {
-            x: vx,
-            y: vy,
-            z: vz,
-            asRelative: () => ({ x: vx, y: vy, z: vz })
-        };
+    const normalizeVectorType = (rawType) => {
+        const type = String(rawType || "").trim();
+        if (type === "Vec3d") return "Vec3";
+        return vectorTypes.has(type) ? type : "RelativeLocation";
     };
-    const runtimeVector3f = (x = 0, y = 0, z = 0) => ({ x: toNum(x), y: toNum(y), z: toNum(z) });
+    const readVectorComponents = (x = 0, y = 0, z = 0) => {
+        if (x && typeof x === "object") {
+            return [toNum(x.x), toNum(x.y), toNum(x.z)];
+        }
+        return [toNum(x), toNum(y), toNum(z)];
+    };
+    const createRuntimeVector = (valueOrX = 0, y = 0, z = 0, typeName = "RelativeLocation") => {
+        const type = normalizeVectorType(typeName);
+        const [x, vy, vz] = readVectorComponents(valueOrX, y, z);
+        const out = { x, y: vy, z: vz };
+        Object.defineProperty(out, "__compositionVectorType", {
+            configurable: false,
+            enumerable: false,
+            writable: false,
+            value: type
+        });
+        const vectorArg = (args) => {
+            if (args.length === 1 && args[0] && typeof args[0] === "object") {
+                return readVectorComponents(args[0]);
+            }
+            return readVectorComponents(args[0], args[1], args[2]);
+        };
+        const calculate = (args, operation) => {
+            const [ox, oy, oz] = vectorArg(args);
+            return createRuntimeVector(
+                operation(out.x, ox),
+                operation(out.y, oy),
+                operation(out.z, oz),
+                type
+            );
+        };
+        Object.defineProperties(out, {
+            clone: { enumerable: false, value: () => createRuntimeVector(out, 0, 0, type) },
+            copy: { enumerable: false, value: () => createRuntimeVector(out, 0, 0, type) },
+            add: { enumerable: false, value: (...args) => calculate(args, (left, right) => left + right) },
+            remove: { enumerable: false, value: (...args) => calculate(args, (left, right) => left - right) },
+            subtract: { enumerable: false, value: (...args) => calculate(args, (left, right) => left - right) },
+            multiply: { enumerable: false, value: (value) => {
+                if (value && typeof value === "object") return calculate([value], (left, right) => left * right);
+                const scalar = toNum(value, 1);
+                return createRuntimeVector(out.x * scalar, out.y * scalar, out.z * scalar, type);
+            } },
+            multiple: { enumerable: false, value: (value) => out.multiply(value) },
+            mul: { enumerable: false, value: (value) => out.multiply(value) },
+            multiplyClone: { enumerable: false, value: (value) => out.clone().multiply(value) },
+            divide: { enumerable: false, value: (value) => {
+                if (value && typeof value === "object") return calculate([value], (left, right) => left / right);
+                const scalar = toNum(value, 1);
+                return createRuntimeVector(out.x / scalar, out.y / scalar, out.z / scalar, type);
+            } },
+            div: { enumerable: false, value: (value) => out.divide(value) },
+            normalize: { enumerable: false, value: () => {
+                const length = Math.hypot(out.x, out.y, out.z);
+                if (length <= 1e-6) {
+                    return createRuntimeVector(type === "RelativeLocation" ? 1 : 0, 0, 0, type);
+                }
+                return createRuntimeVector(out.x / length, out.y / length, out.z / length, type);
+            } },
+            dot: { enumerable: false, value: (other) => {
+                const [ox, oy, oz] = readVectorComponents(other);
+                return out.x * ox + out.y * oy + out.z * oz;
+            } },
+            cross: { enumerable: false, value: (other) => {
+                const [ox, oy, oz] = readVectorComponents(other);
+                return createRuntimeVector(
+                    out.y * oz - out.z * oy,
+                    out.z * ox - out.x * oz,
+                    out.x * oy - out.y * ox,
+                    type
+                );
+            } },
+            length: { enumerable: false, value: () => Math.hypot(out.x, out.y, out.z) },
+            lengthSquared: { enumerable: false, value: () => out.x * out.x + out.y * out.y + out.z * out.z },
+            distance: { enumerable: false, value: (other) => {
+                const [ox, oy, oz] = readVectorComponents(other);
+                return Math.hypot(out.x - ox, out.y - oy, out.z - oz);
+            } },
+            asRelative: { enumerable: false, value: () => createRuntimeVector(out, 0, 0, "RelativeLocation") },
+            toVector: { enumerable: false, value: () => createRuntimeVector(out, 0, 0, "Vec3") },
+            asVec3: { enumerable: false, value: () => createRuntimeVector(out, 0, 0, "Vec3") },
+            toVector3f: { enumerable: false, value: () => createRuntimeVector(out, 0, 0, "Vector3f") }
+        });
+        return out;
+    };
+    function runtimeRelativeLocation(x = 0, y = 0, z = 0) {
+        return createRuntimeVector(x, y, z, "RelativeLocation");
+    }
+    runtimeRelativeLocation.of = (start, end) => {
+        if (end === undefined) return createRuntimeVector(start, 0, 0, "RelativeLocation");
+        const [sx, sy, sz] = readVectorComponents(start);
+        const [ex, ey, ez] = readVectorComponents(end);
+        return createRuntimeVector(ex - sx, ey - sy, ez - sz, "RelativeLocation");
+    };
+    runtimeRelativeLocation.yAxis = () => createRuntimeVector(0, 1, 0, "RelativeLocation");
+    runtimeRelativeLocation.xAxis = () => createRuntimeVector(1, 0, 0, "RelativeLocation");
+    runtimeRelativeLocation.zAxis = () => createRuntimeVector(0, 0, 1, "RelativeLocation");
+    runtimeRelativeLocation.zero = () => createRuntimeVector(0, 0, 0, "RelativeLocation");
+    function runtimeVec3(x = 0, y = 0, z = 0) {
+        return createRuntimeVector(x, y, z, "Vec3");
+    }
+    runtimeVec3.ZERO = createRuntimeVector(0, 0, 0, "Vec3");
+    function runtimeVector3f(x = 0, y = 0, z = 0) {
+        return createRuntimeVector(x, y, z, "Vector3f");
+    }
     const randomSignedInt32 = () => Math.floor(Math.random() * 0x100000000) - 0x80000000;
     const runtimeRandom = {
         nextInt(fromOrUntil, until) {
@@ -125,14 +220,7 @@ export function createExpressionRuntime(options = {}) {
     }
 
     function makeVectorProxy(vec, typeName = "") {
-        const x = Number.isFinite(Number(vec?.x)) ? Number(vec.x) : 0;
-        const y = Number.isFinite(Number(vec?.y)) ? Number(vec.y) : 0;
-        const z = Number.isFinite(Number(vec?.z)) ? Number(vec.z) : 0;
-        const out = { x, y, z };
-        if (String(typeName || "").trim() === "Vec3") {
-            out.asRelative = () => ({ x, y, z });
-        }
-        return Object.freeze(out);
+        return createRuntimeVector(vec, 0, 0, typeName);
     }
 
     function ensureStaticCache() {
@@ -176,7 +264,23 @@ export function createExpressionRuntime(options = {}) {
             for (const c of state.globalConsts) {
                 const name = toIdentifier(c?.name);
                 if (!name) continue;
-                noVec[name] = evaluateNumberLiteral(c?.value || "0");
+                const t = String(c?.type || "").trim();
+                if (numericTypes.has(t)) {
+                    noVec[name] = evaluateNumberLiteral(c?.value || "0");
+                    continue;
+                }
+                if (t === "Boolean") {
+                    noVec[name] = /^true$/i.test(String(c?.value || ""));
+                    continue;
+                }
+                if (vectorTypes.has(t)) {
+                    vecMap.set(name, {
+                        type: t,
+                        value: String(c?.value || "")
+                    });
+                    continue;
+                }
+                noVec[name] = c?.value;
             }
 
             vectorVarMap = vecMap;
@@ -338,6 +442,22 @@ export function createExpressionRuntime(options = {}) {
             }
         }
 
+        const runtimeExpr = s.replace(/\b(\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)[fFdDlL]\b/g, "$1");
+        const runtimeFn = getNumericExprFunction(runtimeExpr);
+        if (typeof runtimeFn === "function") {
+            try {
+                const vars = getExpressionVars(elapsedTick, ageTick, pointIndex, { includeVectors: true });
+                const value = runtimeFn(vars);
+                if (value && typeof value === "object"
+                    && Number.isFinite(Number(value.x))
+                    && Number.isFinite(Number(value.y))
+                    && Number.isFinite(Number(value.z))) {
+                    return U.v(Number(value.x), Number(value.y), Number(value.z));
+                }
+            } catch {
+            }
+        }
+
         const m = s.match(/(?:Vec3|Vec3d|RelativeLocation|Vector3f)\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/i);
         if (m) {
             return U.v(
@@ -360,6 +480,7 @@ export function createExpressionRuntime(options = {}) {
     return {
         invalidateCache,
         evaluateNumberLiteral,
+        createRuntimeVector,
         getExpressionVars,
         evaluateNumericExpression,
         parseVecLikeValue,

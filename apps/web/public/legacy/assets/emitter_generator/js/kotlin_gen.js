@@ -2,7 +2,7 @@ import { COMMAND_META } from "./command_meta.js";
 import { conditionFilterToKotlin, normalizeConditionFilter } from "./expression_cards.js";
 import { fmtD, indent, kSupplierVec3, kVec3, sanitizeKNumExpr } from "./utils.js";
 import { genEmitterBehaviorKotlin } from "./emitter_behavior.js";
-import { emitBuilderKotlinFromState } from "./points_builder_bridge.js";
+import { emitBuilderKotlinFromState } from "./points_builder_bridge.js?v=20260820_2";
 
 function safeIdent(raw, fallback) {
   const s = String(raw ?? "").trim();

@@ -3,7 +3,11 @@ import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 
 import { createGeneratorProject } from '../src/modules/generator/defaults.js';
-import { createGeneratorPreviewRuntime } from '../src/modules/generator/preview-simulation.js';
+import { sampleLifecycleCurve } from '../src/modules/generator/curves.js';
+import {
+  createGeneratorPreviewRuntime,
+  resolveRelativeParticleRotation
+} from '../src/modules/generator/preview-simulation.js';
 
 function createFixture(count = 1) {
   const project = createGeneratorProject();
@@ -19,11 +23,13 @@ function createFixture(count = 1) {
   card.particle.sizeMax = 0.1;
   card.particle.colorStart = '#000000';
   card.particle.colorEnd = '#ffffff';
-  card.particle.colorOverLifeEnabled = true;
+  card.curves.color.enabled = true;
   card.render.alpha = 100;
   card.render.light = 15;
   card.curves.size.x.mode = 'linear';
   card.curves.size.y.mode = 'linear';
+  card.curves.size.x.enabled = true;
+  card.curves.size.y.enabled = true;
   card.curves.size.x.keyframes[0].value = 1;
   card.curves.size.x.keyframes[1].value = 1;
   card.curves.size.y.keyframes[0].value = 1;
@@ -58,6 +64,211 @@ test('generator render cache preserves values and invalidates after curve edits'
   assert.equal(edited.colors[2], 0);
 });
 
+test('face-camera billboard render buffers preserve independent X/Y scale', () => {
+  const { project, card } = createFixture();
+  card.render.billboardMode = 'face_camera';
+  card.render.baseScale = { x: 1, y: 3 };
+  const runtime = createGeneratorPreviewRuntime();
+
+  runtime.step(project, 1);
+  const snapshot = runtime.snapshotRenderData(project);
+
+  assert.equal(snapshot.count, 1);
+  assert.ok(snapshot.scaleYs[0] > snapshot.scaleXs[0] * 2.9);
+});
+
+test('face-camera billboard render buffers preserve the texture sheet', () => {
+  const { project, card } = createFixture();
+  card.render.billboardMode = 'face_camera';
+  card.render.textureSheet = 'ADDITION_BLEND_TRANSLUCENT';
+  const runtime = createGeneratorPreviewRuntime();
+
+  runtime.step(project, 1);
+  const snapshot = runtime.snapshotRenderData(project);
+
+  assert.equal(snapshot.kind, 'preview-buffers');
+  assert.equal(snapshot.textureSheet, 'ADDITION_BLEND_TRANSLUCENT');
+});
+
+test('generator preview points do not retain a Z scale field', () => {
+  const { project, card } = createFixture();
+  card.render.billboardMode = 'none';
+  card.render.baseScale.z = 8;
+  card.curves.size.z = card.curves.size.x;
+  const runtime = createGeneratorPreviewRuntime();
+
+  runtime.step(project, 1);
+  const [point] = runtime.snapshot(project);
+
+  assert.equal(Object.hasOwn(point, 'scaleZ'), false);
+  assert.ok(point.scaleX > 0);
+  assert.ok(point.scaleY > 0);
+});
+
+test('spawn-inward preview moves particles toward the emitter origin', () => {
+  const { project, card } = createFixture();
+  card.emitter.type = 'sphere_surface';
+  card.emitter.offset = { x: 3, y: 4, z: 5 };
+  card.emitter.sphereSurface.r = 2;
+  card.particle.velocityMode = 'spawn_inward';
+  card.particle.velocityRandom = { x: 0, y: 0, z: 0 };
+  card.particle.speedMin = 1;
+  card.particle.speedMax = 1;
+  const runtime = createGeneratorPreviewRuntime();
+
+  runtime.step(project, 1);
+  const [point] = runtime.snapshot(project);
+  const distance = Math.hypot(point.x - 3, point.y - 4, point.z - 5);
+
+  assert.ok(Math.abs(distance - 1) < 1e-9);
+});
+
+test('relative particle rotation maps local up to arbitrary spatial directions', () => {
+  const directions = [
+    { x: 0, y: 0, z: 1 },
+    { x: 1, y: 0, z: 0 },
+    { x: -2, y: 3, z: 4 },
+    { x: 0, y: -1, z: 0 }
+  ];
+
+  directions.forEach((direction) => {
+    const rotation = resolveRelativeParticleRotation(direction);
+    const pitch = rotation.pitch * Math.PI / 180;
+    const roll = rotation.roll * Math.PI / 180;
+    const actual = {
+      x: -Math.sin(roll),
+      y: Math.cos(pitch) * Math.cos(roll),
+      z: Math.sin(pitch) * Math.cos(roll)
+    };
+    const length = Math.hypot(direction.x, direction.y, direction.z);
+    assert.ok(Math.abs(actual.x - direction.x / length) < 1e-9);
+    assert.ok(Math.abs(actual.y - direction.y / length) < 1e-9);
+    assert.ok(Math.abs(actual.z - direction.z / length) < 1e-9);
+  });
+});
+
+test('relative rotation preview uses the particle birth position', () => {
+  const { project, card } = createFixture();
+  card.emitter.type = 'point';
+  card.emitter.offset = { x: 0, y: 0, z: 1 };
+  card.render.billboardMode = 'none';
+  card.render.relativeRotation = true;
+  card.particle.velocity = { x: 1, y: 0, z: 0 };
+  card.particle.velocityRandom = { x: 0, y: 0, z: 0 };
+  card.particle.speedMin = 1;
+  card.particle.speedMax = 1;
+  const runtime = createGeneratorPreviewRuntime();
+
+  runtime.step(project, 2);
+  const [point] = runtime.snapshot(project);
+
+  assert.ok(Math.abs(point.pitch - 90) < 1e-9);
+  assert.ok(Math.abs(point.roll) < 1e-9);
+});
+
+test('single-color preview ignores the configured final color', () => {
+  const { project, card } = createFixture();
+  card.particle.colorGradientEnabled = false;
+  card.particle.colorStart = '#204060';
+  card.particle.colorEnd = '#ffffff';
+  card.curves.color.enabled = true;
+  const runtime = createGeneratorPreviewRuntime();
+
+  runtime.step(project, 1);
+  const snapshot = runtime.snapshotRenderData(project);
+
+  assert.ok(Math.abs(snapshot.colors[0] - 0.12549) < 1e-5);
+  assert.ok(Math.abs(snapshot.colors[1] - 0.25098) < 1e-5);
+  assert.ok(Math.abs(snapshot.colors[2] - 0.376471) < 1e-5);
+});
+
+test('GPU preview switches between shared and independent X/Y scale curves', () => {
+  const { project, card } = createFixture();
+  card.useGPU = true;
+  card.curves.size.syncAxes = false;
+  card.curves.size.y.keyframes[0].value = 2;
+  card.curves.size.y.keyframes[1].value = 2;
+  const independentRuntime = createGeneratorPreviewRuntime();
+
+  independentRuntime.step(project, 1);
+  const [independentPoint] = independentRuntime.snapshot(project);
+  assert.ok(independentPoint.scaleY > independentPoint.scaleX * 1.9);
+
+  card.curves.size.syncAxes = true;
+  const sharedRuntime = createGeneratorPreviewRuntime();
+  sharedRuntime.step(project, 1);
+  const [sharedPoint] = sharedRuntime.snapshot(project);
+  assert.ok(Math.abs(sharedPoint.scaleY - sharedPoint.scaleX) < 1e-9);
+});
+
+test('GPU preview samples Bezier opacity, color, and size from the shared lifecycle curve', () => {
+  const { project, card } = createFixture();
+  card.useGPU = true;
+  card.emitter.type = 'point';
+  card.emission.mode = 'once';
+  card.particle.lifeMin = 100;
+  card.particle.lifeMax = 100;
+  card.particle.sizeMin = 1;
+  card.particle.sizeMax = 1;
+  card.particle.colorStart = '#000000';
+  card.particle.colorEnd = '#ffffff';
+  card.render.alpha = 100;
+  const configureBezier = (curve, start, end) => {
+    curve.enabled = true;
+    curve.mode = 'bezier';
+    curve.keyframes = [
+      { id: `${curve.id}-start`, time: 0, value: start, out: { x: 88, y: end - start } },
+      { id: `${curve.id}-end`, time: 100, value: end, in: { x: -88, y: 0 } }
+    ];
+  };
+  configureBezier(card.curves.opacity, 100, 20);
+  configureBezier(card.curves.color, 0, 1);
+  configureBezier(card.curves.size.x, 1, 3);
+  configureBezier(card.curves.size.y, 1, 3);
+  const runtime = createGeneratorPreviewRuntime();
+
+  runtime.step(project, 50);
+  const [point] = runtime.snapshot(project);
+  const opacity = sampleLifecycleCurve(card.curves.opacity, 50) / 100;
+  const colorProgress = sampleLifecycleCurve(card.curves.color, 50);
+  const size = sampleLifecycleCurve(card.curves.size.x, 50);
+
+  assert.ok(Math.abs(point.alpha - opacity) < 1e-9);
+  assert.ok(Math.abs(point.r - colorProgress) < 1e-9);
+  assert.ok(Math.abs(point.g - colorProgress) < 1e-9);
+  assert.ok(Math.abs(point.b - colorProgress) < 1e-9);
+  assert.ok(Math.abs(point.scaleX - size) < 1e-9);
+  assert.ok(Math.abs(point.scaleY - size) < 1e-9);
+});
+
+test('disabled color curve previews CPU random color while GPU keeps the left color', () => {
+  const { project, card } = createFixture();
+  card.emitter.type = 'point';
+  card.particle.colorStart = '#000000';
+  card.particle.colorEnd = '#ff0000';
+  card.curves.color.enabled = false;
+  const originalRandom = Math.random;
+  Math.random = () => 0.5;
+  try {
+    const cpuRuntime = createGeneratorPreviewRuntime();
+    cpuRuntime.step(project, 1);
+    const cpuSnapshot = cpuRuntime.snapshotRenderData(project);
+    assert.ok(Math.abs(cpuSnapshot.colors[0] - 0.5) < 1e-6);
+    assert.equal(cpuSnapshot.colors[1], 0);
+    assert.equal(cpuSnapshot.colors[2], 0);
+
+    card.useGPU = true;
+    const gpuRuntime = createGeneratorPreviewRuntime();
+    gpuRuntime.step(project, 1);
+    const gpuSnapshot = gpuRuntime.snapshotRenderData(project);
+    assert.equal(gpuSnapshot.colors[0], 0);
+    assert.equal(gpuSnapshot.colors[1], 0);
+    assert.equal(gpuSnapshot.colors[2], 0);
+  } finally {
+    Math.random = originalRandom;
+  }
+});
+
 test('generator preview applies emitter gravity before movement', () => {
   const { project, card } = createFixture();
   card.emitter.type = 'point';
@@ -74,6 +285,45 @@ test('generator preview applies emitter gravity before movement', () => {
 
   assert.equal(snapshot.count, 1);
   assert.ok(Math.abs(snapshot.positions[1] - 0.75) < 1e-6);
+});
+
+test('generator preview separates CPU queues from shared GPU Commands', () => {
+  const { project, card } = createFixture();
+  card.emitter.type = 'point';
+  card.emitter.offset = { x: 0, y: 0, z: 0 };
+  card.particle.velocity = { x: 0, y: 1, z: 0 };
+  card.particle.velocityRandom = { x: 0, y: 0, z: 0 };
+  card.particle.speedMin = 1;
+  card.particle.speedMax = 1;
+  card.physics.gravity = 0.25;
+  const gpuCard = JSON.parse(JSON.stringify(card));
+  gpuCard.id = 'gpu-preview-emitter';
+  gpuCard.useGPU = true;
+  gpuCard.emitter.offset = { x: 0, y: 10, z: 0 };
+  project.emitters.push(gpuCard);
+  project.commandQueues = [{
+    id: 'cpu-preview-queue',
+    name: 'CPU',
+    signs: [],
+    commands: [{
+      id: 'cpu-add-x', enabled: true, tick: 0, type: 'velocity_add', label: 'CPU X',
+      params: { deltaX: 1, deltaY: 0, deltaZ: 0 }
+    }]
+  }];
+  project.gpuCommands = [{
+    id: 'gpu-gravity', enabled: true, tick: 12, type: 'gravity', label: 'GPU gravity',
+    params: { gravity: 0.5 }
+  }];
+
+  const runtime = createGeneratorPreviewRuntime();
+  runtime.step(project, 1);
+  const snapshot = runtime.snapshotRenderData(project);
+
+  assert.equal(snapshot.count, 2);
+  assert.ok(Math.abs(snapshot.positions[0] - 1) < 1e-6);
+  assert.ok(Math.abs(snapshot.positions[1] - 0.75) < 1e-6);
+  assert.ok(Math.abs(snapshot.positions[3]) < 1e-6);
+  assert.ok(Math.abs(snapshot.positions[4] - 10.5) < 1e-6);
 });
 
 test('generator preview uses the first gravity setting for duplicate data signs', () => {

@@ -49,6 +49,30 @@ test('particle updates never move the preview camera automatically', () => {
   assert.doesNotMatch(updateBufferPoints, /resetCamera|alignCameraToPoints/);
 });
 
+test('face-camera billboard shader keeps separate X/Y scale attributes', () => {
+  assert.match(previewSource, /attribute vec2 pointScale/);
+  assert.match(previewSource, /float spriteExtent = length\(pointScale\)/);
+  assert.match(previewSource, /localUv \*= spriteExtent \/ max\(vPointScale, vec2\(0\.0001\)\)/);
+  assert.match(previewSource, /geometry\.setAttribute\('pointScale', scales\)/);
+  assert.doesNotMatch(previewSource, /sizeArray\[index\] = resolvePointWorldSize/);
+});
+
+test('particle preview applies the configured texture sheet blend state', () => {
+  assert.match(previewSource, /function resolveTextureSheet\(points\)/);
+  assert.match(previewSource, /function applyTextureSheet\(material, textureSheet\)/);
+  assert.match(previewSource, /\.startsWith\('ADDITION_BLEND'/);
+  assert.match(previewSource, /material\.blending = THREE\.CustomBlending/);
+  assert.match(previewSource, /material\.blendDst = bounded \? THREE\.OneMinusSrcColorFactor : THREE\.OneFactor/);
+  assert.match(previewSource, /material\.needsUpdate = true/);
+});
+
+test('free particle rotation uses the API XYZ Euler order', () => {
+  const resolveQuaternion = functionSource('resolveParticleQuaternion', 'resolveAxisBillboardQuaternion');
+
+  assert.match(resolveQuaternion, /new THREE\.Euler\([^\n]+, 'XYZ'\)/);
+  assert.doesNotMatch(resolveQuaternion, /'YXZ'/);
+});
+
 test('reset uses a fixed pose while alignment frames current particles', () => {
   const resetCamera = functionSource('resetCamera', 'alignCameraToPoints');
   const alignCameraToPoints = functionSource('alignCameraToPoints', 'getCameraFocusBounds');

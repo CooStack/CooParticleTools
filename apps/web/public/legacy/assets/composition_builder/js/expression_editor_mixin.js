@@ -1,3 +1,5 @@
+import { compositionVectorApiTypeDeclaration } from "./composition_vector_expression.js?v=20260729_3";
+
 export function installExpressionEditorMethods(CompositionBuilderApp, deps = {}) {
     const {
         int,
@@ -9,7 +11,9 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         findFirstUnknownJsIdentifier,
         JS_LINT_GLOBALS,
         InlineCodeEditor,
-        mergeCompletionGroups
+        mergeCompletionGroups,
+        isCompositionLeafParticleType,
+        isCompositionCardUsingCParticle
     } = deps;
 
     if (!CompositionBuilderApp || !CompositionBuilderApp.prototype) {
@@ -36,9 +40,9 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         if (["Int", "Long", "Float", "Double"].includes(type)) return "number";
         if (type === "Boolean") return "boolean";
         if (type === "String") return "string";
-        if (["Vec3", "Vec3d", "RelativeLocation", "Vector3f"].includes(type)) {
-            return "{ x: number; y: number; z: number; [key: string]: any }";
-        }
+        if (type === "RelativeLocation") return "RelativeLocationValue";
+        if (type === "Vector3f") return "Vector3fValue";
+        if (type === "Vec3" || type === "Vec3d") return "Vec3Value";
         return "any";
     };
 
@@ -326,6 +330,42 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         return String(textarea.dataset.cactField || textarea.dataset.treeNodeCactField || "").trim() === "script";
     }
 
+    resolveCodeEditorParticleType(textarea) {
+        if (!(textarea instanceof HTMLTextAreaElement)) return "";
+        const cardId = String(textarea.dataset.cardId || "").trim();
+        if (!cardId || typeof this.getCardById !== "function") return "";
+        const card = this.getCardById(cardId);
+        if (!card) return "";
+        const cardUsesCParticle = typeof isCompositionCardUsingCParticle === "function"
+            ? isCompositionCardUsingCParticle(card)
+            : card?.dataType === "cparticle";
+        const treePathRaw = String(textarea.dataset.treePath || "").trim();
+        if (treePathRaw && typeof this.getShapeNodeByPath === "function") {
+            try {
+                const node = this.getShapeNodeByPath(card, JSON.parse(treePathRaw));
+                if (node) {
+                    const type = String(node.type || "single");
+                    return typeof isCompositionLeafParticleType !== "function" || isCompositionLeafParticleType(type)
+                        ? (cardUsesCParticle ? "cparticle" : type)
+                        : "";
+                }
+            } catch (_) {
+            }
+        }
+        const type = String(card.dataType || "single");
+        return typeof isCompositionLeafParticleType !== "function" || isCompositionLeafParticleType(type)
+            ? (cardUsesCParticle ? "cparticle" : type)
+            : "";
+    }
+
+    stateUsesCParticleForEditor() {
+        return (this.state?.cards || []).some((card) => (
+            typeof isCompositionCardUsingCParticle === "function"
+                ? isCompositionCardUsingCParticle(card)
+                : card?.dataType === "cparticle"
+        ));
+    }
+
     isScaleHelperAllowedForCodeEditor(textarea) {
         if (!this.hasManualProjectScaleHelper()) return false;
         if (!(textarea instanceof HTMLTextAreaElement)) return false;
@@ -350,6 +390,17 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         return String(projectAlpha.runMode || "auto").trim() === "manual";
     }
 
+    getCParticleAlphaTransitionSnippet() {
+        const projectAlpha = normalizeAlphaHelperConfig(this.state?.projectAlpha, { type: "none" });
+        const floatLiteral = (value, fallback) => {
+            const parsed = Number(value);
+            const number = Number.isFinite(parsed) ? parsed : fallback;
+            return Number.isInteger(number) ? `${number}.0` : String(number);
+        };
+        return `playCParticleAlphaTransition(${floatLiteral(projectAlpha.tick, 20)}, `
+            + `CParticleCurve.linear(${floatLiteral(projectAlpha.min, 0)}, ${floatLiteral(projectAlpha.max, 1)}))`;
+    }
+
     isAlphaHelperAllowedForCodeEditor(textarea) {
         if (!this.hasManualProjectAlphaHelper()) return false;
         if (!(textarea instanceof HTMLTextAreaElement)) return false;
@@ -360,7 +411,7 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
 
     getProjectAlphaHelperCompletionSnippets(textarea = null) {
         if (!this.isAlphaHelperAllowedForCodeEditor(textarea)) return [];
-        return [
+        const snippets = [
             "alphaHelper.increaseAlpha()",
             "alphaHelper.decreaseAlpha()",
             "alphaHelper.resetAlphaMin()",
@@ -371,6 +422,10 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
             "alphaHelper.over()",
             "alphaHelper.isZero()"
         ];
+        if (this.stateUsesCParticleForEditor()) {
+            snippets.push(this.getCParticleAlphaTransitionSnippet());
+        }
+        return snippets;
     }
 
     resolveCodeEditorControllerVars(cardId = "", treePathRaw = "") {
@@ -551,12 +606,49 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         const allowGrowthApi = this.isGrowthApiAllowedForCodeEditor(textarea);
         const allowScaleHelper = this.isScaleHelperAllowedForCodeEditor(textarea);
         const allowAlphaHelper = this.isAlphaHelperAllowedForCodeEditor(textarea);
+        if (isControllerScript && this.resolveCodeEditorParticleType(textarea) === "cparticle") {
+            const unsupported = this.findUnsupportedCParticleControllerEditorIdentifier(source, cardId, treePath);
+            if (unsupported) {
+                return {
+                    valid: false,
+                    message: `表达式存在问题，此表达式不生效 CParticle 控制器不支持 ${unsupported}`
+                };
+            }
+        }
         const result = this.validateJsExpressionSource(source, { cardId, treePath, scope, allowGrowthApi, allowScaleHelper, allowAlphaHelper });
         if (result.valid) return result;
         return {
             valid: false,
             message: `表达式存在问题，此表达式不生效${result.message ? ` ${result.message}` : ""}`
         };
+    }
+
+    findUnsupportedCParticleControllerEditorIdentifier(sourceRaw, cardId = "", treePath = "") {
+        const source = String(sourceRaw || "").replace(
+            /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+            (match) => " ".repeat(match.length)
+        );
+        const particleField = source.match(/\bparticle\s*\.\s*(currentAge|lifetime|lifeTime|maxAge|textureSheet)\b/);
+        if (particleField) return `particle.${particleField[1]}`;
+        const defined = new Set();
+        for (const item of [
+            ...(this.state.globalVars || []),
+            ...(this.state.globalConsts || []),
+            ...this.resolveCodeEditorControllerVars(cardId, treePath)
+        ]) {
+            const name = String(item?.name || "").trim();
+            if (name) defined.add(name);
+        }
+        for (const match of source.matchAll(/\b(?:var|val|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+            defined.add(match[1]);
+        }
+        for (const match of source.matchAll(/\b(?:age|currentAge|lifetime|lifeTime|maxAge|textureSheet|tick|tickCount|index)\b/g)) {
+            const name = match[0];
+            if (defined.has(name)) continue;
+            if (match.index > 0 && source[match.index - 1] === ".") continue;
+            return name;
+        }
+        return "";
     }
 
     buildCodeEditorApiDts(textarea, completions = []) {
@@ -566,7 +658,14 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         const allowGrowthApi = this.isGrowthApiAllowedForCodeEditor(textarea);
         const allowScaleHelper = this.isScaleHelperAllowedForCodeEditor(textarea);
         const allowAlphaHelper = this.isAlphaHelperAllowedForCodeEditor(textarea);
+        const isCParticleController = this.isControllerScriptEditor(textarea)
+            && this.resolveCodeEditorParticleType(textarea) === "cparticle";
         const allowed = this.getJsValidationAllowedIdentifiers({ cardId, treePath, scope, allowGrowthApi, allowScaleHelper, allowAlphaHelper });
+        if (isCParticleController) {
+            for (const name of ["age", "currentAge", "lifetime", "lifeTime", "maxAge", "textureSheet", "tick", "tickCount", "index", "particle"]) {
+                allowed.delete(name);
+            }
+        }
         const declared = new Map();
         const lines = [];
         const declareSymbol = (name, type = "any", mutable = false, opts = {}) => {
@@ -589,24 +688,34 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
   enable(): void;
   [key: string]: any;
 }`;
+        lines.push(compositionVectorApiTypeDeclaration());
+        lines.push("interface RelativeLocationValue extends CompositionVector<RelativeLocationValue> {}");
+        lines.push("interface Vec3Value extends CompositionVector<Vec3Value> {}");
+        lines.push("interface Vector3fValue extends CompositionVector<Vector3fValue> {}");
         declareSymbol("Math", "Math");
         declareSymbol("Random", "{ nextInt(): number; nextInt(until: number): number; nextInt(from: number, until: number): number; nextLong(): number; nextLong(until: number): number; nextLong(from: number, until: number): number; nextDouble(): number; nextDouble(until: number): number; nextDouble(from: number, until: number): number; nextFloat(): number; nextBoolean(): boolean; }");
         declareSymbol("PI", "number");
         // Runtime context values are writable in expression scope; use let to avoid false const diagnostics.
-        declareSymbol("age", "number", true);
-        declareSymbol("tick", "number", true);
-        declareSymbol("tickCount", "number", true);
-        declareSymbol("index", "number", true);
-        declareSymbol("currentAge", "number", true);
-        declareSymbol("lifetime", "number", true);
-        declareSymbol("lifeTime", "number", true);
-        declareSymbol("maxAge", "number", true);
-        declareSymbol("textureSheet", "number", true);
-        declareSymbol("rel", "any", true);
+        if (!isCParticleController) {
+            declareSymbol("age", "number", true);
+            declareSymbol("tick", "number", true);
+            declareSymbol("tickCount", "number", true);
+            declareSymbol("index", "number", true);
+            declareSymbol("currentAge", "number", true);
+            declareSymbol("lifetime", "number", true);
+            declareSymbol("lifeTime", "number", true);
+            declareSymbol("maxAge", "number", true);
+            declareSymbol("textureSheet", "number", true);
+            declareSymbol("particle", "any", true);
+        } else {
+            declareSymbol("pos", "any", false);
+            declareSymbol("velocity", "any", true);
+            declareSymbol("valid", "boolean", false);
+        }
+        declareSymbol("rel", "RelativeLocationValue", true);
         declareSymbol("order", "any", true);
-        declareSymbol("axis", "any", true);
+        declareSymbol("axis", "RelativeLocationValue", true);
         declareSymbol("thisAt", "any", true);
-        declareSymbol("particle", "any", true);
         declareSymbol("status", statusType, false, { keepReadonly: true });
 
         for (const g of (this.state.globalVars || [])) {
@@ -624,31 +733,46 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
             if (!name) continue;
             declareSymbol(name, "any", true);
         }
-        lines.push("declare function rotateToPoint(...args: any[]): any;");
+        lines.push("declare function rotateToPoint(to: RelativeLocationValue): void;");
         lines.push("declare function rotateAsAxis(...args: any[]): any;");
-        lines.push("declare function rotateToWithAngle(...args: any[]): any;");
+        lines.push("declare function rotateToWithAngle(to: RelativeLocationValue, angle: number): void;");
         if (allowGrowthApi) {
             lines.push("declare function addSingle(...args: any[]): any;");
             lines.push("declare function addMultiple(...args: any[]): any;");
         }
         lines.push("declare function addPreTickAction(...args: any[]): any;");
         lines.push("declare function setReversedScaleOnCompositionStatus(...args: any[]): any;");
+        if (isCParticleController) {
+            lines.push("declare function setAlpha(...args: any[]): any;");
+            lines.push("declare function setColor(...args: any[]): any;");
+            lines.push("declare function setSize(...args: any[]): any;");
+            lines.push("declare function teleportTo(...args: any[]): any;");
+        }
         if (allowScaleHelper) {
             lines.push("declare const scaleHelper: { doScale(...args: any[]): any; doScaleReversed(...args: any[]): any; };");
         }
         if (allowAlphaHelper) {
             lines.push("declare const alphaHelper: { increaseAlpha(...args: any[]): any; decreaseAlpha(...args: any[]): any; resetAlphaMin(...args: any[]): any; resetAlphaMax(...args: any[]): any; toggleAlpha(...args: any[]): any; doAlphaTo(...args: any[]): any; getCurrentAlpha(...args: any[]): any; over(...args: any[]): any; isZero(...args: any[]): any; };");
+            if (this.stateUsesCParticleForEditor()) {
+                lines.push("declare const CParticleCurve: { linear(...args: any[]): any; };");
+            }
         }
-        lines.push("declare function RelativeLocation(...args: any[]): any;");
-        lines.push("declare namespace RelativeLocation { function yAxis(...args: any[]): any; }");
+        lines.push("declare function RelativeLocation(vector: CompositionVector<any>): RelativeLocationValue;");
+        lines.push("declare function RelativeLocation(x: number, y: number, z: number): RelativeLocationValue;");
+        lines.push("declare namespace RelativeLocation { function of(vector: CompositionVector<any>): RelativeLocationValue; function of(start: Vec3Value, end: Vec3Value): RelativeLocationValue; function xAxis(): RelativeLocationValue; function yAxis(): RelativeLocationValue; function zAxis(): RelativeLocationValue; function zero(): RelativeLocationValue; }");
         const vectorType = typeof getCompositionKotlinTarget === "function"
             ? getCompositionKotlinTarget(this.state.mapping).vec3Type
             : "Vec3";
-        lines.push(`declare function ${vectorType}(...args: any[]): any;`);
-        lines.push("declare function Vector3f(...args: any[]): any;");
+        lines.push(`declare function ${vectorType}(vector: CompositionVector<any>): Vec3Value;`);
+        lines.push(`declare function ${vectorType}(x: number, y: number, z: number): Vec3Value;`);
+        lines.push(`declare namespace ${vectorType} { const ZERO: Vec3Value; }`);
+        if (vectorType !== "Vec3") lines.push("declare namespace Vec3 { const ZERO: Vec3Value; }");
+        if (vectorType !== "Vec3d") lines.push("declare namespace Vec3d { const ZERO: Vec3Value; }");
+        lines.push("declare function Vector3f(vector: CompositionVector<any>): Vector3fValue;");
+        lines.push("declare function Vector3f(x: number, y: number, z: number): Vector3fValue;");
 
         for (const name of Array.from(allowed).sort((a, b) => a.localeCompare(b))) {
-            declareSymbol(name, "any", false);
+            declareSymbol(name, /^shapeRel\d+$/.test(name) ? "RelativeLocationValue" : "any", false);
         }
         for (const [name, meta] of declared.entries()) {
             lines.push(`declare ${meta.mutable ? "let" : "const"} ${name}: ${meta.type || "any"};`);
@@ -718,6 +842,8 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
 
     getCodeEditorCompletions(textarea) {
         const isControllerScript = this.isControllerScriptEditor(textarea);
+        const isCParticleController = isControllerScript
+            && this.resolveCodeEditorParticleType(textarea) === "cparticle";
         const projectClass = sanitizeKotlinClassName(this.state.projectName || "NewComposition");
         const mappingTarget = typeof getCompositionKotlinTarget === "function"
             ? getCompositionKotlinTarget(this.state.mapping)
@@ -725,7 +851,7 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
         const lifetimeField = particleLifetimeField(this.state);
         const scopeInfo = this.getCodeEditorScopeInfo(textarea);
         const allowGrowthApi = this.isGrowthApiAllowedForCodeEditor(textarea);
-        const base = isControllerScript
+        let base = isControllerScript
             ? [
                 { label: "if (...) { ... }", insertText: "if ($0) {\\n    \\n}", detail: "条件分支", priority: 220 },
                 { label: "addSingle()", insertText: "addSingle()", detail: "生长 API", priority: 230 },
@@ -798,8 +924,24 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
                 { label: "Math.min(a, b)", insertText: "Math.min($0, )", cursorOffset: 11, detail: "数学函数", priority: 180 },
                 { label: "Math.max(a, b)", insertText: "Math.max($0, )", cursorOffset: 11, detail: "数学函数", priority: 180 }
             ];
+        if (isCParticleController) {
+            base = base.filter((item) => {
+                const raw = String(item?.insertText || item?.label || "");
+                return !/^(?:particle\.)?(?:particleAlpha|particleColor|particleSize|age|currentAge|lifetime|lifeTime|maxAge|textureSheet|tick|tickCount|index)\b/i.test(raw)
+                    && !/^(?:color|size)\s*=/i.test(raw);
+            });
+            base.push(
+                { label: "setAlpha(alpha)", insertText: "setAlpha($0)", detail: "CParticle alpha", priority: 260 },
+                { label: "setColor(color)", insertText: "setColor($0)", detail: "CParticle color", priority: 260 },
+                { label: "setSize(size)", insertText: "setSize($0)", detail: "CParticle size", priority: 260 },
+                { label: "teleportTo(pos)", insertText: "teleportTo($0)", detail: "CParticle position", priority: 260 },
+                { label: "pos", detail: "CParticle position", priority: 250 },
+                { label: "velocity", detail: "CParticle velocity", priority: 250 },
+                { label: "valid", detail: "CParticle handle state", priority: 250 }
+            );
+        }
         base.push(...RANDOM_COMPLETION_ITEMS);
-        if (isControllerScript) {
+        if (isControllerScript && !isCParticleController) {
             base.push(
                 { label: "currentAge", insertText: "currentAge", detail: "当前粒子年龄 · Int", kind: "field", priority: 254 },
                 { label: lifetimeField, insertText: lifetimeField, detail: "粒子最大寿命 · Int", kind: "field", priority: 254 },
@@ -883,6 +1025,15 @@ export function installExpressionEditorMethods(CompositionBuilderApp, deps = {})
                     priority: 260
                 }
             );
+            if (this.stateUsesCParticleForEditor()) {
+                const snippet = this.getCParticleAlphaTransitionSnippet();
+                base.push({
+                    label: "playCParticleAlphaTransition(durationTicks, alphaCurve)",
+                    insertText: snippet,
+                    detail: "CParticle alpha transition",
+                    priority: 264
+                });
+            }
         }
         if (!allowGrowthApi) {
             for (let i = base.length - 1; i >= 0; i--) {

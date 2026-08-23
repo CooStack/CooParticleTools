@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>Composition 构建器</title>
-    <link rel="stylesheet" href="./assets/composition_builder/css/style.css?v=20260726_3"/>
+    <link rel="stylesheet" href="./assets/composition_builder/css/style.css?v=20260729_2"/>
     <link rel="stylesheet" href="./assets/shared/css/minecraft-theme.css?v=20260710_2"/>
     <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
 </head>
@@ -24,14 +24,8 @@
                 <button id="btnPageCode" class="btn small">代码</button>
             </div>
             <span class="sep"></span>
-            <button id="btnNewProject" class="btn">新建项目</button>
-            <button id="btnAddCard" class="btn primary">添加卡片</button>
-            <button id="btnUndo" class="btn">撤销</button>
-            <button id="btnRedo" class="btn">重做</button>
             <button id="btnSettings" class="btn">设置</button>
             <button id="btnHotkeys" class="btn">快捷键</button>
-            <button id="btnGenerateCode" class="btn">生成代码</button>
-            <button id="btnCopyCode" class="btn">复制代码</button>
         </div>
     </header>
 
@@ -60,6 +54,7 @@
                     <div id="statusSnapMode" class="badge hidden"></div>
                     <div id="statusSelection" class="badge">选中: 无</div>
                     <div id="statusFps" class="badge">FPS: --</div>
+                    <div id="statusGpu" class="badge">GPU: --</div>
                     <div id="statusCache" class="badge">缓存: --</div>
                 </div>
                 <div class="hud-right">
@@ -97,7 +92,7 @@
                 <div class="preview-actions">
                     <button id="btnGenerateCode2" class="btn small primary">重新生成</button>
                     <button id="btnCopyCode2" class="btn small">复制</button>
-                    <button id="btnDownloadCode" class="btn small">下载 .kt</button>
+                    <button id="btnDownloadCode" class="btn small">导出 Kotlin 代码</button>
                 </div>
             </div>
             <pre id="kotlinOut" class="code code-highlight" aria-readonly="true"></pre>
@@ -395,6 +390,6 @@
   }
 }
 </script>
-<script type="module" src="./assets/src/js/pages/composition-builder.page.js?v=20260726_3"></script>
+<script type="module" src="./assets/src/js/pages/composition-builder.page.js?v=20260815_2"></script>
 </body>
 </html>

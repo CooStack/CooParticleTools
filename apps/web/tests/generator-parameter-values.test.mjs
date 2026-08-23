@@ -8,7 +8,8 @@ import {
   createGeneratorProject,
   countDuplicateEmitterSigns,
   normalizeCollisionTargets,
-  normalizeGeneratorProject
+  normalizeGeneratorProject,
+  TEXTURE_SHEET_OPTIONS
 } from '../src/modules/generator/defaults.js';
 import { generateEmitterKotlin } from '../src/modules/generator/codegen.js';
 import {
@@ -46,9 +47,114 @@ test('default generator schema and Kotlin output remain byte-stable after normal
   const project = createGeneratorProject();
   const kotlin = generateEmitterKotlin(project);
 
-  assert.equal(project.schemaVersion, 7);
+  assert.equal(project.schemaVersion, 12);
   assert.equal(generateEmitterKotlin(normalizeGeneratorProject(project)), kotlin);
-  assert.equal(sha256(kotlin), 'dead31fdb7a9cd6224e8ffe1ea39d40f6359a7364755652c76e3a9335698259e');
+  assert.equal(sha256(kotlin), 'bcd96c430e7c098da6728e078439dcef725fe1fb44b865464411308b5515c144');
+});
+
+test('single emission uses the emitter lifecycle instead of a Tick 0 guard', () => {
+  const project = createGeneratorProject();
+  project.emitters[0].emission.mode = 'once';
+
+  const kotlin = generateEmitterKotlin(project);
+
+  assert.match(kotlin, /delay = 1\n\s*maxTick = 1/);
+  assert.doesNotMatch(kotlin, /maxTick = -1/);
+  assert.doesNotMatch(kotlin, /tick == 0/);
+});
+
+test('single emission keeps its Tick guard when another card still needs the shared lifecycle', () => {
+  const project = createGeneratorProject();
+  project.emitters[0].emission.mode = 'once';
+  project.emitters.push(createEmitterCard({ id: 'continuous-emitter' }));
+
+  const kotlin = generateEmitterKotlin(project);
+
+  assert.match(kotlin, /maxTick = -1/);
+  assert.match(kotlin, /tick == 0/);
+});
+
+test('delayed single emission stops after the first reachable parent interval', () => {
+  const project = createGeneratorProject();
+  project.rootLifecycle.intervalTick = 5;
+  project.emitters[0].emission.mode = 'once';
+  project.emitters[0].emission.startTick = 2;
+
+  const kotlin = generateEmitterKotlin(project);
+
+  assert.match(kotlin, /delay = 5\n\s*maxTick = 6/);
+  assert.match(kotlin, /tick == 5/);
+  assert.doesNotMatch(kotlin, /maxTick = -1/);
+});
+
+test('mixed continuous lifecycle keeps a delayed single emission on a reachable parent interval', () => {
+  const project = createGeneratorProject();
+  project.rootLifecycle.intervalTick = 5;
+  project.emitters[0].emission.mode = 'once';
+  project.emitters[0].emission.startTick = 2;
+  project.emitters.push(createEmitterCard({ id: 'continuous-emitter' }));
+
+  const kotlin = generateEmitterKotlin(project);
+
+  assert.match(kotlin, /maxTick = -1/);
+  assert.match(kotlin, /tick == 5/);
+});
+
+test('bounded interval lifecycle keeps a delayed single emission on a reachable parent interval', () => {
+  const project = createGeneratorProject();
+  project.rootLifecycle.mode = 'interval_n_tick';
+  project.rootLifecycle.intervalTick = 5;
+  project.rootLifecycle.maxTick = 20;
+  project.emitters[0].emission.mode = 'once';
+  project.emitters[0].emission.startTick = 2;
+
+  const kotlin = generateEmitterKotlin(project);
+
+  assert.match(kotlin, /maxTick = 20/);
+  assert.match(kotlin, /tick == 5/);
+});
+
+test('single emission does not escape its end tick when no parent interval is reachable', () => {
+  const project = createGeneratorProject();
+  project.rootLifecycle.intervalTick = 5;
+  project.emitters[0].emission.mode = 'once';
+  project.emitters[0].emission.startTick = 2;
+  project.emitters[0].emission.endTick = 3;
+
+  const kotlin = generateEmitterKotlin(project);
+
+  assert.match(kotlin, /maxTick = 1/);
+  assert.match(kotlin, /if \(false\) \{/);
+  assert.doesNotMatch(kotlin, /tick == 5/);
+});
+
+test('explicit bounded root lifecycle is not shortened by a single card', () => {
+  const project = createGeneratorProject();
+  project.rootLifecycle.mode = 'interval_n_tick';
+  project.rootLifecycle.maxTick = 20;
+  project.emitters[0].emission.mode = 'once';
+
+  const kotlin = generateEmitterKotlin(project);
+
+  assert.match(kotlin, /maxTick = 20/);
+  assert.match(kotlin, /tick == 0/);
+});
+
+test('emitter exposes and emits every NOT_HDR texture sheet', () => {
+  const notHdrSheets = [
+    'ADDITION_BLEND_NOT_HDR',
+    'ADDITION_BLEND_NOT_HDR_NO_DEPTH_WRITE',
+    'ADDITION_BLEND_TRANSLUCENT_NOT_HDR',
+    'ADDITION_BLEND_TRANSLUCENT_NOT_HDR_NO_DEPTH_WRITE'
+  ];
+  const optionIds = new Set(TEXTURE_SHEET_OPTIONS.map((option) => option.id));
+
+  for (const sheet of notHdrSheets) {
+    assert.equal(optionIds.has(sheet), true);
+    const project = createGeneratorProject();
+    project.emitters[0].render.textureSheet = sheet;
+    assert.ok(generateEmitterKotlin(project).includes(`setTextureSheet(TextureSheetsEnum.${sheet})`));
+  }
 });
 
 test('representative typed bindings keep Kotlin output byte-stable', () => {
@@ -80,7 +186,24 @@ test('representative typed bindings keep Kotlin output byte-stable', () => {
     'render.textureSheet': 'textureValue'
   });
 
-  assert.equal(sha256(generateEmitterKotlin(project)), '496424a51a4f2917a800ecf261ef3d25f96d1fcf1c08296c002c6dcbb710ae76');
+  assert.equal(sha256(generateEmitterKotlin(project)), '55f7d1d72bc2fb822af77684e861981e939a613a967077d680780d896479a5b7');
+});
+
+test('generator drops unsupported emitter Z scale state and Kotlin output', () => {
+  const raw = createGeneratorProject();
+  raw.schemaVersion = 9;
+  raw.emitters[0].render.baseScale = { x: 1.25, y: 0.75, z: 6 };
+  raw.emitters[0].curves.size.z = raw.emitters[0].curves.size.x;
+  raw.emitters[0].bindings['render.baseScale.z'] = 'legacyDepth';
+  raw.emitters[0].bindingModes = { 'render.baseScale.z': 'independent' };
+  raw.emitters[0].render.billboardMode = 'none';
+  const project = normalizeGeneratorProject(raw);
+
+  assert.deepEqual(project.emitters[0].render.baseScale, { x: 1.25, y: 0.75 });
+  assert.equal(Object.hasOwn(project.emitters[0].curves.size, 'z'), false);
+  assert.equal(Object.hasOwn(project.emitters[0].bindings, 'render.baseScale.z'), false);
+  assert.equal(Object.hasOwn(project.emitters[0].bindingModes, 'render.baseScale.z'), false);
+  assert.doesNotMatch(generateEmitterKotlin(project), /depthSize|SizeZ/);
 });
 
 test('generator emits Yarn symbols and initializes API particle state correctly', () => {
@@ -98,6 +221,10 @@ test('generator emits Yarn symbols and initializes API particle state correctly'
     }
   });
   project.emitters[0].render.billboardMode = 'none';
+  project.emitters[0].curves.opacity.enabled = true;
+  project.emitters[0].curves.rotation.roll.enabled = true;
+  project.emitters[0].curves.rotation.yaw.enabled = true;
+  project.emitters[0].curves.rotation.pitch.enabled = true;
   const kotlin = generateEmitterKotlin(project);
 
   assert.match(kotlin, /import net\.minecraft\.world\.World/);
@@ -127,6 +254,7 @@ test('generator initializes particle alpha from the opacity curve first frame', 
   const card = project.emitters[0];
   const opacity = card.curves.opacity;
   card.render.alpha = 50;
+  opacity.enabled = true;
   opacity.mode = 'linear';
   opacity.keyframes[0].value = 40;
   opacity.keyframes[1].value = 100;
@@ -146,6 +274,7 @@ test('generator combines bound alpha with the opacity first frame without multip
   });
   const card = project.emitters[0];
   card.bindings['render.alpha'] = 'alphaValue';
+  card.curves.opacity.enabled = true;
   card.curves.opacity.mode = 'linear';
   card.curves.opacity.keyframes[0].value = 40;
   card.curves.opacity.keyframes[1].value = 100;
@@ -157,6 +286,81 @@ test('generator combines bound alpha with the opacity first frame without multip
   assert.match(kotlin, /emitter1Opacity = KeyframeFloatCurve\(listOf\(FloatKeyframe\(0\.0, 0\.4\), FloatKeyframe\(1\.0, 1\.0\)\)\)/);
   assert.match(kotlin, /this\.particleAlpha = \(emitter1BaseAlpha \* emitter1Opacity\.sample\(lifeProgress\)\)/);
   assert.doesNotMatch(kotlin, /data\.alpha \* emitter1Opacity/);
+});
+
+test('lifecycle curves are opt-in and only enabled curves emit tick assignments', () => {
+  const project = createGeneratorProject();
+  const card = project.emitters[0];
+  const defaultKotlin = generateEmitterKotlin(project);
+
+  assert.equal(card.curves.size.x.enabled, false);
+  assert.equal(card.curves.size.y.enabled, false);
+  assert.equal(card.curves.light.enabled, false);
+  assert.equal(card.curves.opacity.enabled, false);
+  assert.equal(card.curves.rotation.roll.enabled, false);
+  assert.equal(card.curves.color.enabled, false);
+  assert.doesNotMatch(defaultKotlin, /private val emitter1(?:SizeX|SizeY|Light|Opacity|Roll|Yaw|Pitch|ColorProgress)/);
+  assert.doesNotMatch(defaultKotlin, /this\.(?:weightSize|heightSize|size|particleAlpha|light|currentRoll|currentYaw|currentPitch) = .*\.sample\(lifeProgress\)/);
+  assert.doesNotMatch(defaultKotlin, /particleSize \* template1\.(?:weightSize|heightSize)\)\.toFloat\(\)/);
+
+  card.render.billboardMode = 'none';
+  card.curves.size.x.enabled = true;
+  card.curves.light.enabled = true;
+  card.curves.opacity.enabled = true;
+  card.curves.rotation.roll.enabled = true;
+  card.curves.color.enabled = true;
+  const enabledKotlin = generateEmitterKotlin(project);
+
+  assert.match(enabledKotlin, /private val emitter1SizeX =/);
+  assert.match(enabledKotlin, /private val emitter1Light =/);
+  assert.match(enabledKotlin, /private val emitter1Opacity =/);
+  assert.match(enabledKotlin, /private val emitter1Roll =/);
+  assert.match(enabledKotlin, /private val emitter1ColorProgress =/);
+  assert.match(enabledKotlin, /getInterpolatedColor\(emitter1ColorProgress\.sample\(lifeProgress\)\.toDouble\(\)\.coerceIn\(0\.0, 1\.0\)\)/);
+  assert.doesNotMatch(enabledKotlin, /private val emitter1(?:SizeY|Yaw|Pitch) =/);
+});
+
+test('schema 10 migration only enables lifecycle curves that differ from their defaults', () => {
+  const raw = createGeneratorProject();
+  raw.schemaVersion = 10;
+  delete raw.emitters[0].curves.size.x.enabled;
+  delete raw.emitters[0].curves.size.y.enabled;
+  raw.emitters[0].curves.brightness = raw.emitters[0].curves.light;
+  delete raw.emitters[0].curves.light;
+  delete raw.emitters[0].curves.brightness.enabled;
+  raw.emitters[0].curves.brightness.keyframes[1].value = 3;
+  delete raw.emitters[0].curves.opacity.enabled;
+  delete raw.emitters[0].curves.rotation.roll.enabled;
+  delete raw.emitters[0].curves.color;
+
+  const migrated = normalizeGeneratorProject(raw);
+  const card = migrated.emitters[0];
+
+  assert.equal(migrated.schemaVersion, 12);
+  assert.equal(card.curves.size.x.enabled, false);
+  assert.equal(card.curves.size.y.enabled, false);
+  assert.equal(card.curves.light.enabled, true);
+  assert.equal(card.curves.opacity.enabled, false);
+  assert.equal(card.curves.rotation.roll.enabled, false);
+  assert.equal(card.curves.color.enabled, false);
+  assert.equal(Object.hasOwn(card.curves, 'brightness'), false);
+  assert.equal(Object.hasOwn(card.particle, 'colorOverLifeEnabled'), false);
+});
+
+test('schema 7 migration preserves the legacy lifecycle color toggle', () => {
+  const enabledRaw = createGeneratorProject();
+  enabledRaw.schemaVersion = 7;
+  delete enabledRaw.emitters[0].curves.color;
+  enabledRaw.emitters[0].particle.colorOverLifeEnabled = true;
+
+  const disabledRaw = JSON.parse(JSON.stringify(enabledRaw));
+  disabledRaw.emitters[0].particle.colorOverLifeEnabled = false;
+
+  assert.equal(normalizeGeneratorProject(enabledRaw).emitters[0].curves.color.enabled, true);
+  assert.equal(normalizeGeneratorProject(disabledRaw).emitters[0].curves.color.enabled, false);
+
+  delete enabledRaw.emitters[0].particle.colorOverLifeEnabled;
+  assert.equal(normalizeGeneratorProject(enabledRaw).emitters[0].curves.color.enabled, true);
 });
 
 test('opacity curve migration is idempotent for current projects', () => {
@@ -454,7 +658,16 @@ test('generator bindings keep the first variable before later variables and cons
     resolver.resolve(bindings, 'particle.countMin', 'Int'),
     { status: 'resolved', name: 'sharedValue', value: firstVariable, type: 'Int' }
   );
-  assert.equal(resolver.resolve(bindings, 'particle.countMin', 'Double').status, 'type_mismatch');
+  assert.deepEqual(
+    resolver.resolve(bindings, 'particle.countMin', 'Double'),
+    {
+      status: 'resolved',
+      name: 'sharedValue',
+      value: firstVariable,
+      type: 'Int',
+      kotlin: '(sharedValue).toDouble()'
+    }
+  );
 
   const project = createGeneratorProject({
     parameters: {
@@ -552,7 +765,7 @@ test('generator value names reject invalid characters and numeric prefixes', () 
   assert.equal(normalized.parameters.constants[0].name, 'valid_name');
 });
 
-test('generator binding suggestions use exact target types', () => {
+test('generator binding suggestions allow Int values in Double targets', () => {
   const values = [
     { name: 'i', type: 'Int' },
     { name: 'd', type: 'Double' },
@@ -561,14 +774,14 @@ test('generator binding suggestions use exact target types', () => {
     { name: 'c', type: 'Vector3f' }
   ];
   assert.deepEqual(filterGeneratorBindingsByType(values, 'int').map((item) => item.name), ['i']);
-  assert.deepEqual(filterGeneratorBindingsByType(values, 'number').map((item) => item.name), ['d']);
+  assert.deepEqual(filterGeneratorBindingsByType(values, 'number').map((item) => item.name), ['i', 'd']);
   assert.deepEqual(filterGeneratorBindingsByType(values, 'vec3').map((item) => item.name), ['v']);
   assert.deepEqual(filterGeneratorBindingsByType(values, 'relative').map((item) => item.name), ['r']);
   assert.deepEqual(filterGeneratorBindingsByType(values, 'color').map((item) => item.name), ['c']);
   assert.deepEqual(filterGeneratorBindingsByType(values, 'float').map((item) => item.name), []);
 });
 
-test('generator Kotlin ignores incompatible bindings and preserves exact types', () => {
+test('generator Kotlin widens Int bindings to Double and preserves other exact types', () => {
   const project = normalizeGeneratorProject({
     parameters: {
       variables: [
@@ -588,7 +801,7 @@ test('generator Kotlin ignores incompatible bindings and preserves exact types',
 
   const kotlin = generateEmitterKotlin(project);
   assert.doesNotMatch(kotlin, /minCount = radiusValue/);
-  assert.doesNotMatch(kotlin, /val rr = countValue/);
+  assert.match(kotlin, /val rr = \(countValue\)\.toDouble\(\)/);
   assert.match(kotlin, /weightSize = scaleValue/);
   assert.match(kotlin, /offsetValue/);
 });
@@ -750,6 +963,7 @@ test('generator externalizes shared emitter data and templates as codec fields',
   const first = project.emitters[0];
   first.externalData = true;
   first.externalTemplate = true;
+  first.curves.opacity.enabled = true;
   first.vars = { data: 'sharedData', template: 'sharedTemplate' };
   const second = JSON.parse(JSON.stringify(first));
   second.id = 'second-emitter';
@@ -764,7 +978,8 @@ test('generator externalizes shared emitter data and templates as codec fields',
   assert.doesNotMatch(kotlin, /val data[12] = SimpleRandomParticleData/);
   assert.doesNotMatch(kotlin, /val template[12] = ControlableParticleData/);
   assert.match(kotlin, /val baseDir = sharedTemplate\.velocity\.add\(velocityJitter\)/);
-  assert.match(kotlin, /weightSize = \(particleSize \* sharedTemplate\.weightSize\)\.toFloat\(\)/);
+  assert.match(kotlin, /weightSize = particleSize \* sharedTemplate\.weightSize/);
+  assert.doesNotMatch(kotlin, /weightSize = \(particleSize \* sharedTemplate\.weightSize\)\.toFloat\(\)/);
   assert.equal((kotlin.match(/^\s*sharedTemplate\.sign -> \{/gm) || []).length, 1);
 });
 
@@ -823,11 +1038,12 @@ test('generator emitter object names avoid generated and local members', () => {
 
 test('generator uses SimpleRandomParticleData color interpolation helpers', () => {
   const project = createGeneratorProject();
+  project.emitters[0].curves.color.enabled = true;
   const kotlin = generateEmitterKotlin(project);
 
   assert.match(kotlin, /leftColor = Vector3f\(/);
   assert.match(kotlin, /rightColor = Vector3f\(/);
-  assert.match(kotlin, /this\.color = data1\.getInterpolatedColor\(lifeProgress\)/);
+  assert.match(kotlin, /this\.color = data1\.getInterpolatedColor\(emitter1ColorProgress\.sample\(lifeProgress\)\.toDouble\(\)\.coerceIn\(0\.0, 1\.0\)\)/);
   assert.doesNotMatch(kotlin, /startColor\.x \+ \(endColor\.x - startColor\.x\)/);
 
   const source = readFileSync(new URL('../src/pages/GeneratorPage.vue', import.meta.url), 'utf8');

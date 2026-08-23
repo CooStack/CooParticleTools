@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { clamp, lerp, rand, randInt } from "./utils.js";
 import { normalizeEmitterBehavior } from "./emitter_behavior.js";
-import { normalizeBuilderState, evaluateBuilderState } from "./points_builder_bridge.js";
+import { normalizeBuilderState, evaluateBuilderState } from "./points_builder_bridge.js?v=20260820_2";
 import { createDoTickRuntimeScope } from "./do_tick_expression.js";
 import { sampleFloatCurve } from "./command_curve.js";
 import { createMotionEditorRuntime } from "./motion_editor_preview.js";

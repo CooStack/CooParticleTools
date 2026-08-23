@@ -3,7 +3,19 @@ export const COMPOSITION_PRESET_KIND = "coo-composition-preset";
 export const COMPOSITION_PRESET_CATEGORIES = Object.freeze(["cards", "nodes", "shared"]);
 export const COMPOSITION_PRESET_SECTIONS = Object.freeze(["position", "particle", "properties"]);
 
-const DATA_TYPES = new Set(["single", "particle_shape", "sequenced_shape"]);
+const DATA_TYPES = new Set(["single", "cparticle", "particle_shape", "sequenced_shape"]);
+const PARTICLE_BACKENDS = new Set(["single", "cparticle"]);
+const CPARTICLE_RENDER_LAYERS = new Set([
+    "OPAQUE",
+    "TRANSLUCENT",
+    "ADDITION_BLEND",
+    "ADDITION_BLEND_NOT_HDR",
+    "ADDITION_BLEND_NOT_HDR_NO_DEPTH_WRITE",
+    "ADDITION_BLEND_TRANSLUCENT",
+    "ADDITION_BLEND_TRANSLUCENT_NOT_HDR",
+    "ADDITION_BLEND_TRANSLUCENT_NOT_HDR_NO_DEPTH_WRITE",
+    "ADDITION_BLEND_TRANSLUCENT_NO_DEPTH_WRITE"
+]);
 const SOURCE_KINDS = new Set(["card", "node"]);
 const CONTROLLER_ACTION_TYPES = new Set(["tick_js"]);
 const CONTROLLER_VARIABLE_TYPES = new Set([
@@ -23,6 +35,7 @@ const MAX_PRESET_NAME_LENGTH = 80;
 const MAX_PRESET_DESCRIPTION_LENGTH = 240;
 const MAX_PRESET_DEPTH = 16;
 const MAX_TREE_PATH_LENGTH = 64;
+const isCParticleOwnerType = (type) => type === "particle_shape" || type === "sequenced_shape";
 
 const AXIS_FIELDS = Object.freeze([
     "preset", "expr", "manualCtor", "manualX", "manualY", "manualZ"
@@ -238,6 +251,10 @@ function readTargetChildren(target, targetKind) {
     return Array.isArray(children) ? children : [];
 }
 
+function isLeafParticleType(type) {
+    return type === "single" || type === "cparticle";
+}
+
 function captureAxis(target, targetKind) {
     const prefix = targetKind === "card" ? "shapeAxis" : "axis";
     return {
@@ -274,8 +291,19 @@ function captureCanonicalTarget(target, targetKind, depth = 0) {
             position,
             particle: {
                 dataType,
+                particleBackend: targetKind === "card" && dataType === "single" && target?.particleBackend === "cparticle"
+                    ? "cparticle"
+                    : "single",
                 effectClass: String(effectClass || ""),
                 useTexture: useTexture !== false,
+                useCParticle: targetKind === "card"
+                    && isCParticleOwnerType(dataType)
+                    && target?.useCParticle === true,
+                cparticleRenderLayer: CPARTICLE_RENDER_LAYERS.has(String(target?.cparticleRenderLayer || ""))
+                    ? String(target.cparticleRenderLayer)
+                    : "ADDITION_BLEND_TRANSLUCENT",
+                randomAgePreTick: target?.randomAgePreTick === true,
+                cparticleAlpha: cloneJson(target?.cparticleAlpha || {}),
                 axis: captureAxis(target, targetKind),
                 children: readTargetChildren(target, targetKind)
                     .map((child) => captureCanonicalTarget(child, "node", depth + 1))
@@ -489,18 +517,51 @@ function validateCanonicalTarget(value, path, depth) {
     }
     validatePosition(value.sections.position, `${path}.sections.position`);
     const particle = value.sections.particle;
-    assertAllowedKeys(particle, new Set(["dataType", "effectClass", "useTexture", "axis", "children"]), `${path}.sections.particle`);
+    assertAllowedKeys(particle, new Set(["dataType", "particleBackend", "effectClass", "useTexture", "useCParticle", "cparticleRenderLayer", "randomAgePreTick", "randomInitialAge", "cparticleAlpha", "axis", "children"]), `${path}.sections.particle`);
     if (!DATA_TYPES.has(particle.dataType)) throw new Error(`${path}.sections.particle.dataType 无效。`);
+    if (particle.particleBackend !== undefined && !PARTICLE_BACKENDS.has(particle.particleBackend)) {
+        throw new Error(`${path}.sections.particle.particleBackend 无效。`);
+    }
     if (typeof particle.effectClass !== "string" || particle.effectClass.length > 256) {
         throw new Error(`${path}.sections.particle.effectClass 无效。`);
     }
     if (typeof particle.useTexture !== "boolean") throw new Error(`${path}.sections.particle.useTexture 必须是布尔值。`);
+    if (particle.useCParticle !== undefined && typeof particle.useCParticle !== "boolean") {
+        throw new Error(`${path}.sections.particle.useCParticle 必须是布尔值。`);
+    }
+    if (particle.cparticleRenderLayer !== undefined && !CPARTICLE_RENDER_LAYERS.has(particle.cparticleRenderLayer)) {
+        throw new Error(`${path}.sections.particle.cparticleRenderLayer 无效。`);
+    }
+    if (particle.randomAgePreTick !== undefined && typeof particle.randomAgePreTick !== "boolean") {
+        throw new Error(`${path}.sections.particle.randomAgePreTick 必须是布尔值。`);
+    }
+    if (particle.randomInitialAge !== undefined && typeof particle.randomInitialAge !== "boolean") {
+        throw new Error(`${path}.sections.particle.randomInitialAge 必须是布尔值。`);
+    }
+    if (particle.cparticleAlpha !== undefined) {
+        assertPlainObject(particle.cparticleAlpha, `${path}.sections.particle.cparticleAlpha`);
+        assertAllowedKeys(particle.cparticleAlpha, new Set(["fadeIn", "fadeOut"]), `${path}.sections.particle.cparticleAlpha`);
+        for (const phase of ["fadeIn", "fadeOut"]) {
+            if (particle.cparticleAlpha[phase] === undefined) continue;
+            const fade = particle.cparticleAlpha[phase];
+            assertPlainObject(fade, `${path}.sections.particle.cparticleAlpha.${phase}`);
+            assertAllowedKeys(fade, new Set(["enabled", "durationTicks", "fromAlpha", "toAlpha"]), `${path}.sections.particle.cparticleAlpha.${phase}`);
+            if (fade.enabled !== undefined && typeof fade.enabled !== "boolean") {
+                throw new Error(`${path}.sections.particle.cparticleAlpha.${phase}.enabled 必须是布尔值。`);
+            }
+            for (const field of ["durationTicks", "fromAlpha", "toAlpha"]) {
+                if (fade[field] !== undefined && !Number.isFinite(Number(fade[field]))) {
+                    throw new Error(`${path}.sections.particle.cparticleAlpha.${phase}.${field} 必须是数字。`);
+                }
+            }
+        }
+    }
     validateAxis(particle.axis, `${path}.sections.particle.axis`);
     if (!Array.isArray(particle.children) || particle.children.length > 512) {
         throw new Error(`${path}.sections.particle.children 无效。`);
     }
-    if (particle.dataType === "single" && particle.children.length) {
-        throw new Error(`${path}.sections.particle.children 与 single 类型不兼容。`);
+    if (isLeafParticleType(particle.dataType) && particle.children.length) {
+        throw new Error(`${path}.sections.particle.children 与 ${particle.dataType} 类型不兼容。`);
     }
     particle.children.forEach((child, index) => validateCanonicalTarget(child, `${path}.sections.particle.children[${index}]`, depth + 1));
     validateProperties(value.sections.properties, `${path}.sections.properties`);
@@ -582,15 +643,29 @@ function applyCanonicalTarget(target, canonical, targetKind, selected, depth = 0
     }
 
     if (selected.has("particle")) {
+        const legacyCParticle = particle.dataType === "cparticle";
         if (targetKind === "card") {
-            next.dataType = particle.dataType;
+            next.dataType = legacyCParticle ? "single" : particle.dataType;
+            next.particleBackend = next.dataType === "single"
+                ? (legacyCParticle || particle.particleBackend === "cparticle" ? "cparticle" : "single")
+                : "single";
+            next.globalCParticleAuto = false;
             next.singleEffectClass = particle.effectClass;
             next.singleUseTexture = particle.useTexture;
+            next.useCParticle = isCParticleOwnerType(next.dataType) && particle.useCParticle === true;
+            next.cparticleRenderLayer = particle.cparticleRenderLayer || "ADDITION_BLEND_TRANSLUCENT";
+            next.randomAgePreTick = particle.randomAgePreTick === true;
+            next.cparticleAlpha = cloneJson(particle.cparticleAlpha || {});
         } else {
-            next.type = particle.dataType;
+            next.type = legacyCParticle ? "single" : particle.dataType;
             next.effectClass = particle.effectClass;
             next.useTexture = particle.useTexture;
+            next.useCParticle = false;
+            next.cparticleRenderLayer = particle.cparticleRenderLayer || "ADDITION_BLEND_TRANSLUCENT";
+            next.randomAgePreTick = particle.randomAgePreTick === true;
+            next.cparticleAlpha = cloneJson(particle.cparticleAlpha || {});
         }
+        delete next.randomInitialAge;
         applyAxis(next, particle.axis, targetKind);
     }
 
@@ -626,6 +701,11 @@ function applyCanonicalTarget(target, canonical, targetKind, selected, depth = 0
         else children[index] = child;
     }
     next[key] = children;
+    if (targetKind === "card") {
+        next.useCParticle = isCParticleOwnerType(next.dataType) && next.useCParticle === true;
+    } else {
+        next.useCParticle = false;
+    }
     return next;
 }
 

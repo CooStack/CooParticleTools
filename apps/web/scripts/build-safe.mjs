@@ -18,7 +18,7 @@ async function removeTempDir() {
 async function runViteBuild(extraArgs = []) {
   const vitePkgPath = require.resolve('vite/package.json');
   const viteBin = path.join(path.dirname(vitePkgPath), 'bin', 'vite.js');
-  const args = [viteBin, 'build', '--outDir', tempDir, '--emptyOutDir', 'true', ...extraArgs];
+  const args = [viteBin, 'build', '--outDir', tempDir, '--emptyOutDir', ...extraArgs];
 
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, {

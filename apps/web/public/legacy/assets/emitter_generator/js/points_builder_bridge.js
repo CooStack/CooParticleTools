@@ -1,13 +1,10 @@
-import { createKindDefs } from "../../points_builder/js/kinds.js";
+import { createKindDefs } from "../../points_builder/js/kinds.js?v=20260820_2";
 import { createBuilderTools } from "../../points_builder/js/builder.js";
+import { normalizePointsBuilderState } from "../../points_builder/js/model.js?v=20260820_2";
 
 const U = globalThis.Utils;
 if (!U) {
     throw new Error("Utils not found: load assets/src/js/compat/install-legacy-globals.js before using points builder bridge");
-}
-
-function deepClone(value) {
-    return JSON.parse(JSON.stringify(value));
 }
 
 function num(v) {
@@ -72,23 +69,9 @@ export function createDefaultBuilderState() {
 }
 
 export function normalizeBuilderState(raw) {
-    const base = createDefaultBuilderState();
-    if (!raw || typeof raw !== "object") return base;
-
-    if (raw.root && Array.isArray(raw.root.children)) {
-        return { root: { id: "root", kind: "ROOT", children: deepClone(raw.root.children) } };
-    }
-    if (raw.state && raw.state.root && Array.isArray(raw.state.root.children)) {
-        return { root: { id: "root", kind: "ROOT", children: deepClone(raw.state.root.children) } };
-    }
-    if (Array.isArray(raw.children)) {
-        return { root: { id: "root", kind: "ROOT", children: deepClone(raw.children) } };
-    }
-    if (Array.isArray(raw)) {
-        return { root: { id: "root", kind: "ROOT", children: deepClone(raw) } };
-    }
-
-    return base;
+    const normalized = normalizePointsBuilderState(raw);
+    if (normalized?.root && Array.isArray(normalized.root.children)) return normalized;
+    return createDefaultBuilderState();
 }
 
 export function countBuilderNodes(list) {

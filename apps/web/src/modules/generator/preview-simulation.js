@@ -8,7 +8,8 @@ import {
   executeGeneratorDoTick,
   createGeneratorExpressionScope
 } from './expression-runtime.js';
-import { sampleLifecycleCurve } from './curves.js';
+import { sampleBezierSegment, sampleLifecycleCurve } from './curves.js';
+import { CPARTICLE_COMMAND_TYPE_IDS } from './defaults.js';
 
 const MAX_SIM_PARTICLES = 65536;
 const MAX_PREWARM_VISUAL_SAMPLES = 16384;
@@ -186,7 +187,7 @@ function resolveEmitterCard(project, card, resolver, index = 0) {
     render: {
       ...render,
       axis: resolveVectorPath(resolver, card, 'render.axis', render.axis, ['Vec3']),
-      baseScale: resolveVectorPath(resolver, card, 'render.baseScale', render.baseScale, ['Vec3'], 'Float'),
+      baseScale: resolvePlanarScalePath(resolver, card, 'render.baseScale', render.baseScale),
       alpha: resolveNumberPath(resolver, card, 'render.alpha', render.alpha, 100),
       light: resolveNumberPath(resolver, card, 'render.light', render.light, 15, 'Int'),
       roll: resolveNumberPath(resolver, card, 'render.roll', render.roll, 0),
@@ -300,6 +301,11 @@ function resolveBindingValue(resolver, card, path, expectedTypes) {
   return { name: binding.name, value: binding.value, type: binding.type };
 }
 
+function resolvePlanarScalePath(resolver, card, path, value = {}) {
+  const resolved = resolveVectorPath(resolver, card, path, value, ['Vec3'], 'Float');
+  return { x: resolved.x, y: resolved.y };
+}
+
 function isNumericType(type) {
   return ['Int', 'Long', 'Float', 'Double'].includes(String(type || ''));
 }
@@ -410,7 +416,10 @@ export function createGeneratorPreviewRuntime() {
       })
     });
     const emitters = (Array.isArray(project.emitters) ? project.emitters : [])
-      .map((card, index) => resolveEmitterCard(project, card, resolver, index));
+      .map((card, index) => ({
+        ...resolveEmitterCard(project, card, resolver, index),
+        cparticleEnabled: card?.useGPU === true
+      }));
     const emitterById = new Map(emitters.map((card) => [String(card.id || ''), card]));
     const birthContextsByEmitter = new Map();
     const birthContextFor = (card) => {
@@ -462,13 +471,17 @@ export function createGeneratorPreviewRuntime() {
     }
 
     const queues = collectCommandQueues(project.commandQueues);
-    const gravityBySign = collectEmitterGravityBySign(emitters);
-    const hasCommands = queues.length > 0;
+    const gpuQueues = collectGpuCommands(project.gpuCommands);
+    const gravityBySign = collectEmitterGravityBySign(emitters.filter((card) => !card.cparticleEnabled));
     for (let index = runtime.particles.length - 1; index >= 0; index -= 1) {
       const particle = runtime.particles[index];
       particle.age += 1;
-      applyEmitterPhysics(particle, gravityBySign);
-      if (hasCommands) applyCommandQueues(queues, particle, tick);
+      if (particle.cparticleEnabled) {
+        if (gpuQueues.length) applyCommandQueues(gpuQueues, particle, tick);
+      } else {
+        applyEmitterPhysics(particle, gravityBySign);
+        if (queues.length) applyCommandQueues(queues, particle, tick);
+      }
       particle.prev.x = particle.pos.x;
       particle.prev.y = particle.pos.y;
       particle.prev.z = particle.pos.z;
@@ -477,7 +490,7 @@ export function createGeneratorPreviewRuntime() {
       particle.pos.z += particle.vel.z;
 
       if (particle.age >= particle.life) {
-        if (project.deathBehavior?.enabled && project.deathBehavior?.mode === 'respawn') {
+        if (!particle.cparticleEnabled && project.deathBehavior?.enabled && project.deathBehavior?.mode === 'respawn') {
           const currentCard = emitterById.get(particle.cardId) || particle.card || {};
           respawnParticle(
             particle,
@@ -547,11 +560,14 @@ export function createGeneratorPreviewRuntime() {
       count,
       effectSignature: plan.effectSignature,
       effectClass: plan.effectSignature,
+      textureSheet: plan.textureSheet,
       positions: buffers.positions,
       prevPositions: buffers.prevPositions,
       colors: buffers.colors,
       alphas: buffers.alphas,
       sizes: buffers.sizes,
+      scaleXs: buffers.scaleXs,
+      scaleYs: buffers.scaleYs,
       rolls: buffers.rolls,
       lifeProgresses: buffers.lifeProgresses,
       errors: plan.errors
@@ -576,6 +592,7 @@ export function createGeneratorPreviewRuntime() {
       signature,
       contexts,
       effectSignature: resolveEffectSignature(contexts),
+      textureSheet: resolveTextureSheet(contexts),
       canUseBillboardBuffers: canUseBillboardBuffers(contexts),
       errors: runtime.expressionError
         ? [...resolver.errors, { key: 'doTick', message: `doTick：${runtime.expressionError}` }]
@@ -719,15 +736,19 @@ function createParticle(card, builderPoints, birthRenderContext = null) {
   const lifeMax = Math.max(lifeMin, Math.trunc(Number(card.particle?.lifeMax || lifeMin)));
   const sizeMin = Math.max(0.001, Number(card.particle?.sizeMin || card.render?.baseScale?.x || 0.08));
   const sizeMax = Math.max(sizeMin, Number(card.particle?.sizeMax || sizeMin));
+  const randomColorProgress = { r: Math.random(), g: Math.random(), b: Math.random() };
   return {
     cardId: String(card.id || ''),
     card,
+    cparticleEnabled: card?.cparticleEnabled === true || card?.useGPU === true,
     pos,
+    spawnPos: { ...pos },
     prev: { ...pos },
     vel: velocity,
     age: 0,
     life: randomInt(lifeMin, lifeMax),
     baseSize: random(sizeMin, sizeMax),
+    randomColorProgress,
     sign: Math.trunc(Number(card.render?.sign || 0)),
     seed: Math.trunc(Math.random() * 0x7fffffff),
     respawnCount: 0,
@@ -740,12 +761,15 @@ function respawnParticle(particle, card, builderPoints, birthRenderContext = nul
   const next = createParticle(card, builderPoints, birthRenderContext);
   particle.cardId = next.cardId;
   particle.card = next.card;
+  particle.cparticleEnabled = next.cparticleEnabled;
   particle.pos = next.pos;
+  particle.spawnPos = next.spawnPos;
   particle.prev = { ...next.pos };
   particle.vel = next.vel;
   particle.age = 0;
   particle.life = next.life;
   particle.baseSize = next.baseSize;
+  particle.randomColorProgress = next.randomColorProgress;
   particle.sign = next.sign;
   particle.seed = next.seed;
   particle.previewSpawnRenderContext = next.previewSpawnRenderContext;
@@ -783,6 +807,14 @@ function collectCommandQueues(rawQueues) {
       .filter((command) => command && command.enabled !== false)
       .map((command) => ({ ...command, type: normalizeCommandType(command.type) }))
   })).filter((queue) => queue.commands.length);
+}
+
+function collectGpuCommands(rawCommands) {
+  const commands = (Array.isArray(rawCommands) ? rawCommands : [])
+    .filter((command) => command && command.enabled !== false)
+    .map((command) => ({ ...command, type: normalizeCommandType(command.type), tick: 0 }))
+    .filter((command) => CPARTICLE_COMMAND_TYPE_IDS.includes(command.type));
+  return commands.length ? [{ signs: null, commands }] : [];
 }
 
 function makeSignSet(values) {
@@ -1017,6 +1049,7 @@ function createEmitterSnapshotContext(card) {
   const scaleMode = render.scaleMode === 'uniform_xy' ? 'uniform_xy' : 'xyz';
   const sizeSyncAxes = curves.size?.syncAxes === true;
   const rotationSyncAxes = curves.rotation?.syncAxes === true;
+  const colorGradientEnabled = particle.colorGradientEnabled !== false;
   const context = {
     enabled: card?.enabled !== false,
     effectClass: render.effectClass,
@@ -1026,23 +1059,26 @@ function createEmitterSnapshotContext(card) {
     roll: Number(render.roll || 0),
     yaw: Number(render.yaw || 0),
     pitch: Number(render.pitch || 0),
+    relativeRotation: render.relativeRotation === true,
     alpha: Number(render.alpha ?? 100) / 100,
     light: Number(render.light ?? 15),
     scaleMode,
     baseScale: render.baseScale || {},
     sizeSyncAxes,
     rotationSyncAxes,
+    cparticleEnabled: card?.cparticleEnabled === true || card?.useGPU === true,
+    colorCurveEnabled: colorGradientEnabled && curves.color?.enabled === true,
     colorStart: hexToRgb(particle.colorStart),
-    colorEnd: hexToRgb(particle.colorOverLifeEnabled ? particle.colorEnd : particle.colorStart),
+    colorEnd: hexToRgb(colorGradientEnabled ? particle.colorEnd : particle.colorStart),
     curves: {
-      sizeX: prepareCurve(curves.size?.x, 1),
-      sizeY: prepareCurve(sizeSyncAxes ? curves.size?.x : curves.size?.y, 1),
-      sizeZ: prepareCurve(sizeSyncAxes ? curves.size?.x : curves.size?.z, 1),
-      opacity: prepareCurve(curves.opacity, 100),
-      brightness: prepareCurve(curves.brightness, Number(render.light ?? 15)),
-      roll: prepareCurve(curves.rotation?.roll, 0),
-      yaw: prepareCurve(rotationSyncAxes ? curves.rotation?.roll : curves.rotation?.yaw, 0),
-      pitch: prepareCurve(rotationSyncAxes ? curves.rotation?.roll : curves.rotation?.pitch, 0)
+      sizeX: prepareEnabledCurve(curves.size?.x, 1),
+      sizeY: prepareEnabledCurve(sizeSyncAxes ? curves.size?.x : curves.size?.y, 1),
+      opacity: prepareEnabledCurve(curves.opacity, 100),
+      light: prepareEnabledCurve(curves.light, Number(render.light ?? 15)),
+      color: prepareEnabledCurve(colorGradientEnabled ? curves.color : null, 0),
+      roll: prepareEnabledCurve(curves.rotation?.roll, 0),
+      yaw: prepareEnabledCurve(rotationSyncAxes ? curves.rotation?.roll : curves.rotation?.yaw, 0),
+      pitch: prepareEnabledCurve(rotationSyncAxes ? curves.rotation?.roll : curves.rotation?.pitch, 0)
     },
     visualSamplesByLife: null,
     sparseVisualSamples: null
@@ -1104,6 +1140,16 @@ function resolveEffectSignature(contexts) {
   return Array.from(names).sort().join('|');
 }
 
+function resolveTextureSheet(contexts) {
+  const names = new Set();
+  contexts.forEach((context) => {
+    if (context?.enabled && context.textureSheet !== 'NO_RENDER') {
+      names.add(String(context.textureSheet || 'PARTICLE_SHEET_TRANSLUCENT'));
+    }
+  });
+  return Array.from(names).sort().join('|');
+}
+
 function canUseBillboardBuffers(contexts) {
   let ok = true;
   contexts.forEach((context) => {
@@ -1121,6 +1167,8 @@ function createRenderBuffers(capacity) {
     colors: new Float32Array(capacity * 3),
     alphas: new Float32Array(capacity),
     sizes: new Float32Array(capacity),
+    scaleXs: new Float32Array(capacity),
+    scaleYs: new Float32Array(capacity),
     rolls: new Float32Array(capacity),
     lifeProgresses: new Float32Array(capacity)
   };
@@ -1144,11 +1192,11 @@ function writeParticlePreviewData(particle, context, buffers, index) {
   buffers.prevPositions[offset] = particle.prev.x;
   buffers.prevPositions[offset + 1] = particle.prev.y;
   buffers.prevPositions[offset + 2] = particle.prev.z;
-  buffers.colors[offset] = visual.r;
-  buffers.colors[offset + 1] = visual.g;
-  buffers.colors[offset + 2] = visual.b;
+  writeParticlePreviewColor(buffers.colors, offset, particle, context, visual);
   buffers.alphas[index] = visual.alpha;
   buffers.sizes[index] = Math.max(0.001, Math.max(0.01, sx, sy) * 1.6);
+  buffers.scaleXs[index] = Math.max(0.001, sx * 1.6);
+  buffers.scaleYs[index] = Math.max(0.001, sy * 1.6);
   buffers.rolls[index] = visual.roll;
   buffers.lifeProgresses[index] = visual.lifeProgress;
 }
@@ -1158,10 +1206,9 @@ function particleToPreviewPoint(particle, context) {
   const visual = getParticleVisualSample(particle, context);
   const sx = particle.baseSize * visual.sizeScaleX;
   const sy = particle.baseSize * visual.sizeScaleY;
-  const sz = particle.baseSize * visual.sizeScaleZ;
-  point.r = visual.r;
-  point.g = visual.g;
-  point.b = visual.b;
+  point.r = particlePreviewColorComponent(particle, context, visual, 'r');
+  point.g = particlePreviewColorComponent(particle, context, visual, 'g');
+  point.b = particlePreviewColorComponent(particle, context, visual, 'b');
   point.x = particle.pos.x;
   point.y = particle.pos.y;
   point.z = particle.pos.z;
@@ -1174,12 +1221,14 @@ function particleToPreviewPoint(particle, context) {
   point.textureSheet = context.textureSheet;
   point.billboardMode = context.billboardMode;
   point.axis = context.axis;
-  point.roll = visual.roll;
+  const relativeRotation = context.relativeRotation
+    ? resolveRelativeParticleRotation(particle.spawnPos)
+    : null;
+  point.roll = visual.roll + (relativeRotation?.roll || 0);
   point.yaw = visual.yaw;
-  point.pitch = visual.pitch;
+  point.pitch = visual.pitch + (relativeRotation?.pitch || 0);
   point.scaleX = sx;
   point.scaleY = sy;
-  point.scaleZ = sz;
   point.size = Math.max(0.01, sx, sy);
   point.age = particle.age;
   point.life = particle.life;
@@ -1223,14 +1272,16 @@ function buildParticleVisualSample(age, life, context) {
   const baseScale = context.baseScale;
   const sizeCurveX = Math.max(0, samplePreparedCurve(context.curves.sizeX, agePercent, 1));
   const sizeCurveY = Math.max(0, samplePreparedCurve(context.curves.sizeY, agePercent, 1));
-  const sizeCurveZ = Math.max(0, samplePreparedCurve(context.curves.sizeZ, agePercent, 1));
-  const light = clamp(samplePreparedCurve(context.curves.brightness, agePercent, context.light), -1, 15);
-  const factor = light < 0 ? 0.62 : 0.5 + clamp(light, 0, 15) / 30;
-  const rotation = sampleRotation(context, agePercent);
+  const light = context.cparticleEnabled
+    ? clamp(context.light, -1, 15)
+    : clamp(samplePreparedCurve(context.curves.light, agePercent, context.light), -1, 15);
+  const factor = previewLightFactor(light);
+  const rotation = sampleRotation(context, context.cparticleEnabled ? 0 : agePercent);
+  const colorProgress = clamp(samplePreparedCurve(context.curves.color, agePercent, 0), 0, 1);
   return {
-    r: clamp(mix(context.colorStart.r, context.colorEnd.r, lifeProgress) * factor, 0, 255) / 255,
-    g: clamp(mix(context.colorStart.g, context.colorEnd.g, lifeProgress) * factor, 0, 255) / 255,
-    b: clamp(mix(context.colorStart.b, context.colorEnd.b, lifeProgress) * factor, 0, 255) / 255,
+    r: clamp(mix(context.colorStart.r, context.colorEnd.r, colorProgress) * factor, 0, 255) / 255,
+    g: clamp(mix(context.colorStart.g, context.colorEnd.g, colorProgress) * factor, 0, 255) / 255,
+    b: clamp(mix(context.colorStart.b, context.colorEnd.b, colorProgress) * factor, 0, 255) / 255,
     alpha: clamp(context.alpha * (samplePreparedCurve(context.curves.opacity, agePercent, 100) / 100), 0, 1),
     light,
     roll: rotation.roll,
@@ -1238,9 +1289,25 @@ function buildParticleVisualSample(age, life, context) {
     pitch: rotation.pitch,
     sizeScaleX: Math.max(0, Number(baseScale.x ?? 1)) * sizeCurveX,
     sizeScaleY: Math.max(0, Number((scaleMode === 'xyz' ? baseScale.y : baseScale.x) ?? 1)) * sizeCurveY,
-    sizeScaleZ: Math.max(0, Number((scaleMode === 'xyz' ? baseScale.z : baseScale.x) ?? 1)) * sizeCurveZ,
     lifeProgress
   };
+}
+
+function writeParticlePreviewColor(target, offset, particle, context, visual) {
+  target[offset] = particlePreviewColorComponent(particle, context, visual, 'r');
+  target[offset + 1] = particlePreviewColorComponent(particle, context, visual, 'g');
+  target[offset + 2] = particlePreviewColorComponent(particle, context, visual, 'b');
+}
+
+function particlePreviewColorComponent(particle, context, visual, component) {
+  if (context.cparticleEnabled || context.colorCurveEnabled) return visual[component];
+  const progress = clamp(particle.randomColorProgress?.[component], 0, 1);
+  const value = mix(context.colorStart[component], context.colorEnd[component], progress);
+  return clamp(value * previewLightFactor(visual.light), 0, 255) / 255;
+}
+
+function previewLightFactor(light) {
+  return light < 0 ? 0.62 : 0.5 + clamp(light, 0, 15) / 30;
 }
 
 function sampleRotation(context, agePercent) {
@@ -1265,7 +1332,11 @@ function prepareCurve(curve, fallback = 0) {
   };
 }
 
-function samplePreparedCurve(curve, percent, fallback = 0) {
+function prepareEnabledCurve(curve, fallback = 0) {
+  return prepareCurve(curve?.enabled === true ? curve : null, fallback);
+}
+
+export function samplePreparedCurve(curve, percent, fallback = 0) {
   const frames = curve?.frames || [];
   if (!frames.length) return Number(curve?.defaultValue ?? fallback);
   if (frames.length === 1) return Number(frames[0].value ?? fallback);
@@ -1277,7 +1348,7 @@ function samplePreparedCurve(curve, percent, fallback = 0) {
     const prev = frames[i - 1];
     const next = frames[i];
     if (t > Number(next.time || 0)) continue;
-    if (curve?.mode === 'bezier') return sampleBezier(prev, next, t);
+    if (curve?.mode === 'bezier') return sampleBezierSegment(prev, next, t);
     const start = Number(prev.time || 0);
     const span = Math.max(0.0001, Number(next.time || 0) - start);
     const alpha = (t - start) / span;
@@ -1286,33 +1357,6 @@ function samplePreparedCurve(curve, percent, fallback = 0) {
   return Number(last.value ?? fallback);
 }
 
-function sampleBezier(a, b, percent) {
-  const x0 = Number(a.time || 0);
-  const y0 = Number(a.value || 0);
-  const x3 = Number(b.time || 0);
-  const y3 = Number(b.value || 0);
-  const x1 = clamp(x0 + Number(a.out?.x || 0), 0, 100);
-  const y1 = y0 + Number(a.out?.y || 0);
-  const x2 = clamp(x3 + Number(b.in?.x || 0), 0, 100);
-  const y2 = y3 + Number(b.in?.y || 0);
-  let bestDistance = Infinity;
-  let bestValue = y0;
-  for (let i = 0; i <= 24; i += 1) {
-    const t = i / 24;
-    const x = cubic(x0, x1, x2, x3, t);
-    const distance = Math.abs(x - percent);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestValue = cubic(y0, y1, y2, y3, t);
-    }
-  }
-  return bestValue;
-}
-
-function cubic(p0, p1, p2, p3, t) {
-  const mt = 1 - t;
-  return mt * mt * mt * p0 + 3 * mt * mt * t * p1 + 3 * mt * t * t * p2 + t * t * t * p3;
-}
 
 function sampleEmitterPoint(card, builderPoints) {
   const type = card.emitter?.type || 'point';
@@ -1405,9 +1449,10 @@ function sampleVelocity(card, spawnPos) {
   const particle = card.particle || {};
   const offset = vectorFrom(card.emitter?.offset);
   const mode = particle.velocityMode || particle.velMode;
-  let direction = mode === 'spawn_relative' || mode === 'spawn_rel'
-    ? sub(spawnPos, offset)
-    : vectorFrom(particle.velocity || particle.vel);
+  let direction;
+  if (mode === 'spawn_inward' || mode === 'spawn_in') direction = sub(offset, spawnPos);
+  else if (mode === 'spawn_relative' || mode === 'spawn_rel') direction = sub(spawnPos, offset);
+  else direction = vectorFrom(particle.velocity || particle.vel);
   const randomSpread = vectorFrom(particle.velocityRandom || particle.velRandom);
   direction = add(direction, vec(
     random(-randomSpread.x, randomSpread.x),
@@ -1418,6 +1463,17 @@ function sampleVelocity(card, spawnPos) {
   const speedMax = Math.max(speedMin, Number(particle.speedMax ?? particle.velSpeedMax ?? speedMin));
   const speed = random(speedMin, speedMax);
   return vectorLength(direction) < EPSILON ? vec() : multiply(normalize(direction), speed);
+}
+
+export function resolveRelativeParticleRotation(direction) {
+  const value = vectorFrom(direction);
+  if (vectorLength(value) < EPSILON) return { roll: 0, yaw: 0, pitch: 0 };
+  const degrees = 180 / Math.PI;
+  return {
+    roll: Math.atan2(-value.x, Math.hypot(value.y, value.z)) * degrees,
+    yaw: 0,
+    pitch: Math.atan2(value.z, value.y) * degrees
+  };
 }
 
 function rotateFromYAxis(value, axis) {

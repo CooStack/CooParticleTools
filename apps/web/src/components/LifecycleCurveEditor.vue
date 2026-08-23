@@ -1,17 +1,18 @@
 <template>
-  <div class="curve-editor" :class="{ expanded }" :style="expandedStyle" @dblclick.self="toggleExpanded">
+  <div class="curve-editor" :class="{ expanded, disabled: !curveActive, colorized: hasColorGradient }" :style="expandedStyle" @dblclick.self="toggleExpanded">
     <div class="curve-head">
       <div class="curve-drag-handle" @pointerdown="startWindowDrag">
         <div class="curve-title">{{ title }}</div>
         <div class="curve-meta">{{ valueRangeText }}</div>
       </div>
       <div class="curve-actions" @dblclick.stop>
-        <select v-model="curve.mode" class="curve-select">
+        <label v-if="toggleable" class="curve-enable"><input v-model="curve.enabled" type="checkbox" />开启</label>
+        <select v-model="curve.mode" class="curve-select" :disabled="!curveActive">
           <option value="linear">线性</option>
           <option value="bezier">贝塞尔</option>
         </select>
-        <button class="curve-btn" type="button" @click="addFrameAt(50)">+</button>
-        <button class="curve-btn" type="button" :disabled="!canDeleteSelected" @click="deleteSelected">-</button>
+        <button class="curve-btn" type="button" :disabled="!curveActive || !canAddFrame" @click="addFrameAt(50)">+</button>
+        <button class="curve-btn" type="button" :disabled="!curveActive || !canDeleteSelected" @click="deleteSelected">-</button>
         <button class="curve-btn" type="button" @click="toggleExpanded">{{ expanded ? '收起' : '展开' }}</button>
       </div>
     </div>
@@ -22,6 +23,7 @@
         type="number"
         step="0.01"
         :value="displayMaxText"
+        :disabled="!curveActive"
         aria-label="显示上限"
         title="显示上限；清空后恢复自动范围"
         @change="updateDisplayBound('max', $event)"
@@ -34,6 +36,7 @@
         type="number"
         step="0.01"
         :value="displayMinText"
+        :disabled="!curveActive"
         aria-label="显示下限"
         title="显示下限；清空后恢复自动范围"
         @change="updateDisplayBound('min', $event)"
@@ -53,9 +56,13 @@
         @pointerleave="clearCanvasPointerMode"
       >
         <defs>
-          <linearGradient :id="fillId" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--curve-fill-start)" />
-            <stop offset="100%" stop-color="var(--curve-fill-end)" />
+          <linearGradient :id="fillId" x1="0" y1="1" x2="0" y2="0">
+            <stop offset="0%" :stop-color="hasColorGradient ? colorLow : 'var(--curve-fill-end)'" :stop-opacity="hasColorGradient ? 0.2 : 1" />
+            <stop offset="100%" :stop-color="hasColorGradient ? colorHigh : 'var(--curve-fill-start)'" :stop-opacity="hasColorGradient ? 0.42 : 1" />
+          </linearGradient>
+          <linearGradient :id="strokeId" x1="0" y1="1" x2="0" y2="0">
+            <stop offset="0%" :stop-color="colorLow" />
+            <stop offset="100%" :stop-color="colorHigh" />
           </linearGradient>
         </defs>
         <g class="curve-grid">
@@ -63,7 +70,7 @@
           <line v-for="y in gridY" :key="`y_${y}`" x1="0" :y1="y" x2="600" :y2="y" />
         </g>
         <path class="curve-fill" :d="fillPath" :fill="`url(#${fillId})`" />
-        <path class="curve-path" :d="linePath" />
+        <path class="curve-path" :d="linePath" :style="hasColorGradient ? { stroke: `url(#${strokeId})` } : null" />
         <g v-if="curve.mode === 'bezier'" class="curve-handles">
           <template v-for="segment in bezierHandleLines" :key="segment.key">
             <line :x1="segment.x1" :y1="segment.y1" :x2="segment.x2" :y2="segment.y2" />
@@ -112,11 +119,11 @@
         <span class="frame-index">{{ index + 1 }}</span>
         <label>
           <span>%</span>
-          <input class="curve-input" type="number" min="0" max="100" step="1" :value="frame.time" :disabled="isEndpointFrame(frame.id)" @change="updateFrame(frame.id, 'time', $event.target.value)" />
+          <input class="curve-input" type="number" min="0" max="100" step="1" :value="frame.time" :disabled="!curveActive || isEndpointFrame(frame.id)" @change="updateFrame(frame.id, 'time', $event.target.value)" />
         </label>
         <label>
           <span>值</span>
-          <input class="curve-input" type="number" :min="curve.min" :max="inputValueMax" step="0.01" :value="frame.value" @change="updateFrame(frame.id, 'value', $event.target.value)" />
+          <input class="curve-input" type="number" :min="curve.min" :max="inputValueMax" step="0.01" :value="frame.value" :disabled="!curveActive" @change="updateFrame(frame.id, 'value', $event.target.value)" />
         </label>
       </div>
     </div>
@@ -138,7 +145,11 @@ const props = defineProps({
   curve: { type: Object, required: true },
   hardMin: { type: Number, default: null },
   hardMax: { type: Number, default: null },
-  valueSuffix: { type: String, default: '' }
+  valueSuffix: { type: String, default: '' },
+  toggleable: { type: Boolean, default: false },
+  maxFrames: { type: Number, default: null },
+  colorLow: { type: String, default: '' },
+  colorHigh: { type: String, default: '' }
 });
 
 const svgRef = ref(null);
@@ -157,14 +168,20 @@ const canvasPointerMode = ref('');
 const canvasHovering = ref(false);
 const syncingEndpoints = ref(false);
 const activeCurve = computed(() => dragCurve.value || props.curve);
+const curveActive = computed(() => !props.toggleable || props.curve.enabled === true);
+const hasColorGradient = computed(() => Boolean(props.colorLow && props.colorHigh));
 const inputValueMax = computed(() => hasFinitePropNumber(props.hardMax) ? Number(props.hardMax) : null);
 const fillId = `curve_fill_${Math.random().toString(16).slice(2)}`;
+const strokeId = `curve_stroke_${Math.random().toString(16).slice(2)}`;
 const gridX = [100, 200, 300, 400, 500];
 const gridY = [45, 90, 135];
 
 const sortedFrames = computed(() => getSortedKeyframes(activeCurve.value));
 
 const canDeleteSelected = computed(() => canDeleteFrame(selectedId.value));
+const canAddFrame = computed(() => props.maxFrames === null
+  || !Number.isFinite(Number(props.maxFrames))
+  || sortedFrames.value.length < Math.max(1, Math.trunc(Number(props.maxFrames))));
 
 const valueRangeText = computed(() => `${formatValue(displayMin.value)} .. ${formatValue(displayMax.value)}`);
 const displayMinText = computed(() => Number(displayMin.value).toFixed(2));
@@ -387,9 +404,9 @@ function handleCanvasPointerDown(event) {
     deleteNearestFrame(event);
     return;
   }
-  if (!event.ctrlKey && !event.metaKey) return;
+  if ((!event.ctrlKey && !event.metaKey) || !canAddFrame.value) return;
   event.preventDefault();
-  const time = editableFrameTime(pointToTime(event.clientX, event.clientY));
+  const time = availableFrameTime(pointToTime(event.clientX, event.clientY));
   const value = clampCurveValue(pointToValue(event.clientX, event.clientY), { allowExpand: true });
   const frame = createCurveKeyframe({
     time,
@@ -402,10 +419,11 @@ function handleCanvasPointerDown(event) {
 }
 
 function addFrameAt(time) {
+  if (!canAddFrame.value) return;
   const value = sortedFrames.value.length
     ? sortedFrames.value[Math.floor(sortedFrames.value.length / 2)].value
     : Number(props.curve.defaultValue || 0);
-  const frame = createCurveKeyframe({ time: editableFrameTime(time), value });
+  const frame = createCurveKeyframe({ time: availableFrameTime(time), value });
   props.curve.keyframes.push(frame);
   props.curve.keyframes.sort((a, b) => a.time - b.time);
   selectedId.value = frame.id;
@@ -497,7 +515,7 @@ function updateDraggedFrame(clientX, clientY) {
     };
     return;
   }
-  frame.time = dragging.value.lockedTime ?? editableFrameTime(pointToTime(clientX, clientY));
+  frame.time = dragging.value.lockedTime ?? availableFrameTime(pointToTime(clientX, clientY), frame.id);
   frame.value = Number(clampCurveValue(pointToValue(clientX, clientY), { allowExpand: true }).toFixed(3));
 }
 
@@ -558,7 +576,7 @@ function cancelPointDrag(event) {
 function updateFrame(id, key, value) {
   const frame = props.curve.keyframes.find((item) => item.id === id);
   if (!frame) return;
-  if (key === 'time') frame.time = endpointTimeForFrame(id) ?? editableFrameTime(value);
+  if (key === 'time') frame.time = endpointTimeForFrame(id) ?? availableFrameTime(value, id);
   if (key === 'value') frame.value = Number(clampCurveValue(Number(value), { allowExpand: true }).toFixed(3));
   props.curve.keyframes.sort((a, b) => a.time - b.time);
   commitDisplayRange();
@@ -599,6 +617,19 @@ function editableFrameTime(value) {
   return Math.round(clampNumber(value, 1, 99, 50));
 }
 
+function availableFrameTime(value, excludedId = '') {
+  const preferred = editableFrameTime(value);
+  const occupied = new Set(sortedFrames.value
+    .filter((frame) => frame.id !== excludedId)
+    .map((frame) => Number(frame.time)));
+  if (!occupied.has(preferred)) return preferred;
+  for (let distance = 1; distance < 99; distance += 1) {
+    if (preferred - distance >= 1 && !occupied.has(preferred - distance)) return preferred - distance;
+    if (preferred + distance <= 99 && !occupied.has(preferred + distance)) return preferred + distance;
+  }
+  return preferred;
+}
+
 function deleteNearestFrame(event) {
   const point = clientToSvgPoint(event.clientX, event.clientY);
   const nearest = plottedFrames.value
@@ -623,7 +654,7 @@ function clearCanvasPointerMode() {
 
 function resolveCanvasPointerMode(event) {
   if (event?.altKey) return 'remove';
-  if (event?.ctrlKey || event?.metaKey) return 'add';
+  if ((event?.ctrlKey || event?.metaKey) && canAddFrame.value) return 'add';
   return '';
 }
 
@@ -692,6 +723,10 @@ onBeforeUnmount(() => {
   padding: 10px;
   display: grid;
   gap: 10px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .curve-editor:not(.expanded) {
@@ -703,6 +738,8 @@ onBeforeUnmount(() => {
 .curve-editor.expanded {
   position: fixed;
   inset: 44px 44px auto;
+  width: auto;
+  max-width: none;
   height: calc(100vh - 88px);
   min-height: 420px;
   max-height: calc(100vh - 32px);
@@ -726,6 +763,25 @@ onBeforeUnmount(() => {
 
 .curve-head {
   justify-content: space-between;
+}
+
+.curve-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.curve-editor.disabled .curve-stage,
+.curve-editor.disabled .curve-frame-grid,
+.curve-editor.disabled .curve-select {
+  opacity: 0.46;
+}
+
+.curve-editor.disabled .curve-svg {
+  pointer-events: none;
 }
 
 .curve-drag-handle {
@@ -757,6 +813,10 @@ onBeforeUnmount(() => {
 
 .curve-select {
   padding: 0 8px;
+}
+
+.curve-select:disabled {
+  cursor: not-allowed;
 }
 
 .curve-btn {
@@ -879,6 +939,7 @@ onBeforeUnmount(() => {
 .curve-frame-grid {
   display: grid;
   gap: 6px;
+  min-width: 0;
   max-height: 170px;
   overflow: auto;
 }
@@ -932,9 +993,31 @@ onBeforeUnmount(() => {
   }
 
   .curve-head,
-  .curve-actions,
-  .curve-frame-row {
+  .curve-actions {
     flex-wrap: wrap;
+  }
+
+  .curve-frame-row {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr);
+    justify-content: stretch;
+  }
+
+  .curve-frame-row > .frame-index {
+    grid-row: 1 / span 2;
+  }
+
+  .curve-frame-row > label {
+    grid-column: 2;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    min-width: 0;
+  }
+
+  .curve-input {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
   }
 }
 </style>

@@ -1,7 +1,47 @@
 import { addDomReadyListener, postMessageSafe } from "./events.js";
 import { safeStorageSet } from "./storage.js";
 
-export function installStoragePrefixPatch({ prefix, guardProperty, keyPattern = /^pb_/, sharedKeys = [] }) {
+export const POINTS_BUILDER_SHARED_STORAGE_KEYS = Object.freeze([
+  "pb_settings_v1",
+  "pb_presets_v1",
+  "pb_preset_groups_v1",
+  "pb_hotkeys_v2",
+  "pb_layout_v1",
+  "pb_root_filter_v2",
+  "pb_theme_v2",
+]);
+
+export function migratePointsBuilderSharedStorage({
+  prefix,
+  storage,
+  sharedKeys = POINTS_BUILDER_SHARED_STORAGE_KEYS,
+}) {
+  const safePrefix = String(prefix || "");
+  if (!safePrefix || !storage) return;
+
+  for (const key of sharedKeys) {
+    const sharedKey = String(key);
+    const scopedKey = `${safePrefix}${sharedKey}`;
+    try {
+      const scopedValue = storage.getItem(scopedKey);
+      if (scopedValue === null) continue;
+      if (storage.getItem(sharedKey) === null) {
+        storage.setItem(sharedKey, scopedValue);
+      }
+      if (storage.getItem(sharedKey) !== null) {
+        storage.removeItem(scopedKey);
+      }
+    } catch {
+    }
+  }
+}
+
+export function installStoragePrefixPatch({
+  prefix,
+  guardProperty,
+  keyPattern = /^pb_/,
+  sharedKeys = POINTS_BUILDER_SHARED_STORAGE_KEYS,
+}) {
   const safePrefix = String(prefix || "");
   const sharedKeySet = new Set((Array.isArray(sharedKeys) ? sharedKeys : []).map((key) => String(key)));
   const proto = Storage.prototype;

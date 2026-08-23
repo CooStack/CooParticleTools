@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { createKindDefs } from "../../points_builder/js/kinds.js";
+import { createKindDefs } from "../../points_builder/js/kinds.js?v=20260820_2";
 import { createBuilderTools } from "../../points_builder/js/builder.js";
 import {
     COMPOSITION_CARD_SECTION_KEYS as CARD_SECTION_KEYS,
@@ -26,8 +26,12 @@ import {
     normalizeCompositionPackageName as normalizeKotlinPackageName,
     normalizeCompositionProject as normalizeStateShape,
     normalizeCompositionShapeNode as normalizeShapeTreeNode,
-    normalizeEmbeddedPointsBuilderState as normalizeBuilderState
-} from "./model.js?v=20260720_1";
+    normalizeEmbeddedPointsBuilderState as normalizeBuilderState,
+    isCompositionLeafParticleType,
+    isCompositionShapeType,
+    isCompositionCardUsingCParticle,
+    findCompositionNestedShapePaths
+} from "./model.js?v=20260729_6";
 import {
     applyCompositionPreferences,
     extractCompositionPreferences,
@@ -35,18 +39,19 @@ import {
     loadCompositionStateFromStorage,
     saveCompositionPreferencesToStorage,
     saveCompositionStateToStorage
-} from "./preferences.js?v=20260725_2";
+} from "./preferences.js?v=20260729_3";
 import {
     getCompositionKotlinTarget,
     normalizeCompositionMapping
 } from "./kotlin_mapping.js?v=20260720_1";
-import { createExpressionRuntime } from "./expression_runtime.js?v=20260725_3";
+import { createExpressionRuntime } from "./expression_runtime.js?v=20260729_3";
 import { InlineCodeEditor, mergeCompletionGroups } from "./code_editor.js?v=20260725_1";
 import {
     normalizeAlphaHelperConfig,
+    normalizeCParticleAlphaConfig,
     ALPHA_HELPER_TYPES,
     ALPHA_HELPER_RUN_MODES
-} from "./alpha_helper_utils.js";
+} from "./alpha_helper_utils.js?v=20260729_1";
 import {
     isVectorLiteralType,
     normalizeVectorCtor,
@@ -72,19 +77,21 @@ import {
     hasAngleOffsetEaseSpecialParams,
     formatAngleValue
 } from "./angle_offset_utils.js";
-import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260725_6";
-import { installKotlinCodegenMethods } from "./kotlin_codegen_mixin.js?v=20260720_1";
+import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260815_3";
+import { installKotlinCodegenMethods } from "./kotlin_codegen_mixin.js?v=20260730_3";
+import { compositionVectorApiTypeDeclaration } from "./composition_vector_expression.js?v=20260729_3";
 import { installCodeOutputMethods } from "./code_output_mixin.js";
-import { installExpressionEditorMethods } from "./expression_editor_mixin.js?v=20260725_2";
+import { installExpressionEditorMethods } from "./expression_editor_mixin.js?v=20260729_3";
 import { installCodeCompileMethods } from "./code_compile_mixin.js?v=20260309_2";
-import { installTargetPresetMethods } from "./target_preset_mixin.js";
-import { installCompositionPresetMethods } from "./composition_preset_mixin.js?v=20260726_3";
+import { installTargetPresetMethods } from "./target_preset_mixin.js?v=20260727_1";
+import { installCompositionPresetMethods } from "./composition_preset_mixin.js?v=20260729_4";
 import {
     handleCompositionHistoryShortcut,
     isCompositionTextEditingTarget
 } from "./history_hotkeys.js?v=20260725_1";
 import {
     loadAllParticleData,
+    ensureParticleAtlas,
     getParticleDataByName,
     getParticleEffectNames,
     calcTextureFrame,
@@ -147,6 +154,19 @@ const PARTICLE_INIT_TARGET_OPTIONS = [
     "particleAlpha",
     "currentAge",
     "textureSheet"
+];
+const CPARTICLE_INIT_TARGET_OPTIONS = ["color", "size", "alpha", "age", "maxAge"];
+
+const CPARTICLE_RENDER_LAYER_OPTIONS = [
+    "OPAQUE",
+    "TRANSLUCENT",
+    "ADDITION_BLEND",
+    "ADDITION_BLEND_NOT_HDR",
+    "ADDITION_BLEND_NOT_HDR_NO_DEPTH_WRITE",
+    "ADDITION_BLEND_TRANSLUCENT",
+    "ADDITION_BLEND_TRANSLUCENT_NOT_HDR",
+    "ADDITION_BLEND_TRANSLUCENT_NOT_HDR_NO_DEPTH_WRITE",
+    "ADDITION_BLEND_TRANSLUCENT_NO_DEPTH_WRITE"
 ];
 
 const KOTLIN_IDENTIFIER_KEYWORDS = new Set([
@@ -338,6 +358,8 @@ const JS_LINT_GLOBALS = new Set([
     "parseInt", "parseFloat", "isNaN", "isFinite", "Infinity", "NaN",
     "PI", "age", "tick", "tickCount", "index", "axis",
     "rotateToPoint", "rotateAsAxis", "rotateToWithAngle", "addSingle", "addMultiple", "addPreTickAction",
+    "setAlpha", "setColor", "setSize", "teleportTo",
+    "playCParticleAlphaTransition", "CParticleCurve",
     "setReversedScaleOnCompositionStatus", "particle",
     "thisAt", "status",
     "color", "size", "alpha", "particleColor", "particleSize", "particleAlpha", "currentAge", "lifetime", "lifeTime", "maxAge", "textureSheet",
@@ -668,6 +690,10 @@ class CompositionBuilderApp {
         this.previewInteractionVisibleMask = null;
         this.previewSizeFactors = [];
         this.previewAlphaFactors = [];
+        this.previewGpuParticlePathEnabled = false;
+        this.previewGpuActivePointCount = 0;
+        this.previewGpuElapsedTick = 0;
+        this.previewGpuParticleFallbackReason = "";
         this.cardColorCache = new Map();
         this.previewAnimStart = performance.now();
         this.previewPerfLastTs = 0;
@@ -725,6 +751,7 @@ class CompositionBuilderApp {
 
     init() {
         this.bindDom();
+        const startupCParticleConflict = this.resolveLoadedCParticleConflicts();
         this.initExpressionSuggest();
         this.consumeBuilderReturnState();
         this.initThree();
@@ -739,9 +766,12 @@ class CompositionBuilderApp {
         this.generateCodeAndRender(true);
         this.writeBuilderCompositionContext();
         this.bindEvents();
-        this._particleDataFns = { calcTextureFrame, getParticleDataByName };
+        if (startupCParticleConflict) {
+            this.showCParticleConflict("GPU 粒子配置需要处理", startupCParticleConflict);
+        }
+        this._particleDataFns = { calcTextureFrame, getParticleDataByName, ensureParticleAtlas };
         setBasePath("./");
-        loadAllParticleData().then(() => {
+        loadAllParticleData({ lazyAtlases: true }).then(() => {
             this.renderCards();
             if (typeof this.clearPreviewRenderCache === "function") {
                 this.clearPreviewRenderCache("particle-data-loaded");
@@ -756,17 +786,11 @@ class CompositionBuilderApp {
             pageCode: document.getElementById("pageCode"),
             btnPageEditor: document.getElementById("btnPageEditor"),
             btnPageCode: document.getElementById("btnPageCode"),
-            btnNewProject: document.getElementById("btnNewProject"),
-            btnAddCard: document.getElementById("btnAddCard"),
             btnCollapseAllCardSections: document.getElementById("btnCollapseAllCardSections"),
             btnExpandAllCardSections: document.getElementById("btnExpandAllCardSections"),
-            btnUndo: document.getElementById("btnUndo"),
-            btnRedo: document.getElementById("btnRedo"),
             btnSettings: document.getElementById("btnSettings"),
             btnHotkeys: document.getElementById("btnHotkeys"),
             chkRealtimeCode: document.getElementById("chkRealtimeCode"),
-            btnGenerateCode: document.getElementById("btnGenerateCode"),
-            btnCopyCode: document.getElementById("btnCopyCode"),
             btnGenerateCode2: document.getElementById("btnGenerateCode2"),
             btnCopyCode2: document.getElementById("btnCopyCode2"),
             btnDownloadCode: document.getElementById("btnDownloadCode"),
@@ -790,6 +814,7 @@ class CompositionBuilderApp {
             statusPoints: document.getElementById("statusPoints"),
             statusSelection: document.getElementById("statusSelection"),
             statusFps: document.getElementById("statusFps"),
+            statusGpu: document.getElementById("statusGpu"),
             statusCache: document.getElementById("statusCache"),
             btnJumpPreviewEnd: document.getElementById("btnJumpPreviewEnd"),
             btnResetCamera: document.getElementById("btnResetCamera"),
@@ -807,6 +832,7 @@ class CompositionBuilderApp {
             chkGrid: document.getElementById("chkGrid"),
             chkPreviewFocusSingleCard: document.getElementById("chkPreviewFocusSingleCard"),
             chkRealtimeCode2: document.getElementById("chkRealtimeCode2"),
+            chkGlobalCParticle: document.getElementById("chkGlobalCParticle"),
             btnOpenHotkeys: document.getElementById("btnOpenHotkeys"),
             btnExportSettings: document.getElementById("btnExportSettings"),
             btnImportSettings: document.getElementById("btnImportSettings"),
@@ -862,17 +888,6 @@ class CompositionBuilderApp {
         const d = this.dom;
         d.btnPageEditor.addEventListener("click", () => this.switchPage("editor"));
         d.btnPageCode.addEventListener("click", () => this.switchPage("code"));
-        d.btnNewProject?.addEventListener("click", () => {
-            if (window.parent && window.parent !== window) {
-                window.parent.postMessage(
-                    { type: "coo-legacy-new-project", projectType: "composition" },
-                    window.location.origin
-                );
-                return;
-            }
-            this.handleNewProjectClick();
-        });
-        d.btnAddCard.addEventListener("click", () => this.addCard());
         d.btnCollapseAllCardSections?.addEventListener("click", () => {
             this.setAllCardsFolded(true);
             this.setAllCardsSectionsCollapsed(true);
@@ -885,14 +900,10 @@ class CompositionBuilderApp {
             this.renderCards();
             this.scheduleSave();
         });
-        d.btnUndo.addEventListener("click", () => this.undo());
-        d.btnRedo.addEventListener("click", () => this.redo());
         d.btnSettings.addEventListener("click", () => this.showSettings());
         d.btnHotkeys.addEventListener("click", () => this.showHotkeys());
         if (d.chkRealtimeCode) d.chkRealtimeCode.addEventListener("change", () => this.setRealtimeCode(d.chkRealtimeCode.checked));
-        d.btnGenerateCode.addEventListener("click", () => this.generateCodeAndRender(true));
         d.btnGenerateCode2.addEventListener("click", () => this.generateCodeAndRender(true));
-        d.btnCopyCode.addEventListener("click", () => this.copyCode());
         d.btnCopyCode2.addEventListener("click", () => this.copyCode());
         d.btnDownloadCode.addEventListener("click", () => this.downloadCode());
         if (d.btnPausePreview) d.btnPausePreview.addEventListener("click", () => this.togglePreviewPause());
@@ -1099,22 +1110,99 @@ class CompositionBuilderApp {
             transparent: true,
             depthWrite: false
         });
+        this.pointsMat.defaultAttributeValues = {
+            ...(this.pointsMat.defaultAttributeValues || {}),
+            aGpuMeta: [0, 0, 0, 0],
+            aGpuFadeIn: [0, 0, 0, 0],
+            aGpuFadeOut: [0, 0, 0, 0],
+            aGpuTransform: [0, 0, 0, 0],
+            aGpuTransformVector: [0, 0, 0],
+            aGpuScale: [1],
+            aGpuLifecycle: [0, 100]
+        };
         this.pointsMat.onBeforeCompile = (shader) => {
             shader.uniforms.uAtlas = { value: null };
             shader.uniforms.uFrameCount = { value: 0 };
             shader.uniforms.uUseTexture = { value: 0 };
+            shader.uniforms.uGpuPreviewEnabled = { value: this.previewGpuParticlePathEnabled === true ? 1 : 0 };
+            shader.uniforms.uGpuPreviewTick = { value: this.previewGpuElapsedTick || 0 };
+            shader.uniforms.uGpuPreviewPlayTicks = { value: 1 };
+            shader.uniforms.uGpuPreviewCycleTicks = { value: 1 };
+            shader.uniforms.uGpuPreviewGlobalTransform = { value: new THREE.Matrix4() };
             this._pointsShaderRef = shader;
             shader.vertexShader = [
                 "attribute float aSize;",
                 "attribute float aAlpha;",
                 "attribute float aFrameIndex;",
+                "attribute vec4 aGpuMeta;",
+                "attribute vec4 aGpuFadeIn;",
+                "attribute vec4 aGpuFadeOut;",
+                "attribute vec4 aGpuTransform;",
+                "attribute vec3 aGpuTransformVector;",
+                "attribute float aGpuScale;",
+                "attribute vec2 aGpuLifecycle;",
+                "uniform int uGpuPreviewEnabled;",
+                "uniform float uGpuPreviewTick;",
+                "uniform float uGpuPreviewPlayTicks;",
+                "uniform float uGpuPreviewCycleTicks;",
+                "uniform mat4 uGpuPreviewGlobalTransform;",
                 "varying float vAlpha;",
                 "varying float vFrameIndex;",
+                "vec3 rotateGpuVector(vec3 value, vec3 axis, float angle) {",
+                "  float axisLength = length(axis);",
+                "  if (axisLength < 0.0001) return value;",
+                "  vec3 unitAxis = axis / axisLength;",
+                "  float c = cos(angle);",
+                "  float s = sin(angle);",
+                "  return value * c + cross(unitAxis, value) * s + unitAxis * dot(unitAxis, value) * (1.0 - c);",
+                "}",
                 ""
             ].join("\n") + shader.vertexShader;
             shader.vertexShader = shader.vertexShader.replace(
                 /gl_PointSize\s*=\s*size\s*;/g,
-                "gl_PointSize = size * max(aSize, 0.05);\n    vAlpha = clamp(aAlpha, 0.0, 1.0);\n    vFrameIndex = aFrameIndex;"
+                [
+                    "float previewAlpha = clamp(aAlpha, 0.0, 1.0);",
+                    "float previewFrameIndex = aFrameIndex;",
+                    "if (uGpuPreviewEnabled == 1 && abs(aGpuMeta.x) > 0.5) {",
+                    "  if (aGpuMeta.x < 0.0 || uGpuPreviewTick < aGpuMeta.y) {",
+                    "    previewAlpha = 0.0;",
+                    "  } else {",
+                    "    float previewAge = mod(max(uGpuPreviewTick - aGpuMeta.y, 0.0), max(uGpuPreviewCycleTicks, 1.0));",
+                    "    if (aGpuFadeOut.x > 0.0 && previewAge >= uGpuPreviewPlayTicks) {",
+                    "      float progress = clamp((previewAge - uGpuPreviewPlayTicks) / aGpuFadeOut.x, 0.0, 1.0);",
+                    "      previewAlpha *= mix(aGpuFadeOut.y, aGpuFadeOut.z, progress);",
+                    "    } else if (aGpuFadeIn.x > 0.0) {",
+                    "      float progress = clamp(previewAge / aGpuFadeIn.x, 0.0, 1.0);",
+                    "      previewAlpha *= mix(aGpuFadeIn.y, aGpuFadeIn.z, progress);",
+                    "    }",
+                    "    if (aGpuMeta.w > 0.5 && aGpuFadeIn.w > 0.5) {",
+                    "      float randomValue = fract(sin(aGpuFadeIn.w + floor(uGpuPreviewTick) * 12.9898) * 43758.5453);",
+                    "      previewFrameIndex = aGpuMeta.z + floor(randomValue * aGpuMeta.w);",
+                    "    } else if (aGpuMeta.w > 0.5) {",
+                    "      float textureProgress = clamp(aGpuLifecycle.x / max(aGpuLifecycle.y, 1.0), 0.0, 1.0);",
+                    "      previewFrameIndex = aGpuMeta.z + min(aGpuMeta.w - 1.0, floor(textureProgress * aGpuMeta.w));",
+                    "    }",
+                    "  }",
+                    "}",
+                    "gl_PointSize = previewAlpha > 0.0001 ? size * max(aSize, 0.05) : 0.0;",
+                    "vAlpha = previewAlpha;",
+                    "vFrameIndex = previewFrameIndex;"
+                ].join("\n    ")
+            );
+            shader.vertexShader = shader.vertexShader.replace(
+                "#include <begin_vertex>",
+                [
+                    "#include <begin_vertex>",
+                    "if (uGpuPreviewEnabled == 1 && aGpuMeta.x > 0.5) {",
+                    "  vec3 scaledGpuVector = aGpuTransformVector * max(aGpuScale, 0.0001);",
+                    "  transformed += scaledGpuVector - aGpuTransformVector;",
+                    "  if (abs(aGpuTransform.w) > 0.000001) {",
+                    "    vec3 rotatedGpuVector = rotateGpuVector(scaledGpuVector, aGpuTransform.xyz, aGpuTransform.w);",
+                    "    transformed += rotatedGpuVector - scaledGpuVector;",
+                    "  }",
+                    "  transformed = (uGpuPreviewGlobalTransform * vec4(transformed, 1.0)).xyz;",
+                    "}"
+                ].join("\n    ")
             );
             shader.fragmentShader = [
                 "uniform sampler2D uAtlas;",
@@ -1127,6 +1215,7 @@ class CompositionBuilderApp {
             shader.fragmentShader = shader.fragmentShader.replace(
                 /vec4\s+diffuseColor\s*=\s*vec4\(\s*diffuse\s*,\s*opacity\s*\)\s*;/g,
                 [
+                    "if (vAlpha <= 0.0001) discard;",
                     "vec4 diffuseColor;",
                     "if (uUseTexture == 1 && uFrameCount > 0) {",
                     "  float fc = float(uFrameCount);",
@@ -1144,8 +1233,9 @@ class CompositionBuilderApp {
                     "}"
                 ].join("\n")
             );
+            this.syncPreviewGpuParticleUniforms?.();
         };
-        this.pointsMat.customProgramCacheKey = () => "cb_points_size_alpha_tex_v7";
+        this.pointsMat.customProgramCacheKey = () => "cb_points_size_alpha_tex_gpu_v11";
         this.pointsMesh = new THREE.Points(this.pointsGeom, this.pointsMat);
         this.pointsMesh.frustumCulled = false;
         this.scene.add(this.pointsMesh);
@@ -1692,6 +1782,7 @@ class CompositionBuilderApp {
         if (t.dataset.pf) {
             const pf = String(t.dataset.pf || "");
             this.applyProjectFieldInput(pf, t);
+            if (pf === "useCParticle") return;
             const rebuildPreview = pf === "disabledInterval" || pf === "previewPlayTicks" || pf === "compositionType";
             this.afterValueMutate({ rebuildPreview });
             return;
@@ -1835,6 +1926,10 @@ class CompositionBuilderApp {
             this.state.compositionType = target.value === "sequenced" ? "sequenced" : "particle";
             return;
         }
+        if (field === "useCParticle") {
+            this.setGlobalCParticleMode(target?.checked === true);
+            return;
+        }
         if (field === "disabledInterval") {
             this.state.disabledInterval = Math.max(0, int(target.value || 0));
             return;
@@ -1842,6 +1937,39 @@ class CompositionBuilderApp {
         if (field === "previewPlayTicks") {
             this.state.previewPlayTicks = Math.max(1, int(target.value || 70));
         }
+    }
+
+    showCParticleConflict(title, message) {
+        if (typeof this.showThemeConfirm === "function") {
+            this.showThemeConfirm(title, message);
+        } else {
+            this.showToast(message, "error");
+        }
+    }
+
+    resolveLoadedCParticleConflicts() {
+        return "";
+    }
+
+    setGlobalCParticleMode(enabled) {
+        const nextEnabled = enabled === true;
+        if (this.state.useCParticle === nextEnabled) return false;
+        this.state.useCParticle = nextEnabled;
+        this.state = normalizeStateShape(this.state);
+        this.afterStructureMutate({ rerenderProject: true, rerenderCards: true, rebuildPreview: true });
+        return true;
+    }
+
+    setCardCParticleMode(card, enabled) {
+        if (!card) return false;
+        const nextEnabled = enabled === true;
+        if (!isCompositionShapeType(card.dataType)) {
+            card.particleBackend = nextEnabled ? "cparticle" : "single";
+            card.globalCParticleAuto = false;
+            return true;
+        }
+        card.useCParticle = nextEnabled;
+        return true;
     }
 
     findDuplicateGlobalSymbolName(name, scopeKind = "", scopeIndex = -1) {
@@ -2200,7 +2328,7 @@ class CompositionBuilderApp {
     }
 
     addChildToNode(node) {
-        if (!node || node.type === "single") return;
+        if (!node || isCompositionLeafParticleType(node.type)) return;
         if (!Array.isArray(node.children)) node.children = [];
         node.children.push(normalizeShapeTreeNode({}, node.children.length));
     }
@@ -2930,10 +3058,20 @@ class CompositionBuilderApp {
             this.renderCards();
             this.updateSelectionStatus();
             this.scheduleSave();
+            this.configurePreviewGpuParticlePath?.();
             if (this.previewPaused && this.renderer) {
                 this.updatePreviewAnimation();
                 this.renderer.render(this.scene, this.camera);
             }
+            return;
+        }
+
+        if (t.dataset.cardCparticleFade) {
+            this.applyCParticleFadeField(card, t.dataset.cardCparticleFade, t.dataset.cardCparticleFadeField, t);
+            this.afterValueMutate({
+                rebuildPreview: true,
+                rerenderCards: t.dataset.cardCparticleFadeField === "enabled"
+            });
             return;
         }
 
@@ -2947,6 +3085,15 @@ class CompositionBuilderApp {
                 } else {
                     this.afterValueMutate({ rebuildPreview: true });
                 }
+                return;
+            }
+            if (cardField === "useCParticle") {
+                const requested = t.type === "checkbox" ? t.checked === true : false;
+                if (!this.setCardCParticleMode(card, requested)) {
+                    t.checked = false;
+                    card.useCParticle = false;
+                }
+                this.afterStructureMutate({ rerenderCards: true, rebuildPreview: true, rerenderProject: false });
                 return;
             }
             this.applyObjectField(card, t.dataset.cardField, t);
@@ -2985,16 +3132,24 @@ class CompositionBuilderApp {
                 card.rotateAngleExpr = card.rotateAnglePreset;
             }
             if (t.dataset.cardField === "dataType") {
-                const isShape = card.dataType === "particle_shape" || card.dataType === "sequenced_shape";
+                if (isShape && this.state.useCParticle === true) {
+                    card.useCParticle = true;
+                    card.globalCParticleAuto = true;
+                }
                 if (isShape && (!card.shapeChildren || !card.shapeChildren.length)) {
                     card.shapeChildren = [normalizeShapeTreeNode({ type: "single" }, 0)];
                 }
                 if (!isShape) {
+                    card.useCParticle = false;
+                    if (this.state.useCParticle === true) {
+                        card.particleBackend = "cparticle";
+                        card.globalCParticleAuto = true;
+                    }
                     card.shapeChildren = [];
                     card.viewPath = [];
                 }
             }
-            if (["bindMode", "dataType", "rotateAngleMode", "rotateToPreset", "rotateToManualCtor"].includes(t.dataset.cardField)) {
+            if (["bindMode", "dataType", "useCParticle", "rotateAngleMode", "rotateToPreset", "rotateToManualCtor"].includes(t.dataset.cardField)) {
                 this.afterStructureMutate({ rerenderCards: true, rebuildPreview: true, rerenderProject: false });
                 return;
             }
@@ -3021,8 +3176,11 @@ class CompositionBuilderApp {
                 return;
             }
             if (field === "type") {
-                node.type = ["single", "particle_shape", "sequenced_shape"].includes(String(t.value || "")) ? String(t.value) : "single";
-                if (node.type === "single") {
+                const requestedType = ["single", "particle_shape", "sequenced_shape"].includes(String(t.value || ""))
+                    ? String(t.value)
+                    : "single";
+                node.type = requestedType;
+                if (isCompositionLeafParticleType(node.type)) {
                     node.children = [];
                 } else if (!node.children || !node.children.length) {
                     node.children = [normalizeShapeTreeNode({ type: "single" }, 0)];
@@ -3052,6 +3210,30 @@ class CompositionBuilderApp {
                 this.afterValueMutate({ rebuildPreview: true });
                 return;
             }
+            if (field === "cparticleRenderLayer") {
+                node.cparticleRenderLayer = CPARTICLE_RENDER_LAYER_OPTIONS.includes(String(t.value || ""))
+                    ? String(t.value)
+                    : "ADDITION_BLEND_TRANSLUCENT";
+                this.afterValueMutate({ rebuildPreview: true });
+                return;
+            }
+            if (field === "randomAgePreTick") {
+                node.randomAgePreTick = !!t.checked;
+                this.afterValueMutate({ rebuildPreview: true });
+                return;
+            }
+        }
+
+        if (t.dataset.treeNodeCparticleFade) {
+            const treePath = t.dataset.treePath ? JSON.parse(t.dataset.treePath) : null;
+            const node = treePath ? this.getShapeNodeByPath(card, treePath) : null;
+            if (!node) return;
+            this.applyCParticleFadeField(node, t.dataset.treeNodeCparticleFade, t.dataset.treeNodeCparticleFadeField, t);
+            this.afterValueMutate({
+                rebuildPreview: true,
+                rerenderCards: t.dataset.treeNodeCparticleFadeField === "enabled"
+            });
+            return;
         }
 
         if (t.dataset.treeNodeAxisField) {
@@ -3455,6 +3637,21 @@ class CompositionBuilderApp {
             return;
         }
         obj[field] = String(target.value ?? "");
+    }
+
+    applyCParticleFadeField(targetObj, phaseRaw, fieldRaw, target) {
+        if (!targetObj) return;
+        const phase = phaseRaw === "fadeOut" ? "fadeOut" : "fadeIn";
+        const field = String(fieldRaw || "");
+        const config = normalizeCParticleAlphaConfig(targetObj.cparticleAlpha);
+        targetObj.cparticleAlpha = config;
+        if (field === "enabled") {
+            config[phase].enabled = !!target.checked;
+        } else if (field === "durationTicks") {
+            config[phase].durationTicks = Math.max(1, int(target.value || 1));
+        } else if (field === "fromAlpha" || field === "toAlpha") {
+            config[phase][field] = clamp(num(target.value), 0, 1);
+        }
     }
 
     applyAngleOffsetField(targetObj, rawField, target) {
@@ -4573,6 +4770,10 @@ class CompositionBuilderApp {
                         <span>是否开启移除状态设置</span>
                         <span class="chk"><input type="checkbox" data-pf="enableRemoveStatusOverride" ${s.enableRemoveStatusOverride === true ? "checked" : ""}/>开启</span>
                     </label>
+                    <label class="field">
+                        <span>GPU 粒子</span>
+                        <span class="chk"><input id="chkGlobalCParticle" type="checkbox" data-pf="useCParticle" ${s.useCParticle === true ? "checked" : ""}/>全局使用 CParticle</span>
+                    </label>
                 </div>
                 <div class="subgroup">
                     <div class="subgroup-title">生成前轴向</div>
@@ -4911,6 +5112,53 @@ class CompositionBuilderApp {
         return html;
     }
 
+    renderCParticleNodeSettings(target, opts = {}) {
+        const treePath = Array.isArray(opts.treePath) ? opts.treePath : null;
+        const cardId = String(opts.cardId || target?.id || "");
+        const isRootCard = !treePath;
+        const pathAttr = treePath ? ` data-tree-path="${esc(JSON.stringify(treePath))}"` : "";
+        const type = String(target?.type || target?.dataType || "single");
+        const isShape = isCompositionShapeType(type);
+        const rootCard = isRootCard ? target : opts.card;
+        const rootGpuEnabled = isCompositionCardUsingCParticle(rootCard);
+        const enabled = rootGpuEnabled;
+        const isLeaf = isCompositionLeafParticleType(type);
+        if (isRootCard && isLeaf && !enabled) return "";
+        if (!isRootCard && (!enabled || !isLeaf)) return "";
+        const alpha = normalizeCParticleAlphaConfig(target?.cparticleAlpha);
+        const renderFade = (phase, title) => {
+            const fade = alpha[phase];
+            return `
+                <div class="cparticle-fade-row">
+                    <strong>${title}</strong>
+                    <label class="chk compact"><input type="checkbox" data-card-id="${cardId}" data-card-cparticle-fade="${phase}" data-card-cparticle-fade-field="enabled" ${fade.enabled ? "checked" : ""}/><span>启用</span></label>
+                    <input class="input" title="时长 (tick)" aria-label="${title}时长" type="number" min="1" step="1" data-card-id="${cardId}" data-card-cparticle-fade="${phase}" data-card-cparticle-fade-field="durationTicks" value="${esc(String(fade.durationTicks))}"/>
+                    <input class="input" title="起始透明度" aria-label="${title}起始透明度" type="number" min="0" max="1" step="${this.state.settings.paramStep}" data-card-id="${cardId}" data-card-cparticle-fade="${phase}" data-card-cparticle-fade-field="fromAlpha" value="${esc(formatNumberCompact(fade.fromAlpha))}"/>
+                    <input class="input" title="结束透明度" aria-label="${title}结束透明度" type="number" min="0" max="1" step="${this.state.settings.paramStep}" data-card-id="${cardId}" data-card-cparticle-fade="${phase}" data-card-cparticle-fade-field="toAlpha" value="${esc(formatNumberCompact(fade.toAlpha))}"/>
+                </div>`;
+        };
+        const leafSettings = enabled && isLeaf ? `
+            <div class="grid2">
+                <label class="field"><span>CParticle RenderLayer</span><select class="input" data-card-id="${cardId}"${pathAttr} ${isRootCard ? "data-card-field" : "data-tree-node-field"}="cparticleRenderLayer">${CPARTICLE_RENDER_LAYER_OPTIONS.map((layer) => `<option value="${layer}" ${target?.cparticleRenderLayer === layer ? "selected" : ""}>${layer}</option>`).join("")}</select></label>
+                <label class="chk"><input type="checkbox" data-card-id="${cardId}"${pathAttr} ${isRootCard ? "data-card-field" : "data-tree-node-field"}="randomAgePreTick" ${target?.randomAgePreTick === true ? "checked" : ""}/><span>每 Tick 随机动画帧</span></label>
+            </div>` : "";
+        if (!isRootCard || isLeaf) return `<div class="mini-note">GPU 粒子配置</div>${leafSettings}`;
+        return `
+            <div class="mini-note">GPU 粒子</div>
+            <div class="grid2">
+                <label class="chk" title="启用后，该卡片的全部粒子叶节点均使用 GPU 粒子">
+                    <input type="checkbox" data-card-id="${cardId}" data-card-field="useCParticle" ${rootGpuEnabled ? "checked" : ""}/>
+                    <span>使用 GPU 粒子</span>
+                </label>
+            </div>
+            ${leafSettings}
+            ${enabled && isShape ? `<div class="subgroup subgroup-tight cparticle-fade-box"><div class="subgroup-title">不透明度过渡</div><div class="cparticle-fade-grid"><div class="cparticle-fade-head"><span>阶段</span><span>状态</span><span>时长</span><span>起始</span><span>结束</span></div>${renderFade("fadeIn", "淡入")}${renderFade("fadeOut", "淡出")}</div></div>` : ""}`;
+    }
+
+    renderSingleGpuSettings(card) {
+        return this.renderCParticleNodeSettings(card, { cardId: card?.id });
+    }
+
     renderTreeNodeEditor(card, node, treePath, opts = {}) {
         if (!card || !node) return "";
         const cardId = card.id;
@@ -4926,14 +5174,17 @@ class CompositionBuilderApp {
 
     _renderTreeNodeEditorInner(card, node, treePath, tp, cardId, nodeType, bindMode, builderNodeCount, builderPointCount, effectHtml, opts = {}) {
         const step = this.state.settings.paramStep;
+        const gpuContext = card.useCParticle === true;
+        const typeOptions = `
+                <option value="single" ${nodeType === "single" ? "selected" : ""}>${gpuContext ? "CParticle" : "单粒子"}</option>
+                <option value="particle_shape" ${nodeType === "particle_shape" ? "selected" : ""}>${gpuContext ? "GPU Composition" : "形状 Composition"}</option>
+                <option value="sequenced_shape" ${nodeType === "sequenced_shape" ? "selected" : ""}>${gpuContext ? "GPU 序列 Composition" : "序列形状 Composition"}</option>`;
         const typeBlock = `
             <div class="grid2">
                 <label class="field">
                     <span>子节点类型</span>
                     <select class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-field="type">
-                        <option value="single" ${nodeType === "single" ? "selected" : ""}>单粒子</option>
-                        <option value="particle_shape" ${nodeType === "particle_shape" ? "selected" : ""}>形状 Composition</option>
-                        <option value="sequenced_shape" ${nodeType === "sequenced_shape" ? "selected" : ""}>序列形状 Composition</option>
+                        ${typeOptions}
                     </select>
                 </label>
                 <label class="field">
@@ -4954,7 +5205,7 @@ class CompositionBuilderApp {
                 scope: "tree_node", cardId, treePath: JSON.stringify(treePath),
                 scale: node.scale, helperName: "缩放助手", embedOnly: true
             })}`;
-        if (nodeType === "single") {
+        if (isCompositionLeafParticleType(nodeType)) {
             return this._renderTreeNodeSingleView(card, node, tp, cardId, typeBlock, bindBlock, axisBlock, displayBlock, angleOffsetBlock, scaleBlock, effectHtml, treePath);
         }
         return this._renderTreeNodeShapeView(card, node, tp, cardId, typeBlock, bindBlock, axisBlock, displayBlock, angleOffsetBlock, scaleBlock, nodeType, treePath, opts);
@@ -5031,6 +5282,7 @@ class CompositionBuilderApp {
     }
 
     _renderTreeNodeSingleView(card, node, tp, cardId, typeBlock, bindBlock, axisBlock, displayBlock, angleOffsetBlock, scaleBlock, effectHtml, treePath) {
+        const cparticleBlock = this.renderCParticleNodeSettings(node, { card, cardId, treePath });
         return `
             ${typeBlock}
             <div class="grid2">
@@ -5043,13 +5295,14 @@ class CompositionBuilderApp {
                     <span class="chk"><input type="checkbox" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-field="useTexture" ${node.useTexture === false ? "" : "checked"}/>使用贴图</span>
                 </label>
             </div>
+            ${cparticleBlock}
             ${bindBlock}
             <div class="mini-note">粒子初始化</div>
             <div class="list-tools">
                 <button class="btn small primary" data-act="add-tree-node-pinit" data-card-id="${cardId}" data-tree-path="${tp}">添加初始化</button>
             </div>
             <div class="kv-list">
-                ${this.renderTreeNodeParticleInitRows(cardId, node, tp)}
+                ${this.renderTreeNodeParticleInitRows(cardId, node, tp, treePath)}
             </div>
             <div class="mini-note">控制器</div>
             <div class="list-tools">
@@ -5084,9 +5337,11 @@ class CompositionBuilderApp {
             ).replaceAll(`data-card-id="${card.id}"`, `data-card-id="${card.id}" data-tree-path="${tp}"`)
             : "";
         const childrenList = opts.includeChildren === false ? "" : this._renderTreeNodeChildrenList(card, node, treePath, cardId);
+        const cparticleBlock = this.renderCParticleNodeSettings(node, { card, cardId, treePath });
         return `
             ${typeBlock}
             ${bindBlock}
+            ${cparticleBlock}
             ${axisBlock}
             ${displayBlock}
             ${angleOffsetBlock}
@@ -5095,10 +5350,12 @@ class CompositionBuilderApp {
             ${opts.includeChildren === false ? "" : `<div class="mini-note">并列子节点</div>${childrenList}`}`;
     }
 
-    renderTreeNodeParticleInitRows(cardId, node, tp) {
+    renderTreeNodeParticleInitRows(cardId, node, tp, treePath = []) {
         const list = Array.isArray(node?.particleInit) ? node.particleInit : [];
+        const card = this.getCardById(cardId);
+        const useCParticle = isCompositionCardUsingCParticle(card);
         return list.map((it, pIdx) => {
-            const targetOptions = this.getParticleInitTargetOptionsHtml(it.target);
+            const targetOptions = this.getParticleInitTargetOptionsHtml(it.target, useCParticle ? "cparticle" : "single");
             const codegenOnly = this.isParticleInitCodegenOnlyTarget(it.target);
             const presetSelected = codegenOnly
                 ? (String(it.codegenExprPreset || "").trim() || this.resolveParticleInitCodegenPresetExpr(it.codegenExpr || "", it.target))
@@ -5159,7 +5416,7 @@ class CompositionBuilderApp {
         const tp = esc(JSON.stringify(parentPath));
         const rows = children.map((child, idx) => {
             const childPath = [...parentPath, idx];
-            const typeName = child.type === "particle_shape" ? "形状" : (child.type === "sequenced_shape" ? "序列形状" : "单粒子");
+            const typeName = this.getShapeNodeTypeLabel(card, child);
             return `
                 <div class="child-row" data-card-id="${cardId}" data-tree-path="${esc(JSON.stringify(childPath))}">
                     <div class="child-row-main">
@@ -5800,7 +6057,8 @@ class CompositionBuilderApp {
     renderParticleInitRows(card) {
         const list = Array.isArray(card?.particleInit) ? card.particleInit : [];
         return list.map((it, pIdx) => {
-            const targetOptions = this.getParticleInitTargetOptionsHtml(it.target);
+            const useCParticle = isCompositionCardUsingCParticle(card);
+            const targetOptions = this.getParticleInitTargetOptionsHtml(it.target, useCParticle ? "cparticle" : "single");
             const codegenOnly = this.isParticleInitCodegenOnlyTarget(it.target);
             const presetSelected = codegenOnly
                 ? (String(it.codegenExprPreset || "").trim() || this.resolveParticleInitCodegenPresetExpr(it.codegenExpr || "", it.target))
@@ -5882,7 +6140,7 @@ class CompositionBuilderApp {
         const focused = this.focusedCardId === card.id;
         const typeLabel = card.dataType === "particle_shape"
             ? "形状"
-            : (card.dataType === "sequenced_shape" ? "序列形状" : "单粒子");
+            : (card.dataType === "sequenced_shape" ? "序列形状" : (isCompositionCardUsingCParticle(card) ? "C粒子" : "单粒子"));
         const sourceLabel = card.bindMode === "point" ? "点位" : "Builder";
         const previewVisible = card.previewVisible !== false;
         const previewSolo = card.previewSolo === true;
@@ -5943,10 +6201,10 @@ class CompositionBuilderApp {
                         ${this.renderCardSourceSection(card)}
                     </section>
                     <section class="workbench-panel effect-stack-panel">
-                        ${card.dataType === "single" ? this.renderSingleEffectStackPanel(card) : this.renderShapeStackPanel(card)}
+                        ${isCompositionLeafParticleType(card.dataType) ? this.renderSingleEffectStackPanel(card) : this.renderShapeStackPanel(card)}
                     </section>
                     <section class="workbench-panel inspector-panel">
-                        ${card.dataType === "single" ? this.renderSingleInspectorPanel(card) : this.renderShapeInspectorPanel(card)}
+                        ${isCompositionLeafParticleType(card.dataType) ? this.renderSingleInspectorPanel(card) : this.renderShapeInspectorPanel(card)}
                     </section>
                 </div>
             </section>
@@ -5968,14 +6226,20 @@ class CompositionBuilderApp {
                     <label class="field">
                         <span>点类型</span>
                         <select class="input" data-card-id="${card.id}" data-card-field="dataType">
-                            <option value="single" ${card.dataType === "single" ? "selected" : ""}>单粒子</option>
-                            <option value="particle_shape" ${card.dataType === "particle_shape" ? "selected" : ""}>形状 Composition</option>
-                            <option value="sequenced_shape" ${card.dataType === "sequenced_shape" ? "selected" : ""}>序列形状 Composition</option>
+                            ${this.getCardTypeOptionsHtml(card)}
                         </select>
                     </label>
                 </div>
             </div>
         `;
+    }
+
+    getCardTypeOptionsHtml(card) {
+        const gpu = this.state.useCParticle === true || card.useCParticle === true || card.particleBackend === "cparticle";
+        return `
+            <option value="single" ${card.dataType === "single" ? "selected" : ""}>${gpu ? "CParticle" : "单粒子"}</option>
+            <option value="particle_shape" ${card.dataType === "particle_shape" ? "selected" : ""}>${gpu ? "GPU Composition" : "形状 Composition"}</option>
+            <option value="sequenced_shape" ${card.dataType === "sequenced_shape" ? "selected" : ""}>${gpu ? "GPU 序列 Composition" : "序列形状 Composition"}</option>`;
     }
 
     renderCardSourceSection(card) {
@@ -6018,7 +6282,7 @@ class CompositionBuilderApp {
         return `
             <div class="workbench-panel-title">
                 <span>效果栈</span>
-                <span class="badge">单粒子</span>
+                <span class="badge">${isCompositionCardUsingCParticle(card) ? "C粒子" : "单粒子"}</span>
             </div>
             <div class="effect-stack-content">
                 <div class="subgroup" data-section-key="single_particle_init">
@@ -6063,7 +6327,7 @@ class CompositionBuilderApp {
             <section class="card-editor-panel node-inspector-panel">
                 <div class="card-editor-panel-title">
                     <span>粒子属性</span>
-                    <span class="badge">单粒子</span>
+                    <span class="badge">${isCompositionCardUsingCParticle(card) ? "C粒子" : "单粒子"}</span>
                 </div>
                 <div class="node-inspector-body">
                     <div class="inspector-fields">
@@ -6076,6 +6340,7 @@ class CompositionBuilderApp {
                             <span class="chk"><input type="checkbox" data-card-id="${card.id}" data-card-field="singleUseTexture" ${card.singleUseTexture === false ? "" : "checked"}/>使用贴图</span>
                         </label>
                     </div>
+                    ${this.renderSingleGpuSettings(card)}
                 </div>
             </section>
         `;
@@ -6176,7 +6441,7 @@ class CompositionBuilderApp {
         const builderStats = this.evaluateBuilderPoints(card.builderState);
         const builderNodeCount = this.countBuilderNodes(card.builderState?.root?.children || []);
         const builderPointCount = (builderStats.points || []).length;
-        const effectOptions = card.dataType === "single" ? this.getEffectOptionsHtml(card.singleEffectClass) : "";
+        const effectOptions = isCompositionLeafParticleType(card.dataType) ? this.getEffectOptionsHtml(card.singleEffectClass) : "";
 
         return `
             <section class="card ${selected ? "selected" : ""} ${card.folded ? "folded" : ""}" data-card-id="${card.id}">
@@ -6202,7 +6467,7 @@ class CompositionBuilderApp {
                     </div>
                 </header>
                 ${card.folded ? "" : `
-                    <div class="card-body ${card.dataType === "single" ? "" : "card-body--shape"}">
+                    <div class="card-body ${isCompositionLeafParticleType(card.dataType) ? "" : "card-body--shape"}">
                         <div class="subgroup" data-section-key="base">
                             <div class="subgroup-title">基础</div>
                             <div class="grid2">
@@ -6216,19 +6481,18 @@ class CompositionBuilderApp {
                                 <label class="field">
                                     <span>点类型</span>
                                     <select class="input" data-card-id="${card.id}" data-card-field="dataType">
-                                        <option value="single" ${card.dataType === "single" ? "selected" : ""}>单粒子</option>
-                                        <option value="particle_shape" ${card.dataType === "particle_shape" ? "selected" : ""}>形状 Composition</option>
-                                        <option value="sequenced_shape" ${card.dataType === "sequenced_shape" ? "selected" : ""}>序列形状 Composition</option>
+                                        ${this.getCardTypeOptionsHtml(card)}
                                     </select>
                                 </label>
-                                ${card.dataType === "single" ? `<label class="field">
+                                ${isCompositionLeafParticleType(card.dataType) ? `<label class="field">
                                     <span>效果类型</span>
                                     <select class="input" data-card-id="${card.id}" data-card-field="singleEffectClass">${effectOptions}</select>
                                 </label>
                                 <label class="field">
                                     <span>贴图预览</span>
                                     <span class="chk"><input type="checkbox" data-card-id="${card.id}" data-card-field="singleUseTexture" ${card.singleUseTexture === false ? "" : "checked"}/>使用贴图</span>
-                                </label>` : ""}
+                                </label>
+                                ` : ""}
                             </div>
                         </div>
 
@@ -6260,7 +6524,7 @@ class CompositionBuilderApp {
                             </div>
                         `}
 
-                        ${card.dataType === "single" ? `
+                        ${isCompositionLeafParticleType(card.dataType) ? `
                             <div class="subgroup" data-section-key="single_particle_init">
                                 <div class="subgroup-title">单粒子：粒子初始化</div>
                                 <div class="list-tools">
@@ -6330,8 +6594,9 @@ class CompositionBuilderApp {
             const node = this.getShapeNodeByPath(card, viewPath);
             if (!node) {
                 body = `<div class="mini-note">节点不存在，请返回上级</div>`;
-            } else if ((node.type || "single") === "single") {
-                body = `<div class="mini-note">当前节点是 single，切换为 Shape 后可继续添加子节点。</div>`;
+            } else if (isCompositionLeafParticleType(node.type || "single")) {
+                const leafName = this.getShapeNodeTypeLabel(card, node);
+                body = `<div class="mini-note">当前节点是${leafName}叶节点。切换为 Shape 后可继续添加子节点。</div>`;
             } else {
                 body = this._renderTreeNodeChildrenList(card, node, viewPath, card.id);
             }
@@ -6359,9 +6624,8 @@ class CompositionBuilderApp {
                 badge = "Missing";
                 body = `<div class="mini-note">节点不存在，请返回上级</div>`;
             } else {
-                const nodeType = node.type || "single";
                 title = node.name ? `${node.name} 属性` : `子节点 ${viewPath[viewPath.length - 1] + 1} 属性`;
-                badge = nodeType === "particle_shape" ? "形状" : (nodeType === "sequenced_shape" ? "序列形状" : "单粒子");
+                badge = this.getShapeNodeTypeLabel(card, node);
                 body = this.renderTreeNodeEditor(card, node, viewPath, { includeChildren: false });
             }
         }
@@ -6378,6 +6642,7 @@ class CompositionBuilderApp {
 
     _renderTreeRootView(card, opts = {}) {
         const cardId = card.id;
+        const cparticleBlock = this.renderCParticleNodeSettings(card, { cardId });
         const axisBlock = `
             <div class="subgroup" data-section-key="shape_axis">
                 <div class="subgroup-title">轴向</div>
@@ -6417,7 +6682,7 @@ class CompositionBuilderApp {
             helperName: "缩放助手", sectionKey: "shape_scale"
         });
         const childrenList = opts.includeChildren === false ? "" : this._renderTreeRootChildrenList(card);
-        return `${axisBlock}${displayBlock}${scaleBlock}${childrenList}`;
+        return `${cparticleBlock}${axisBlock}${displayBlock}${scaleBlock}${childrenList}`;
     }
 
     _renderTreeBreadcrumb(card, viewPath) {
@@ -6441,11 +6706,18 @@ class CompositionBuilderApp {
         return `<div class="tree-breadcrumb">${crumbs.join(' <span class="crumb-sep">&gt;</span> ')}</div>`;
     }
 
+    getShapeNodeTypeLabel(card, node) {
+        const type = String(node?.type || "single");
+        if (type === "particle_shape") return "形状";
+        if (type === "sequenced_shape") return "序列形状";
+        return card?.useCParticle === true || type === "cparticle" ? "C粒子" : "单粒子";
+    }
+
     _renderTreeRootChildrenList(card) {
         const children = card.shapeChildren || [];
         const cardId = card.id;
         const rows = children.map((child, idx) => {
-            const typeName = child.type === "particle_shape" ? "形状" : (child.type === "sequenced_shape" ? "序列形状" : "单粒子");
+            const typeName = this.getShapeNodeTypeLabel(card, child);
             return `
                 <div class="child-row" data-card-id="${cardId}">
                     <div class="child-row-main">
@@ -7422,7 +7694,7 @@ class CompositionBuilderApp {
         if (!children || !children.length) return;
         // For preview, use first child at each level to determine composition behavior
         const node = children[0];
-        if (!node || (node.type || "single") === "single") return;
+        if (!node || isCompositionLeafParticleType(node.type || "single")) return;
         const scope = this.getShapeScopeInfoByRuntimeLevel(card, depth);
         const actions = this.buildPreviewRuntimeActions(elapsedTick, node.displayActions || [], {
             skipExpression,
@@ -9069,15 +9341,26 @@ class CompositionBuilderApp {
   enable(): void;
   [key: string]: any;
 }`;
+        const vectorEditorType = (rawType) => {
+            const type = String(rawType || "").trim();
+            if (type === "RelativeLocation") return "RelativeLocationValue";
+            if (type === "Vector3f") return "Vector3fValue";
+            if (type === "Vec3" || type === "Vec3d") return "Vec3Value";
+            return "any";
+        };
+        lines.push(compositionVectorApiTypeDeclaration());
+        lines.push("interface RelativeLocationValue extends CompositionVector<RelativeLocationValue> {}");
+        lines.push("interface Vec3Value extends CompositionVector<Vec3Value> {}");
+        lines.push("interface Vector3fValue extends CompositionVector<Vector3fValue> {}");
         declareSymbol("Math", "Math");
         declareSymbol("PI", "number");
         declareSymbol("age", "number", true);
         declareSymbol("tick", "number", true);
         declareSymbol("tickCount", "number", true);
         declareSymbol("index", "number", true);
-        declareSymbol("rel", "any", true);
+        declareSymbol("rel", "RelativeLocationValue", true);
         declareSymbol("order", "any", true);
-        declareSymbol("axis", "any", true);
+        declareSymbol("axis", "RelativeLocationValue", true);
         declareSymbol("thisAt", "any", true);
         declareSymbol("particle", "any", true);
         declareSymbol("status", statusType, false, { keepReadonly: true });
@@ -9085,7 +9368,7 @@ class CompositionBuilderApp {
         for (const g of (this.state.globalVars || [])) {
             const name = String(g?.name || "").trim();
             if (!name) continue;
-            declareSymbol(name, "any", g?.mutable !== false);
+            declareSymbol(name, vectorEditorType(g?.type), g?.mutable !== false);
         }
         for (const c of (this.state.globalConsts || [])) {
             const name = String(c?.name || "").trim();
@@ -9097,9 +9380,9 @@ class CompositionBuilderApp {
             if (!name) continue;
             declareSymbol(name, "any", true);
         }
-        lines.push("declare function rotateToPoint(...args: any[]): any;");
+        lines.push("declare function rotateToPoint(to: RelativeLocationValue): void;");
         lines.push("declare function rotateAsAxis(...args: any[]): any;");
-        lines.push("declare function rotateToWithAngle(...args: any[]): any;");
+        lines.push("declare function rotateToWithAngle(to: RelativeLocationValue, angle: number): void;");
         if (allowGrowthApi) {
             lines.push("declare function addSingle(...args: any[]): any;");
             lines.push("declare function addMultiple(...args: any[]): any;");
@@ -9109,13 +9392,16 @@ class CompositionBuilderApp {
         if (allowScaleHelper) {
             lines.push("declare const scaleHelper: { doScale(...args: any[]): any; doScaleReversed(...args: any[]): any; };");
         }
-        lines.push("declare function RelativeLocation(...args: any[]): any;");
-        lines.push("declare namespace RelativeLocation { function yAxis(...args: any[]): any; }");
-        lines.push(`declare function ${getCompositionKotlinTarget(this.state.mapping).vec3Type}(...args: any[]): any;`);
-        lines.push("declare function Vector3f(...args: any[]): any;");
+        lines.push("declare function RelativeLocation(vector: CompositionVector<any>): RelativeLocationValue;");
+        lines.push("declare function RelativeLocation(x: number, y: number, z: number): RelativeLocationValue;");
+        lines.push("declare namespace RelativeLocation { function xAxis(): RelativeLocationValue; function yAxis(): RelativeLocationValue; function zAxis(): RelativeLocationValue; function zero(): RelativeLocationValue; }");
+        lines.push(`declare function ${getCompositionKotlinTarget(this.state.mapping).vec3Type}(vector: CompositionVector<any>): Vec3Value;`);
+        lines.push(`declare function ${getCompositionKotlinTarget(this.state.mapping).vec3Type}(x: number, y: number, z: number): Vec3Value;`);
+        lines.push("declare function Vector3f(vector: CompositionVector<any>): Vector3fValue;");
+        lines.push("declare function Vector3f(x: number, y: number, z: number): Vector3fValue;");
 
         for (const name of Array.from(allowed).sort((a, b) => a.localeCompare(b))) {
-            declareSymbol(name, "any", false);
+            declareSymbol(name, /^shapeRel\d+$/.test(name) ? "RelativeLocationValue" : "any", false);
         }
         for (const [name, meta] of declared.entries()) {
             lines.push(`declare ${meta.mutable ? "let" : "const"} ${name}: ${meta.type || "any"};`);
@@ -9851,6 +10137,8 @@ class CompositionBuilderApp {
             : this.getBezierToolScaleConfig(this.bezierToolTarget.scope, this.bezierToolTarget.cardId);
         if (this.dom.bezierFrame) {
             const q = new URLSearchParams({
+                theme: normalizeWorkbenchTheme(this.state.settings.theme),
+                mcTheme: minecraftThemeFor(this.state.settings.theme),
                 min: String(num(cfg.min)),
                 max: String(num(cfg.max)),
                 tick: String(Math.max(1, int(cfg.tick || 18))),
@@ -10136,12 +10424,24 @@ class CompositionBuilderApp {
 
     generateCodeAndRender(force = false) {
         if (!force && !this.state.settings.realtimeCode) return;
-        this.currentKotlin = this.generateKotlin();
-        this.renderKotlin(this.currentKotlin);
+        try {
+            this.currentKotlin = this.generateKotlin();
+            this.lastCodegenError = "";
+            this.renderKotlin(this.currentKotlin);
+            return true;
+        } catch (error) {
+            this.currentKotlin = "";
+            this.lastCodegenError = String(error?.message || error || "代码生成失败");
+            this.renderKotlin(`// 代码生成已阻止\n// ${this.lastCodegenError}`);
+            return false;
+        }
     }
 
     async copyCode() {
-        if (!this.currentKotlin) this.generateCodeAndRender(true);
+        if (!this.currentKotlin && this.generateCodeAndRender(true) === false) {
+            this.showToast(this.lastCodegenError || "代码生成失败", "error");
+            return;
+        }
         const text = this.currentKotlin || "";
         try {
             if (navigator.clipboard?.writeText) {
@@ -10161,7 +10461,10 @@ class CompositionBuilderApp {
     }
 
     async downloadCode() {
-        if (!this.currentKotlin) this.generateCodeAndRender(true);
+        if (!this.currentKotlin && this.generateCodeAndRender(true) === false) {
+            this.showToast(this.lastCodegenError || "代码生成失败", "error");
+            return;
+        }
         const cls = sanitizeKotlinClassName(this.state.projectName || "NewComposition");
         const filename = `${sanitizeFileBase(cls) || "NewComposition"}.kt`;
         const result = await this.saveTextWithPicker({
@@ -10970,7 +11273,9 @@ installExpressionEditorMethods(CompositionBuilderApp, {
     findFirstUnknownJsIdentifier,
     JS_LINT_GLOBALS,
     InlineCodeEditor,
-    mergeCompletionGroups
+    mergeCompletionGroups,
+    isCompositionLeafParticleType,
+    isCompositionCardUsingCParticle
 });
 
 installCodeCompileMethods(CompositionBuilderApp, {
@@ -10980,7 +11285,8 @@ installCodeCompileMethods(CompositionBuilderApp, {
 installTargetPresetMethods(CompositionBuilderApp, {
     esc,
     sanitizeKotlinClassName,
-    PARTICLE_INIT_TARGET_OPTIONS
+    PARTICLE_INIT_TARGET_OPTIONS,
+    CPARTICLE_INIT_TARGET_OPTIONS
 });
 
 installKotlinCodegenMethods(CompositionBuilderApp, {
@@ -10991,6 +11297,7 @@ installKotlinCodegenMethods(CompositionBuilderApp, {
     normalizeControllerAction,
     normalizeDisplayAction,
     normalizeAlphaHelperConfig,
+    normalizeCParticleAlphaConfig,
     normalizeScaleHelperConfig,
     normalizeShapeNestedLevel,
     sanitizeKotlinClassName,
@@ -11009,6 +11316,8 @@ installKotlinCodegenMethods(CompositionBuilderApp, {
     normalizeAngleUnit,
     translateJsBlockToKotlin,
     normalizeParticleFloatAssignmentExpr,
+    isCompositionShapeType,
+    findCompositionNestedShapePaths,
     DEFAULT_EFFECT_CLASS
 });
 
@@ -11021,6 +11330,7 @@ installPreviewRuntimeMethods(CompositionBuilderApp, {
     normalizeControllerAction,
     normalizeDisplayAction,
     normalizeAlphaHelperConfig,
+    normalizeCParticleAlphaConfig,
     normalizeScaleHelperConfig,
     normalizeShapeNestedLevel,
     ensureStatusHelperMethods,
@@ -11032,13 +11342,16 @@ installPreviewRuntimeMethods(CompositionBuilderApp, {
     normalizeAngleUnit,
     normalizeAngleOffsetEaseName,
     normalizeAngleOffsetEaseSpecialParams,
-    textureEffectWhitelist: EFFECT_CLASS_OPTIONS
+    textureEffectWhitelist: EFFECT_CLASS_OPTIONS,
+    isCompositionLeafParticleType
 });
 
 installCompositionPresetMethods(CompositionBuilderApp, {
     esc,
     normalizeCard,
-    normalizeShapeTreeNode
+    normalizeShapeTreeNode,
+    isCompositionShapeType,
+    findCompositionNestedShapePaths
 });
 
 const app = new CompositionBuilderApp();

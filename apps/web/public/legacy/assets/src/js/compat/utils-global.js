@@ -1,4 +1,4 @@
-import "./legacy-utils.global.js";
+import "./legacy-utils.global.js?v=20260820_2";
 
 export function installUtilsGlobal() {
   if (!globalThis.Utils) {

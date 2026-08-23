@@ -1,9 +1,9 @@
 import * as THREE from "three";
 import {OrbitControls} from "three/addons/controls/OrbitControls.js";
-import { createCardInputs, initCardSystem } from "./cards.js?v=20260711_2";
+import { createCardInputs, initCardSystem } from "./cards.js?v=20260820_2";
 import { initFilterSystem } from "./filters.js?v=20260429_7";
 import { initHotkeysSystem } from "./hotkeys.js?v=20260505_1";
-import { createKindDefs } from "./kinds.js?v=20260429_8";
+import { createKindDefs } from "./kinds.js?v=20260820_2";
 import { createBuilderTools } from "./builder.js?v=20260429_9";
 import { initLayoutSystem } from "./layout.js?v=20260429_1";
 import { createNodeHelpers } from "./nodes.js?v=20260316_1";
@@ -15,12 +15,19 @@ import {
     normalizePointsBuilderNodeTree,
     normalizePointsBuilderState,
     reassignPointsBuilderIds
-} from "./model.js?v=20260711_1";
+} from "./model.js?v=20260820_2";
 import { toggleFullscreen } from "./viewer.js";
 import { createPickerModule } from "./main-picker.js?v=20260502_4";
 import { initGlobalShortcuts } from "./main-shortcuts.js?v=20260505_1";
 import { initTopbarAndBoot } from "./main-topbar-boot.js?v=20260505_1";
 import { createPreviewDistanceTool } from "../../src/js/shared/preview-distance-tool.js";
+import {
+    getRandomPresetGroupOptions,
+    pickRandomPresetIdsForGroup
+} from "./preset-random.js";
+import {
+    shouldUseFocusedPointColor
+} from "./card-selection.js";
 import {
     sanitizeFileBase,
     loadProjectName,
@@ -30,11 +37,12 @@ import {
     loadAutoState,
     saveAutoState,
     loadPresetList,
+    hasPresetList,
     savePresetList,
     loadPresetGroups,
     savePresetGroups,
     downloadText
-} from "./io.js?v=20260501_7";
+} from "./io.js?v=20260801_1";
 
 const JSZIP_URL = new URL("../../shader_builder/js/jszip.min.js", import.meta.url).href;
 const NATIVE_SUGGESTION_SKIP_INPUT_TYPES = new Set([
@@ -164,6 +172,8 @@ function initPointsBuilderMain() {
     const presetRingOffsetY = document.getElementById("presetRingOffsetY");
     const presetRingOffsetZ = document.getElementById("presetRingOffsetZ");
     const presetRingReverse = document.getElementById("presetRingReverse");
+    const presetRingRandomEnabled = document.getElementById("presetRingRandomEnabled");
+    const presetRingRandomGroup = document.getElementById("presetRingRandomGroup");
     const presetRingSlots = document.getElementById("presetRingSlots");
     const btnPresetRingSyncSlots = document.getElementById("btnPresetRingSyncSlots");
     const btnPresetRingApply = document.getElementById("btnPresetRingApply");
@@ -290,6 +300,7 @@ function initPointsBuilderMain() {
     let presetDragLockPlanePreviousState = false;
     let suppressPresetGroupToggleUntil = 0;
     let presetRingSlotPresetIds = [];
+    let presetRingRandomPresetIds = [];
 
     // -------------------------
     // helpers
@@ -2537,13 +2548,15 @@ function initPointsBuilderMain() {
     }
 
     function normalizeState(obj) {
-        return normalizePointsBuilderState(obj, {
+        const normalized = normalizePointsBuilderState(obj, {
             idFactory: uid,
             toNumber: num,
             requireDirectRoot: true,
             normalizePresets: normalizePresetList,
             normalizeVariables: normalizeVariableState
         });
+        if (normalized) delete normalized.presets;
+        return normalized;
     }
 
     function deepCloneJson(obj) {
@@ -2752,12 +2765,10 @@ function initPointsBuilderMain() {
     }
 
     function persistPresetList() {
-        state.presets = normalizePresetList(presetList);
-        presetList = state.presets;
+        presetList = normalizePresetList(presetList);
         presetGroups = dedupePresetGroups(presetGroups.concat(presetList.map((it) => it.group)));
         savePresetGroups(presetGroups);
         savePresetList(presetList);
-        scheduleAutoSave();
         schedulePresetLibraryRender();
     }
 
@@ -3232,6 +3243,44 @@ function initPointsBuilderMain() {
         return Math.max(1, intFromInput(presetRingCount, 12));
     }
 
+    function isPresetRingRandomEnabled() {
+        return !!presetRingRandomEnabled?.checked && !!presetRingRandomGroup?.value;
+    }
+
+    function updatePresetRingRandomGroupOptions() {
+        if (!presetRingRandomGroup) return [];
+        const groups = getRandomPresetGroupOptions(getPresetList());
+        const current = String(presetRingRandomGroup.value || "");
+        presetRingRandomGroup.replaceChildren();
+        for (const group of groups) {
+            const option = document.createElement("option");
+            option.value = group;
+            option.textContent = group;
+            presetRingRandomGroup.appendChild(option);
+        }
+        presetRingRandomGroup.value = groups.includes(current) ? current : (groups[0] || "");
+        const hasGroups = groups.length > 0;
+        if (presetRingRandomEnabled) presetRingRandomEnabled.disabled = !hasGroups;
+        presetRingRandomGroup.disabled = !presetRingRandomEnabled?.checked || !hasGroups;
+        if (presetRingRandomEnabled && !hasGroups) presetRingRandomEnabled.checked = false;
+        const randomEnabled = isPresetRingRandomEnabled();
+        presetRingSlots?.classList.toggle("hidden", randomEnabled);
+        if (btnPresetRingSyncSlots) btnPresetRingSyncSlots.textContent = randomEnabled ? "重新随机" : "同步槽位";
+        return groups;
+    }
+
+    function refreshPresetRingRandomSelection() {
+        updatePresetRingRandomGroupOptions();
+        presetRingRandomPresetIds = isPresetRingRandomEnabled()
+            ? pickRandomPresetIdsForGroup(
+                getPresetList(),
+                presetRingRandomGroup.value,
+                getPresetRingCount()
+            )
+            : [];
+        return presetRingRandomPresetIds.slice();
+    }
+
     function getPresetRingPresetOptions() {
         return getPresetList().map((preset) => {
             const group = getPresetGroupLabel(preset.group);
@@ -3394,6 +3443,10 @@ function initPointsBuilderMain() {
         if (!presetRingStatus) return;
         const selected = getPresetRingSelectedIds().filter(Boolean).length;
         const count = getPresetRingCount();
+        if (isPresetRingRandomEnabled()) {
+            presetRingStatus.textContent = `随机组：${presetRingRandomGroup.value} · ${selected}/${count} 个槽位`;
+            return;
+        }
         presetRingStatus.textContent = `圆点模式：${selected}/${count} 个槽位已选择`;
     }
 
@@ -3436,11 +3489,15 @@ function initPointsBuilderMain() {
     }
 
     function syncPresetRingSlots() {
+        if (isPresetRingRandomEnabled()) refreshPresetRingRandomSelection();
         renderPresetRingSlots();
         renderPresetRingSharedVariables();
     }
 
     function getPresetRingSelectedIds() {
+        if (isPresetRingRandomEnabled()) {
+            return presetRingRandomPresetIds.slice(0, getPresetRingCount());
+        }
         if (!presetRingSlots) return presetRingSlotPresetIds.slice(0, getPresetRingCount());
         const ids = Array.from(presetRingSlots.querySelectorAll(".preset-ring-slot-select")).map((el) => el.value || el.dataset.value || "");
         presetRingSlotPresetIds = ids.slice(0, getPresetRingCount());
@@ -3698,6 +3755,7 @@ function initPointsBuilderMain() {
         if (!presetRingTool) return false;
         setRightPanelPage("presets");
         presetRingTool.classList.remove("hidden");
+        updatePresetRingRandomGroupOptions();
         renderPresetRingSlots();
         renderPresetRingSharedVariables();
         requestAnimationFrame(() => {
@@ -3816,9 +3874,18 @@ function initPointsBuilderMain() {
         const count = getPresetRingCount();
         const presetIds = getPresetRingSelectedIds();
         const presetsById = new Map(getPresetList().map((preset) => [preset.id, preset]));
-        const missingIndex = presetIds.findIndex((id) => !id || !presetsById.has(id));
+        let missingIndex = -1;
+        for (let index = 0; index < count; index++) {
+            if (!presetIds[index] || !presetsById.has(presetIds[index])) {
+                missingIndex = index;
+                break;
+            }
+        }
         if (missingIndex >= 0) {
-            showToast(`环形放置失败：第 ${missingIndex + 1} 个槽位未选择预设`, "error");
+            const message = isPresetRingRandomEnabled()
+                ? `环形放置失败：随机组“${presetRingRandomGroup.value}”中没有可用预设`
+                : `环形放置失败：第 ${missingIndex + 1} 个槽位未选择预设`;
+            showToast(message, "error");
             return false;
         }
         const options = {
@@ -6157,8 +6224,21 @@ function initPointsBuilderMain() {
                 showToast(`环形放置失败：${e.message || e}`, "error");
             });
         });
-        presetRingCount?.addEventListener("input", renderPresetRingSlots);
-        presetRingCount?.addEventListener("change", renderPresetRingSlots);
+        const handlePresetRingCountChange = () => {
+            if (isPresetRingRandomEnabled()) refreshPresetRingRandomSelection();
+            renderPresetRingSlots();
+        };
+        presetRingCount?.addEventListener("input", handlePresetRingCountChange);
+        presetRingCount?.addEventListener("change", handlePresetRingCountChange);
+        presetRingRandomEnabled?.addEventListener("change", () => {
+            updatePresetRingRandomGroupOptions();
+            if (isPresetRingRandomEnabled()) refreshPresetRingRandomSelection();
+            renderPresetRingSlots();
+        });
+        presetRingRandomGroup?.addEventListener("change", () => {
+            refreshPresetRingRandomSelection();
+            renderPresetRingSlots();
+        });
         [
             presetRingRadius,
             presetRingStartDeg,
@@ -6233,12 +6313,19 @@ function initPointsBuilderMain() {
         renderPresetLibrary();
     }
 
-    const restoredState = normalizeState(loadAutoState());
+    const storedState = loadAutoState();
+    const hadLegacyStatePresets = Object.prototype.hasOwnProperty.call(storedState || {}, "presets");
+    const legacyStatePresets = Array.isArray(storedState?.presets) ? storedState.presets : [];
+    const restoredState = normalizeState(storedState);
     if (restoredState) state = restoredState;
     state.variables = normalizeVariableState(state.variables);
-    presetList = dedupePresetList(loadPresetList().concat(state.presets || []));
+    const hasSharedPresetList = hasPresetList();
+    presetList = dedupePresetList(hasSharedPresetList ? loadPresetList() : legacyStatePresets);
+    let legacyPresetMigrationComplete = hasSharedPresetList || legacyStatePresets.length === 0;
+    if (!hasSharedPresetList && presetList.length) {
+        legacyPresetMigrationComplete = savePresetList(presetList);
+    }
     presetGroups = dedupePresetGroups(loadPresetGroups().concat(presetList.map((it) => it.group)));
-    state.presets = presetList;
 
     let autoSaveTimer = 0;
     let lastSavedStateJson = "";
@@ -6253,6 +6340,7 @@ function initPointsBuilderMain() {
     }
 
     lastSavedStateJson = safeStringifyState(state);
+    if (hadLegacyStatePresets && legacyPresetMigrationComplete) saveAutoState(state);
 
     function scheduleAutoSave() {
         if (autoSaveTimer) clearTimeout(autoSaveTimer);
@@ -9162,8 +9250,10 @@ function initPointsBuilderMain() {
             }
         }
 
-        // 聚焦色优先覆盖
-        const focusSeg = focusedNodeId ? nodePointSegments.get(focusedNodeId) : null;
+        // 只有仍在选中集合中的卡片才允许整段使用聚焦色。
+        const focusSeg = shouldUseFocusedPointColor(focusedNodeId, selectedIds)
+            ? nodePointSegments.get(focusedNodeId)
+            : null;
         paintPointSegment(attr, focusSeg, focusPointColor);
 
         const c2 = offsetPointColor;
@@ -9640,13 +9730,15 @@ function initPointsBuilderMain() {
         const selectedIds = (typeof getCardSelectionIds === "function") ? getCardSelectionIds() : null;
         if (selectedIds && selectedIds.size) {
             for (const id of selectedIds) {
-                const sel = elCardsRoot.querySelector(`.card[data-id="${id}"]`);
-                if (sel) sel.classList.add("multi-selected");
+                elCardsRoot.querySelectorAll(`.card[data-id="${id}"]`).forEach((el) => {
+                    el.classList.add("multi-selected");
+                });
             }
         }
         if (!focusedNodeId) return;
-        const el = elCardsRoot.querySelector(`.card[data-id="${focusedNodeId}"]`);
-        if (el) el.classList.add('focused');
+        elCardsRoot.querySelectorAll(`.card[data-id="${focusedNodeId}"]`).forEach((el) => {
+            el.classList.add('focused');
+        });
     }
 
     function setFocusedNode(id, recordHistory = true) {
@@ -10014,6 +10106,10 @@ const GEOMETRY_CENTER_PREVIEW_KINDS = new Set([
     "add_radian_center",
     "add_radian",
     "add_ball",
+    "add_ball_surface",
+    "add_ball_solid",
+    "add_ball_volume",
+    "add_cube_surface",
     "add_polygon",
     "add_polygon_in_circle",
     "add_round_shape",
@@ -12924,6 +13020,10 @@ function collectSyntheticVecTargetsForNode(node) {
         "add_radian_center",
         "add_radian",
         "add_ball",
+        "add_ball_surface",
+        "add_ball_solid",
+        "add_ball_volume",
+        "add_cube_surface",
         "add_polygon",
         "add_polygon_in_circle",
         "add_round_shape",

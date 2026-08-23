@@ -47,3 +47,31 @@ test('composition migrates only known legacy themes', () => {
     assert.equal(minecraftThemeFor(theme), 'deep-pink');
   }
 });
+
+test('deep pink preview keeps unselected particles white', async () => {
+  const css = await readFile(
+    new URL('../public/legacy/assets/shared/css/minecraft-theme.css', import.meta.url),
+    'utf8'
+  );
+  const deepPinkBlock = css.match(/body\[data-mc-theme="deep-pink"\][\s\S]*?\n\}/)?.[0] || '';
+  assert.match(deepPinkBlock, /--point-color:\s*#ffffff;/i);
+  assert.match(deepPinkBlock, /--point-focus:\s*var\(--mc-gold\);/);
+});
+
+test('composition Bezier tool inherits the active workbench theme', async () => {
+  const [mainSource, toolSource] = await Promise.all([
+    readFile(
+      new URL('../public/legacy/assets/composition_builder/js/main.js', import.meta.url),
+      'utf8'
+    ),
+    readFile(
+      new URL('../public/legacy/assets/src/js/pages/composition-bezier-tool.page.js', import.meta.url),
+      'utf8'
+    )
+  ]);
+
+  assert.match(mainSource, /theme:\s*normalizeWorkbenchTheme\(this\.state\.settings\.theme\)/);
+  assert.match(mainSource, /mcTheme:\s* minecraftThemeFor\(this\.state\.settings\.theme\)/);
+  assert.match(toolSource, /document\.body\.setAttribute\("data-theme", theme\)/);
+  assert.match(toolSource, /document\.body\.setAttribute\("data-mc-theme", mcTheme\)/);
+});

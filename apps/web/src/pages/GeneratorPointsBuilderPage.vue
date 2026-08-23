@@ -23,9 +23,11 @@ import {
   GENERATOR_POINTS_BUILDER_STATE_KEY,
   GENERATOR_POINTS_BUILDER_VARIABLE_CONTEXT_KEY,
   mergeGeneratorPointsBuilderSnapshot,
+  saveGeneratorPointsBuilderProject,
   shouldReuseGeneratorPointsBuilderDraft
 } from '../modules/generator/pointsbuilder-bridge.js';
 import { getProjectRepository } from '../services/repositories/project-repository.js';
+import { getElectronShell } from '../services/shell/electron-shell.js';
 
 const GENERATOR_STORAGE_KEY = 'vue_emitter_generator_state_v2';
 
@@ -143,12 +145,11 @@ function saveBuilderToEmitter() {
 async function saveBackToGenerator() {
   const project = saveBuilderToEmitter();
   if (!project || !projectId.value) return;
-  await projectRepository.save({
-    id: projectId.value,
-    tool: 'generator',
-    name: project.name || project.kotlin?.className || 'EmitterGenerator',
-    description: project.description || '',
-    payload: project
+  await saveGeneratorPointsBuilderProject({
+    projectRepository,
+    shell: getElectronShell(),
+    projectId: projectId.value,
+    project
   });
 }
 

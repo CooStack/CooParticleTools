@@ -3,6 +3,9 @@ import {
     mapCompositionKotlinType,
     rewriteCompositionKotlinExpression
 } from "./kotlin_mapping.js?v=20260720_1";
+import {
+    rewriteCompositionVectorCodeToKotlin
+} from "./composition_vector_expression.js?v=20260729_3";
 
 export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
     const {
@@ -13,6 +16,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         normalizeControllerAction,
         normalizeDisplayAction,
         normalizeAlphaHelperConfig,
+        normalizeCParticleAlphaConfig,
         normalizeScaleHelperConfig,
         sanitizeKotlinClassName,
         sanitizeKotlinIdentifier,
@@ -36,6 +40,18 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
     if (!CompositionBuilderApp || !CompositionBuilderApp.prototype) {
         throw new Error("installKotlinCodegenMethods requires CompositionBuilderApp");
     }
+    const normalizeCParticleAlpha = typeof normalizeCParticleAlphaConfig === "function"
+        ? normalizeCParticleAlphaConfig
+        : ((raw) => ({
+            fadeIn: Object.assign({ enabled: false, durationTicks: 10, fromAlpha: 0, toAlpha: 1 }, raw?.fadeIn || {}),
+            fadeOut: Object.assign({ enabled: false, durationTicks: 10, fromAlpha: 1, toAlpha: 0 }, raw?.fadeOut || {})
+        }));
+    const isCParticleOwnerType = (type) => type === "particle_shape" || type === "sequenced_shape";
+    const isCParticleCard = (card) => {
+        const type = String(card?.dataType || "single");
+        return (isCParticleOwnerType(type) && card?.useCParticle === true)
+            || ((type === "single" || type === "cparticle") && card?.particleBackend === "cparticle");
+    };
 
     class KotlinCodegenMixin {
     generateKotlin() {
@@ -48,7 +64,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             "import cn.coostack.cooparticlesapi.annotations.CodecField",
             "import cn.coostack.cooparticlesapi.annotations.CooAutoRegister",
             "import cn.coostack.cooparticlesapi.animation.timeline.*",
-            "import cn.coostack.cooparticlesapi.extend.asRelative",
+            "import cn.coostack.cooparticlesapi.extend.*",
             "import cn.coostack.cooparticlesapi.network.particle.composition.*",
             "import cn.coostack.cooparticlesapi.particles.ParticleDisplayer",
             "import cn.coostack.cooparticlesapi.particles.impl.*",
@@ -79,6 +95,13 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         }
         if (this.stateUsesTextureSheetCooTextureSheet()) {
             imports.push("import cn.coostack.cooparticlesapi.particles.CooParticleTextureSheet");
+        }
+        if (this.stateUsesCParticle()) {
+            imports.push("import cn.coostack.cooparticlesapi.cparticle.CParticleRenderLayer");
+            imports.push("import java.util.UUID");
+            if (this.stateUsesCParticleAlphaTransitions()) {
+                imports.push("import cn.coostack.cooparticlesapi.cparticle.CParticleCurve");
+            }
         }
         const importList = Array.from(new Set(imports));
 
@@ -173,6 +196,23 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         return String(projectAlpha?.type || "none") !== "none";
     }
 
+    stateUsesCParticle() {
+        return (Array.isArray(this.state.cards) ? this.state.cards : []).some((card) => (
+            isCParticleCard(card)
+        ));
+    }
+
+    stateUsesCParticleAlphaTransitions() {
+        const hasFade = (target) => {
+            const alpha = normalizeCParticleAlpha(target?.cparticleAlpha);
+            return alpha.fadeIn.enabled || alpha.fadeOut.enabled;
+        };
+        return (Array.isArray(this.state.cards) ? this.state.cards : []).some((card) => {
+            const gpu = isCParticleCard(card);
+            return gpu && hasFade(card);
+        });
+    }
+
     stateUsesTextureSheetLiteral(pattern) {
         let found = false;
         const matcher = pattern instanceof RegExp ? pattern : null;
@@ -258,7 +298,6 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             lines.push(`    private val alphaHelper = CompositionAlphaHelper(${formatKotlinDoubleLiteral(projectAlpha.min)}, ${formatKotlinDoubleLiteral(projectAlpha.max)}, ${Math.max(1, int(projectAlpha.tick))})`);
             lines.push("");
         }
-
         while (lines.length && lines[lines.length - 1] === "") lines.pop();
         return lines.join("\n");
     }
@@ -311,7 +350,12 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
 
         for (let i = 0; i < this.state.cards.length; i++) {
             const card = this.state.cards[i];
+            const cardName = String(card?.name || "")
+                .replace(/[\r\n\u2028\u2029]+/g, " ")
+                .replace(/\s+/g, " ")
+                .trim() || `卡片 ${i + 1}`;
             lines.push("");
+            lines.push(`        // ${cardName}`);
             lines.push(this.emitCardPut(card, className, sequencedRoot, i));
         }
 
@@ -356,7 +400,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
     resolveAngleOffsetConfig(raw, className) {
         if (!raw || raw.angleOffsetEnabled !== true) return null;
         const rawType = String(raw.type || raw.dataType || "").trim();
-        if (rawType === "single") return null;
+        if (rawType === "single" || rawType === "cparticle") return null;
         const count = Math.max(1, int(raw.angleOffsetCount || 1));
         if (count <= 1) return null;
         const glowTick = Math.max(1, int(raw.angleOffsetGlowTick || 20));
@@ -371,7 +415,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
     }
 
     resolveCardAngleOffsetConfig(card, className) {
-        if (!card || card.dataType === "single") return null;
+        if (!card || card.dataType === "single" || card.dataType === "cparticle") return null;
         return this.resolveAngleOffsetConfig(card, className);
     }
 
@@ -385,8 +429,14 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         const suppressNodeAngleOffsetIds = Array.isArray(actionCtx.suppressNodeAngleOffsetIds)
             ? actionCtx.suppressNodeAngleOffsetIds.map((it) => String(it || "").trim()).filter(Boolean)
             : [];
-        if (!suppressNodeAngleOffsetIds.length) return null;
-        return { suppressNodeAngleOffsetIds };
+        const inheritedCompositionTransforms = Array.isArray(actionCtx.inheritedCompositionTransforms)
+            ? actionCtx.inheritedCompositionTransforms.slice()
+            : [];
+        if (!suppressNodeAngleOffsetIds.length && !inheritedCompositionTransforms.length) return null;
+        return {
+            ...(suppressNodeAngleOffsetIds.length ? { suppressNodeAngleOffsetIds } : {}),
+            ...(inheritedCompositionTransforms.length ? { inheritedCompositionTransforms } : {})
+        };
     }
 
     normalizeVectorCtorNumericLiteral(rawArg, mode = "double") {
@@ -407,34 +457,137 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
 
     rewriteVectorCtorNumericLiterals(exprRaw) {
         const src = String(exprRaw || "");
-        const rewrite = (ctor, a, b, c) => {
+        const rewrite = (ctor, args) => {
             const mode = ctor === "Vector3f" ? "float" : "double";
-            const x = this.normalizeVectorCtorNumericLiteral(a, mode);
-            const y = this.normalizeVectorCtorNumericLiteral(b, mode);
-            const z = this.normalizeVectorCtorNumericLiteral(c, mode);
-            return `${ctor}(${x}, ${y}, ${z})`;
+            return `${ctor}(${args.map((arg) => this.normalizeVectorCtorNumericLiteral(arg, mode)).join(", ")})`;
         };
-        let out = src.replace(
-            /\bVector3f\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
-            (m, a, b, c) => rewrite("Vector3f", a, b, c)
-        );
-        out = out.replace(
-            /\bVec3\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
-            (m, a, b, c) => rewrite("Vec3", a, b, c)
-        );
-        out = out.replace(
-            /\bVec3d\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
-            (m, a, b, c) => rewrite("Vec3d", a, b, c)
-        );
-        out = out.replace(
-            /\bRelativeLocation\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
-            (m, a, b, c) => rewrite("RelativeLocation", a, b, c)
-        );
-        return out;
+        const constructors = new Set(["Vec3", "Vec3d", "RelativeLocation", "Vector3f"]);
+        const findClosingParen = (text, openIndex) => {
+            let depth = 0;
+            let quote = "";
+            for (let i = openIndex; i < text.length; i++) {
+                const ch = text[i];
+                if (quote) {
+                    if (ch === "\\") i += 1;
+                    else if (ch === quote) quote = "";
+                    continue;
+                }
+                if (ch === "\"" || ch === "'" || ch === "`") {
+                    quote = ch;
+                    continue;
+                }
+                if (ch === "(") depth += 1;
+                else if (ch === ")" && --depth === 0) return i;
+            }
+            return -1;
+        };
+        const splitArguments = (text) => {
+            const args = [];
+            let start = 0;
+            let depth = 0;
+            let quote = "";
+            for (let i = 0; i < text.length; i++) {
+                const ch = text[i];
+                if (quote) {
+                    if (ch === "\\") i += 1;
+                    else if (ch === quote) quote = "";
+                    continue;
+                }
+                if (ch === "\"" || ch === "'" || ch === "`") {
+                    quote = ch;
+                    continue;
+                }
+                if (ch === "(" || ch === "[" || ch === "{") depth += 1;
+                else if (ch === ")" || ch === "]" || ch === "}") depth -= 1;
+                else if (ch === "," && depth === 0) {
+                    args.push(text.slice(start, i).trim());
+                    start = i + 1;
+                }
+            }
+            args.push(text.slice(start).trim());
+            return args;
+        };
+        const rewriteSegment = (text) => {
+            let output = "";
+            let index = 0;
+            while (index < text.length) {
+                if (text.startsWith("//", index)) {
+                    const end = text.indexOf("\n", index);
+                    if (end < 0) return output + text.slice(index);
+                    output += text.slice(index, end + 1);
+                    index = end + 1;
+                    continue;
+                }
+                if (text.startsWith("/*", index)) {
+                    const end = text.indexOf("*/", index + 2);
+                    const next = end < 0 ? text.length : end + 2;
+                    output += text.slice(index, next);
+                    index = next;
+                    continue;
+                }
+                const quote = text.startsWith('"""', index) ? '"""' : (["\"", "'", "`"].includes(text[index]) ? text[index] : "");
+                if (quote) {
+                    let end = index + quote.length;
+                    while (end < text.length) {
+                        if (quote.length === 1 && text[end] === "\\") {
+                            end += 2;
+                            continue;
+                        }
+                        if (text.startsWith(quote, end)) {
+                            end += quote.length;
+                            break;
+                        }
+                        end += 1;
+                    }
+                    output += text.slice(index, end);
+                    index = end;
+                    continue;
+                }
+                const id = text.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0] || "";
+                if (!id || !constructors.has(id)) {
+                    output += text[index++];
+                    continue;
+                }
+                let open = index + id.length;
+                while (/\s/.test(text[open] || "")) open += 1;
+                if (text[open] !== "(") {
+                    output += id;
+                    index += id.length;
+                    continue;
+                }
+                const close = findClosingParen(text, open);
+                if (close < 0) {
+                    output += text.slice(index);
+                    break;
+                }
+                const args = splitArguments(text.slice(open + 1, close)).map(rewriteSegment);
+                output += args.length === 3
+                    ? rewrite(id, args)
+                    : `${id}(${args.join(", ")})`;
+                index = close + 1;
+            }
+            return output;
+        };
+        return rewriteSegment(src);
     }
 
-    rewriteCodeExpr(exprRaw, className) {
-        const qualified = rewriteClassQualifier(String(exprRaw || ""), className);
+    getCompositionVectorExpressionSymbols() {
+        return [
+            ...(this.state.globalVars || []),
+            ...(this.state.globalConsts || [])
+        ].map((item) => ({
+            name: String(item?.name || "").trim(),
+            type: mapCompositionKotlinType(item?.type, this.state.mapping)
+        }));
+    }
+
+    rewriteCodeExpr(exprRaw, className, expectedVectorType = "") {
+        const vectorExpression = rewriteCompositionVectorCodeToKotlin(String(exprRaw || ""), {
+            symbols: this.getCompositionVectorExpressionSymbols(),
+            expectedType: expectedVectorType,
+            mapping: this.state.mapping
+        });
+        const qualified = rewriteClassQualifier(vectorExpression, className);
         const normalized = this.rewriteVectorCtorNumericLiterals(qualified);
         return rewriteCompositionKotlinExpression(normalized, this.state.mapping);
     }
@@ -459,7 +612,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
     }
 
     rewriteRelativeTargetExpr(exprRaw, className) {
-        const expr = this.rewriteCodeExpr(exprRaw, className).trim();
+        const expr = this.rewriteCodeExpr(exprRaw, className, "RelativeLocation").trim();
         if (!expr) return "RelativeLocation.yAxis()";
         if (this.shouldAutoAsRelative(expr, className)) {
             if (/^(Vec3|Vec3d|Vector3f)\s*\(/.test(expr)) return `(${expr}).asRelative()`;
@@ -513,7 +666,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             const countVar = `angleOffsetCount${suffix}`;
             const angleVar = `finalAngle${suffix}`;
             const countLiteral = formatKotlinDoubleLiteral(Math.max(1, int(offsetCfg.count)));
-            const dataExpr = this.emitCompositionDataExpr(card, className, sequencedRoot, "                    ", {
+            const dataExpr = this.emitCompositionDataExpr(card, className, sequencedRoot, "                ", {
                 angleOffsetExpr: angleVar,
                 angleOffsetConfig: offsetCfg,
                 suppressNodeAngleOffsetIds: offsetCfg?.hoistedFromNodeId ? [offsetCfg.hoistedFromNodeId] : []
@@ -528,12 +681,31 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
                 "        }"
             ].join("\n");
         }
-        const dataExpr = this.emitCompositionDataExpr(card, className, sequencedRoot, "                ");
+        const dataExpr = this.emitCompositionDataExpr(card, className, sequencedRoot, "            ");
         return [
             "        result[",
             dataExpr,
             `        ] = ${rel}`
         ].join("\n");
+    }
+
+    resolveCParticlePolicy(target, inheritedPolicy = null) {
+        const inheritedEnabled = inheritedPolicy === true || inheritedPolicy?.enabled === true;
+        const type = String(target?.type || target?.dataType || "single");
+        const isCardRoot = Object.prototype.hasOwnProperty.call(target || {}, "dataType");
+        const enabled = inheritedEnabled
+            || (isCardRoot && ((isCParticleOwnerType(type) && target?.useCParticle === true)
+                || ((type === "single" || type === "cparticle") && target?.particleBackend === "cparticle")));
+        if (!enabled) return null;
+        return {
+            enabled: true,
+            renderLayer: this.normalizeCParticleRenderLayer(target?.cparticleRenderLayer),
+            randomAgePreTick: target?.randomAgePreTick === true,
+            initialAlphaZero: inheritedPolicy?.initialAlphaZero === true
+                || (isCardRoot
+                    && isCParticleOwnerType(type)
+                    && normalizeCParticleAlpha(target?.cparticleAlpha).fadeIn.enabled)
+        };
     }
 
 
@@ -555,35 +727,235 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         } else {
             lines.push(`${indentBase}CompositionData()`);
         }
+        const cardPolicy = this.resolveCParticlePolicy(card);
         lines.push(`${indentBase}    .setDisplayerSupplier {`);
-        if (card.dataType === "single") {
-            lines.push(`${indentBase}        ParticleDisplayer.withSingle(${sanitizeKotlinIdentifier(card.singleEffectClass || DEFAULT_EFFECT_CLASS, DEFAULT_EFFECT_CLASS)}(it))`);
+        if (card.dataType === "single" || card.dataType === "cparticle") {
+            if (cardPolicy) {
+                lines.push(`${indentBase}        ParticleDisplayer.withCParticle(it, CParticleRenderLayer.${cardPolicy.renderLayer})`);
+            } else {
+                lines.push(`${indentBase}        ParticleDisplayer.withSingle(${sanitizeKotlinIdentifier(card.singleEffectClass || DEFAULT_EFFECT_CLASS, DEFAULT_EFFECT_CLASS)}(it))`);
+            }
         } else if (card.dataType === "particle_shape") {
-            lines.push(indentText(this.buildShapeDisplayerExpr(card, className, "particle_shape", actionCtx), `${indentBase}        `));
+            lines.push(indentText(this.buildShapeDisplayerExpr(card, className, "particle_shape", actionCtx, cardPolicy), `${indentBase}        `));
         } else {
-            lines.push(indentText(this.buildShapeDisplayerExpr(card, className, "sequenced_shape", actionCtx), `${indentBase}        `));
+            lines.push(indentText(this.buildShapeDisplayerExpr(card, className, "sequenced_shape", actionCtx, cardPolicy), `${indentBase}        `));
         }
         lines.push(`${indentBase}    }`);
 
-        if (card.dataType === "single") {
-            lines.push(this.buildSingleDataChain(card, className, `${indentBase}    `));
+        if (card.dataType === "single" || card.dataType === "cparticle") {
+            const particleType = cardPolicy ? "cparticle" : "single";
+            lines.push(this.buildSingleDataChain({
+                ...card,
+                randomAgePreTick: cardPolicy?.randomAgePreTick === true
+            }, className, `${indentBase}    `, particleType));
         }
         return lines.join("\n");
     }
 
-    buildSingleDataChain(card, className, indentBase = "                    ") {
+    normalizeCParticleRenderLayer(value) {
+        const layer = String(value || "");
+        return [
+            "OPAQUE",
+            "TRANSLUCENT",
+            "ADDITION_BLEND",
+            "ADDITION_BLEND_NOT_HDR",
+            "ADDITION_BLEND_NOT_HDR_NO_DEPTH_WRITE",
+            "ADDITION_BLEND_TRANSLUCENT",
+            "ADDITION_BLEND_TRANSLUCENT_NOT_HDR",
+            "ADDITION_BLEND_TRANSLUCENT_NOT_HDR_NO_DEPTH_WRITE",
+            "ADDITION_BLEND_TRANSLUCENT_NO_DEPTH_WRITE"
+        ].includes(layer) ? layer : "ADDITION_BLEND_TRANSLUCENT";
+    }
+
+    normalizeCParticleInitTarget(value) {
+        const target = String(value || "").trim();
+        const lower = target.toLowerCase();
+        if (["particlealpha", "particle.particlealpha", "alpha"].includes(lower)) return "alpha";
+        if (["particlesize", "particle.particlesize", "size"].includes(lower)) return "size";
+        if (["particlecolor", "particle.particlecolor", "color"].includes(lower)) return "color";
+        if (["currentage", "age"].includes(lower)) return "age";
+        if (["lifetime", "lifetime", "maxage"].includes(lower)) return "maxAge";
+        if (lower === "texturesheet") return "";
+        return target;
+    }
+
+    normalizeCParticleFloatExpression(exprRaw) {
+        const expr = String(exprRaw || "").trim();
+        if (!expr) return expr;
+        if (isPlainNumericLiteralText(expr)) return normalizeKotlinFloatLiteralText(expr);
+        return /\.toFloat\(\)\s*$/.test(expr) ? expr : `(${expr}).toFloat()`;
+    }
+
+    rewriteCParticleControllerScript(scriptRaw) {
+        let source = String(scriptRaw || "");
+        source = source.replace(
+            /\bparticle\.(?=(?:setAlpha|setColor|setSize|teleportTo|rotateToPoint|rotateToWithAngle|rotateAsAxis|remove|moveToWithPhysics|moveWithPhysics)\s*\()/g,
+            ""
+        );
+        source = source.replace(/\bparticle\.(?=(?:pos|velocity|valid)\b)/g, "");
+        source = source.replace(/(^|[^A-Za-z0-9_$.])(?:(?:this|particle)\.)?(particleAlpha|alpha|particleSize|size|particleColor|color)\s*=\s*(?!=)([^;\n]+)/gim, (full, prefix, targetRaw, exprRaw) => {
+            const target = String(targetRaw || "").toLowerCase();
+            const expr = String(exprRaw || "").trim();
+            if (target === "particlealpha" || target === "alpha") {
+                return `${prefix}setAlpha(${this.normalizeCParticleFloatExpression(expr)})`;
+            }
+            if (target === "particlesize" || target === "size") {
+                return `${prefix}setSize(${this.normalizeCParticleFloatExpression(expr)})`;
+            }
+            return `${prefix}setColor(${expr})`;
+        });
+        source = source.replace(/\bsetSize\(\s*([+\-]?\d+(?:\.\d+)?)\s*,\s*([+\-]?\d+(?:\.\d+)?)\s*\)/g, (full, width, height) => (
+            `setSize(${this.normalizeCParticleFloatExpression(width)}, ${this.normalizeCParticleFloatExpression(height)})`
+        ));
+        source = source.replace(/\bsetColor\(\s*([+\-]?\d+(?:\.\d+)?)\s*,\s*([+\-]?\d+(?:\.\d+)?)\s*,\s*([+\-]?\d+(?:\.\d+)?)\s*\)/g, (full, red, green, blue) => (
+            `setColor(${this.normalizeCParticleFloatExpression(red)}, ${this.normalizeCParticleFloatExpression(green)}, ${this.normalizeCParticleFloatExpression(blue)})`
+        ));
+        return source.replace(/\b(setAlpha|setSize)\(\s*([+\-]?\d+(?:\.\d+)?)\s*\)/g, (full, method, value) => (
+            `${method}(${this.normalizeCParticleFloatExpression(value)})`
+        ));
+    }
+
+    findUnsupportedCParticleControllerIdentifier(sourceRaw, card = null) {
+        const source = String(sourceRaw || "").replace(
+            /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+            (match) => " ".repeat(match.length)
+        );
+        const defined = new Set();
+        for (const item of [
+            ...(this.state.globalVars || []),
+            ...(this.state.globalConsts || []),
+            ...(card?.controllerVars || [])
+        ]) {
+            const name = String(item?.name || "").trim();
+            if (name) defined.add(name);
+        }
+        for (const match of source.matchAll(/\b(?:var|val|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+            defined.add(match[1]);
+        }
+        const unsupported = new Set([
+            "age",
+            "currentAge",
+            "lifetime",
+            "lifeTime",
+            "maxAge",
+            "textureSheet",
+            "tick",
+            "tickCount",
+            "index",
+            "particle"
+        ]);
+        for (const match of source.matchAll(/\b(?:age|currentAge|lifetime|lifeTime|maxAge|textureSheet|tick|tickCount|index|particle)\b/g)) {
+            const name = match[0];
+            if (defined.has(name)) continue;
+            if (match.index > 0 && source[match.index - 1] === ".") continue;
+            return name;
+        }
+        return "";
+    }
+
+    assertCParticleControllerCompatible(sourceRaw, card = null) {
+        const name = this.findUnsupportedCParticleControllerIdentifier(sourceRaw, card);
+        if (!name) return;
+        const owner = String(card?.name || card?.id || "CParticle").trim() || "CParticle";
+        throw new Error(`${owner} 的 CParticle 控制器不支持 ${name}；请把 age/maxAge 放到实例初始化，并仅在控制器中使用 CParticleControlable 句柄 API`);
+    }
+
+    rewritePreTickRuntimeRel(sourceRaw, depth = 1) {
+        const source = String(sourceRaw || "");
+        const relName = `rel${Math.max(1, int(depth || 1))}`;
+        let output = "";
+        let used = false;
+        let index = 0;
+        const isIdentifierStart = (ch) => /[A-Za-z_$]/.test(ch || "");
+        const isIdentifierPart = (ch) => /[A-Za-z0-9_$]/.test(ch || "");
+        while (index < source.length) {
+            if (source.startsWith("//", index)) {
+                const end = source.indexOf("\n", index);
+                if (end < 0) {
+                    output += source.slice(index);
+                    break;
+                }
+                output += source.slice(index, end + 1);
+                index = end + 1;
+                continue;
+            }
+            if (source.startsWith("/*", index)) {
+                const end = source.indexOf("*/", index + 2);
+                const next = end < 0 ? source.length : end + 2;
+                output += source.slice(index, next);
+                index = next;
+                continue;
+            }
+            const quote = source.startsWith('"""', index)
+                ? '"""'
+                : (["\"", "'", "`"].includes(source[index]) ? source[index] : "");
+            if (quote) {
+                let end = index + quote.length;
+                while (end < source.length) {
+                    if (quote.length === 1 && source[end] === "\\") {
+                        end += 2;
+                        continue;
+                    }
+                    if (source.startsWith(quote, end)) {
+                        end += quote.length;
+                        break;
+                    }
+                    end += 1;
+                }
+                output += source.slice(index, end);
+                index = end;
+                continue;
+            }
+            if (!isIdentifierStart(source[index])) {
+                output += source[index++];
+                continue;
+            }
+            let end = index + 1;
+            while (end < source.length && isIdentifierPart(source[end])) end += 1;
+            const identifier = source.slice(index, end);
+            let previous = index - 1;
+            while (previous >= 0 && /\s/.test(source[previous])) previous -= 1;
+            if (identifier === "rel" && source[previous] !== ".") {
+                output += relName;
+                used = true;
+            } else {
+                output += identifier;
+            }
+            index = end;
+        }
+        return { code: output, used, relName };
+    }
+
+    emitPreTickRuntimeRelDeclaration(className, relName, indent) {
+        const cls = sanitizeKotlinClassName(className || "NewComposition");
+        return `${indent}val ${relName} = (this@${cls}.position - this.position).asRelative()`;
+    }
+
+    buildSingleDataChain(card, className, indentBase = "                    ", particleType = "single", opts = {}) {
         const lines = [];
+        const isCParticle = particleType === "cparticle";
+        const runtimeRelDepth = Math.max(1, int(opts?.runtimeRelDepth || 1));
         const normalizeParticleExpr = typeof normalizeParticleFloatAssignmentExpr === "function"
             ? normalizeParticleFloatAssignmentExpr
             : ((targetName, exprRaw) => String(exprRaw || "").trim());
         const rewriteStatus = typeof rewriteControllerStatusQualifier === "function"
             ? rewriteControllerStatusQualifier
             : ((exprRaw) => String(exprRaw || ""));
-        if (Array.isArray(card.particleInit) && card.particleInit.length) {
-            lines.push(`${indentBase}.addParticleInstanceInit {`);
+        const useCParticleEffect = isCParticle && card?.singleUseTexture !== false && card?.useTexture !== false;
+        const randomAgePreTick = isCParticle && card?.randomAgePreTick === true;
+        const initialAlphaZero = isCParticle && opts?.initialAlphaZero === true;
+        if ((Array.isArray(card.particleInit) && card.particleInit.length) || useCParticleEffect || randomAgePreTick || initialAlphaZero) {
+            lines.push(`${indentBase}.${isCParticle ? "addCParticleInstanceInit" : "addParticleInstanceInit"} {`);
+            if (useCParticleEffect) {
+                const effectClass = sanitizeKotlinIdentifier(card.effectClass || card.singleEffectClass || DEFAULT_EFFECT_CLASS, DEFAULT_EFFECT_CLASS);
+                lines.push(`${indentBase}    effect = ${effectClass}(UUID.randomUUID())`);
+            }
+            if (randomAgePreTick) lines.push(`${indentBase}    randomAgePreTick = true`);
             for (const it of card.particleInit) {
                 const targetRaw = String(it?.target || "size").trim();
-                const target = sanitizeKotlinIdentifier(targetRaw || "size", "size");
+                const normalizedTarget = isCParticle ? this.normalizeCParticleInitTarget(targetRaw) : targetRaw;
+                if (!normalizedTarget) continue;
+                const target = sanitizeKotlinIdentifier(normalizedTarget || "size", "size");
                 const isTextureSheetTarget = targetRaw.toLowerCase() === "texturesheet";
                 const exprRaw = isTextureSheetTarget
                     ? String(it?.codegenExpr || it?.codegenExprPreset || it?.expr || "").trim()
@@ -592,9 +964,13 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
                 if (!isTextureSheetTarget) {
                     expr = normalizeParticleExpr(target, expr);
                 }
+                if (isCParticle && (target === "alpha" || target === "size")) {
+                    expr = this.normalizeCParticleFloatExpression(expr);
+                }
                 if (!expr) continue;
                 lines.push(`${indentBase}    ${target} = ${expr}`);
             }
+            if (initialAlphaZero) lines.push(`${indentBase}    alpha = 0f`);
             lines.push(`${indentBase}}`);
         }
 
@@ -604,7 +980,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         const hasTick = Array.isArray(card.controllerVars) && card.controllerVars.length;
         const actions = Array.isArray(card.controllerActions) ? card.controllerActions.map((it) => normalizeController(it)) : [];
         if (hasTick || actions.length) {
-            lines.push(`${indentBase}.addParticleControlerInstanceInit {`);
+            lines.push(`${indentBase}.${isCParticle ? "addCParticleControlerInstanceInit" : "addParticleControlerInstanceInit"} {`);
             for (const v of (card.controllerVars || [])) {
                 const vName = sanitizeKotlinIdentifier(v.name || "v", "v");
                 const storedType = sanitizeKotlinIdentifier(v.type || "Boolean", "Boolean");
@@ -612,6 +988,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
                 let expr = this.rewriteCodeExpr(String(v.expr || "").trim(), className);
                 expr = rewriteStatus(expr, className);
                 if (!expr) expr = this.rewriteCodeExpr(defaultLiteralForKotlinType(storedType), className);
+                if (isCParticle) this.assertCParticleControllerCompatible(expr, card);
                 if (/^float$/i.test(storedType)) {
                     if (isPlainNumericLiteralText(expr)) expr = normalizeKotlinFloatLiteralText(expr);
                     else if (!/\.toFloat\(\)\s*$/.test(expr)) expr = `(${expr}).toFloat()`;
@@ -622,10 +999,20 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             }
             for (const action of actions) {
                 const script = this.rewriteCodeExpr(String(action.script || "").trim(), className);
-                const patched = rewriteStatus(script, className);
+                let patched = rewriteStatus(script, className);
+                if (isCParticle) patched = this.rewriteCParticleControllerScript(patched);
                 if (!patched) continue;
+                if (isCParticle) this.assertCParticleControllerCompatible(patched, card);
+                const runtimeRel = this.rewritePreTickRuntimeRel(patched, runtimeRelDepth);
                 lines.push(`${indentBase}    addPreTickAction {`);
-                lines.push(translateJsBlockToKotlin(patched, `${indentBase}        `));
+                if (runtimeRel.used) {
+                    lines.push(this.emitPreTickRuntimeRelDeclaration(
+                        className,
+                        runtimeRel.relName,
+                        `${indentBase}        `
+                    ));
+                }
+                lines.push(translateJsBlockToKotlin(runtimeRel.code, `${indentBase}        `));
                 lines.push(`${indentBase}    }`);
             }
             lines.push(`${indentBase}}`);
@@ -638,7 +1025,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         return {
             depth: d,
             relName: `shapeRel${d}`,
-            orderName: sequenced ? `shapeOrder${d}` : "",
+            orderName: sequenced ? "order" : "",
             parent: parentCtx && typeof parentCtx === "object" ? parentCtx : null
         };
     }
@@ -650,11 +1037,40 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
     }
 
     emitShapeCompositionDataBase(ctx, indent = "            ") {
-        if (ctx?.orderName) return `${indent}CompositionData().apply { order = ${ctx.orderName} }`;
+        if (ctx?.orderName) return `${indent}CompositionData().apply { this.order = ${ctx.orderName} }`;
         return `${indent}CompositionData()`;
     }
 
-    buildShapeDisplayerExpr(card, className, type = "particle_shape", actionCtx = null) {
+    emitCParticleAlphaTransitions(lines, rawConfig, className, indent = "        ") {
+        const config = normalizeCParticleAlpha(rawConfig);
+        const fadeIn = config.fadeIn;
+        const fadeOut = config.fadeOut;
+        if (!fadeIn.enabled && !fadeOut.enabled) return;
+        const emitTransition = (fade, callIndent) => {
+            lines.push(`${callIndent}playCParticleAlphaTransition(`);
+            lines.push(`${callIndent}    durationTicks = ${formatKotlinDoubleLiteral(fade.durationTicks)}f,`);
+            lines.push(`${callIndent}    alphaCurve = CParticleCurve.linear(${formatKotlinDoubleLiteral(fade.fromAlpha)}f, ${formatKotlinDoubleLiteral(fade.toAlpha)}f)`);
+            lines.push(`${callIndent})`);
+        };
+        const cls = sanitizeKotlinClassName(className);
+        lines.push(`${indent}addPreTickAction {`);
+        if (fadeOut.enabled) {
+            lines.push(`${indent}    if (this@${cls}.status.isDisable()) {`);
+            emitTransition(fadeOut, `${indent}        `);
+            if (fadeIn.enabled) {
+                lines.push(`${indent}    } else {`);
+                emitTransition(fadeIn, `${indent}        `);
+            }
+            lines.push(`${indent}    }`);
+        } else {
+            lines.push(`${indent}    if (!this@${cls}.status.isDisable()) {`);
+            emitTransition(fadeIn, `${indent}        `);
+            lines.push(`${indent}    }`);
+        }
+        lines.push(`${indent}}`);
+    }
+
+    buildShapeDisplayerExpr(card, className, type = "particle_shape", actionCtx = null, cparticlePolicy = null) {
         const isSequenced = type === "sequenced_shape";
         const cls = isSequenced ? "SequencedParticleShapeComposition" : "ParticleShapeComposition";
         const axisExpr = this.rewriteRelativeTargetExpr(String(card.shapeAxisExpr || card.shapeAxisPreset || "RelativeLocation.yAxis()"), className);
@@ -666,19 +1082,30 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         lines.push(`    ${cls}(it).apply {`);
         if (axisExpr) lines.push(`        axis = ${axisExpr}`);
         const children = card.shapeChildren || [];
-        const childActionCtx = this.createDescendantActionCtx(actionCtx);
-        this._emitTreeNodeChildrenApplyCodegen(lines, children, card, className, rootCtx, "        ", childActionCtx);
+        const childActionCtx = this.createDescendantActionCtx(actionCtx) || {};
+        childActionCtx.inheritedCompositionTransforms = [
+            ...(Array.isArray(actionCtx?.inheritedCompositionTransforms) ? actionCtx.inheritedCompositionTransforms : []),
+            {
+                id: card.id,
+                shapeDisplayActions: Array.isArray(card.shapeDisplayActions) ? card.shapeDisplayActions : [],
+                shapeScale: card.shapeScale,
+                scopeInfo: rootScopeInfo,
+                runtimeRelDepth: 1
+            }
+        ];
+        this._emitTreeNodeChildrenApplyCodegen(lines, children, card, className, rootCtx, "        ", childActionCtx, cparticlePolicy, isSequenced);
+        if (cparticlePolicy) this.emitCParticleAlphaTransitions(lines, card.cparticleAlpha, className, "        ");
         lines.push(this.applyCardCompositionActions(card, className, "        ", isSequenced, rootScopeInfo, actionCtx));
         lines.push("    }");
         lines.push(")");
         return lines.join("\n");
     }
 
-    _emitTreeNodeChildrenApplyCodegen(lines, children, card, className, parentCtx, indent, actionCtx) {
+    _emitTreeNodeChildrenApplyCodegen(lines, children, card, className, parentCtx, indent, actionCtx, cparticlePolicy = null, parentSequenced = false) {
         const nodes = Array.isArray(children) ? children : [];
         if (!nodes.length) return;
         for (const child of nodes) {
-            this._emitTreeNodeApplyBlockCodegen(lines, child, card, className, parentCtx, indent, actionCtx);
+            this._emitTreeNodeApplyBlockCodegen(lines, child, card, className, parentCtx, indent, actionCtx, null, cparticlePolicy, parentSequenced);
         }
     }
 
@@ -701,7 +1128,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         }
     }
 
-    _emitTreeNodeApplyBlockCodegen(lines, node, card, className, parentCtx, indent, actionCtx, opts = null) {
+    _emitTreeNodeApplyBlockCodegen(lines, node, card, className, parentCtx, indent, actionCtx, opts = null, inheritedCParticlePolicy = null, parentSequenced = false) {
         if (!node) return;
         const options = (opts && typeof opts === "object") ? opts : null;
         const nodeType = node.type || "single";
@@ -710,8 +1137,9 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         const builderExpr = this.emitBuilderExprFromState(node.builderState);
         const isSequenced = nodeType === "sequenced_shape";
         const depth = parentCtx ? int(parentCtx.depth) + 1 : 1;
-        const ctx = this.createShapeDataLambdaContext(depth, isSequenced, parentCtx);
+        const ctx = this.createShapeDataLambdaContext(depth, parentSequenced, parentCtx);
         const dataLambdaHead = this.formatShapeDataLambdaParams(ctx);
+        const cparticlePolicy = this.resolveCParticlePolicy(node, inheritedCParticlePolicy);
         const suppressNodeAngleOffsetIds = Array.isArray(actionCtx?.suppressNodeAngleOffsetIds)
             ? actionCtx.suppressNodeAngleOffsetIds.map((it) => String(it || "").trim()).filter(Boolean)
             : [];
@@ -724,20 +1152,20 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             lines.push(`${indent}repeat(${angleOffsetCount}) { index ->`);
             lines.push(`${indent}    val finalAngle = (${offsetCfg.totalAngleExpr}) * (index / ${angleOffsetCountLiteral})`);
             const innerActionCtx = { angleOffsetExpr: "finalAngle", angleOffsetConfig: offsetCfg };
-            if (nodeType === "single") {
-                this._emitTreeNodeSingleApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, `${indent}    `, innerActionCtx);
+            if (nodeType === "single" || nodeType === "cparticle") {
+                this._emitTreeNodeSingleApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, `${indent}    `, innerActionCtx, cparticlePolicy);
             } else {
-                this._emitTreeNodeShapeApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, `${indent}    `, isSequenced, depth, innerActionCtx);
+                this._emitTreeNodeShapeApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, `${indent}    `, isSequenced, depth, innerActionCtx, cparticlePolicy);
             }
             lines.push(`${indent}}`);
-        } else if (nodeType === "single") {
-            this._emitTreeNodeSingleApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, indent, actionCtx);
+        } else if (nodeType === "single" || nodeType === "cparticle") {
+            this._emitTreeNodeSingleApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, indent, actionCtx, cparticlePolicy);
         } else {
-            this._emitTreeNodeShapeApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, indent, isSequenced, depth, actionCtx);
+            this._emitTreeNodeShapeApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, indent, isSequenced, depth, actionCtx, cparticlePolicy);
         }
     }
 
-    _emitTreeNodeSingleApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, indent, actionCtx) {
+    _emitTreeNodeSingleApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, indent, actionCtx, cparticlePolicy = null) {
         const fx = sanitizeKotlinIdentifier(node.effectClass || card.singleEffectClass || DEFAULT_EFFECT_CLASS, DEFAULT_EFFECT_CLASS);
         if (bindMode === "builder") {
             lines.push(`${indent}applyBuilder(`);
@@ -748,14 +1176,18 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         }
         lines.push(this.emitShapeCompositionDataBase(ctx, `${indent}    `));
         lines.push(`${indent}        .setDisplayerSupplier {`);
-        lines.push(`${indent}            ParticleDisplayer.withSingle(${fx}(it))`);
+        if (cparticlePolicy) {
+            lines.push(`${indent}            ParticleDisplayer.withCParticle(it, CParticleRenderLayer.${cparticlePolicy.renderLayer})`);
+        } else {
+            lines.push(`${indent}            ParticleDisplayer.withSingle(${fx}(it))`);
+        }
         lines.push(`${indent}        }`);
-        const singleChain = this._buildTreeNodeSingleDataChainCodegen(node, card, className, `${indent}        `);
+        const singleChain = this._buildTreeNodeSingleDataChainCodegen(node, card, className, `${indent}        `, cparticlePolicy, ctx);
         if (singleChain) lines.push(singleChain);
         lines.push(`${indent}}`);
     }
 
-    _emitTreeNodeShapeApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, indent, isSequenced, depth, actionCtx) {
+    _emitTreeNodeShapeApplyCodegen(lines, node, card, className, ctx, bindMode, pointExpr, builderExpr, dataLambdaHead, indent, isSequenced, depth, actionCtx, cparticlePolicy = null) {
         const cls = isSequenced ? "SequencedParticleShapeComposition" : "ParticleShapeComposition";
         const axisExpr = this.rewriteRelativeTargetExpr(String(node.axisExpr || node.axisPreset || "RelativeLocation.yAxis()"), className);
         const scale = normalizeScaleHelperConfig(node.scale, { type: "none" });
@@ -772,27 +1204,72 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         lines.push(`${indent}                ${cls}(it).apply {`);
         if (axisExpr) lines.push(`${indent}                    axis = ${axisExpr}`);
         const children = node.children || [];
-        const childActionCtx = this.createDescendantActionCtx(actionCtx);
-        this._emitTreeNodeChildrenApplyCodegen(lines, children, card, className, ctx, `${indent}                    `, childActionCtx);
-        const pseudo = { id: card.id, shapeDisplayActions: node.displayActions || [], shapeScale: scale, growthAnimates: node.growthAnimates || [] };
+        const childActionCtx = this.createDescendantActionCtx(actionCtx) || {};
+        const inheritedTransforms = Array.isArray(actionCtx?.inheritedCompositionTransforms)
+            ? actionCtx.inheritedCompositionTransforms
+            : [];
+        childActionCtx.inheritedCompositionTransforms = [
+            ...inheritedTransforms,
+            {
+                id: node.id,
+                shapeDisplayActions: Array.isArray(node.displayActions) ? node.displayActions : [],
+                shapeScale: node.scale,
+                scopeInfo: this.getShapeScopeInfoByRuntimeLevel(card, depth),
+                runtimeRelDepth: depth + 1
+            }
+        ];
+        this._emitTreeNodeChildrenApplyCodegen(lines, children, card, className, ctx, `${indent}                    `, childActionCtx, cparticlePolicy, isSequenced);
+        const pseudo = { id: node.id || card.id, shapeDisplayActions: node.displayActions || [], shapeScale: scale, growthAnimates: node.growthAnimates || [] };
         const scopeInfo = this.getShapeScopeInfoByRuntimeLevel(card, depth);
-        const actions = this.applyCardCompositionActions(pseudo, className, `${indent}                    `, isSequenced, scopeInfo, actionCtx);
+        const actions = this.applyCardCompositionActions(
+            pseudo,
+            className,
+            `${indent}                    `,
+            isSequenced,
+            scopeInfo,
+            actionCtx,
+            depth + 1
+        );
         if (String(actions || "").trim()) lines.push(actions);
+        for (const inherited of inheritedTransforms) {
+            const inheritedPseudo = {
+                id: inherited?.id || card.id,
+                shapeDisplayActions: Array.isArray(inherited?.shapeDisplayActions) ? inherited.shapeDisplayActions : [],
+                shapeScale: inherited?.shapeScale || { type: "none" },
+                growthAnimates: []
+            };
+            const inheritedActions = this.applyCardCompositionActions(
+                inheritedPseudo,
+                className,
+                `${indent}                    `,
+                false,
+                inherited?.scopeInfo || scopeInfo,
+                actionCtx,
+                Math.max(1, int(inherited?.runtimeRelDepth || depth + 1))
+            );
+            if (String(inheritedActions || "").trim()) lines.push(inheritedActions);
+        }
         lines.push(`${indent}                }`);
         lines.push(`${indent}            )`);
         lines.push(`${indent}        }`);
         lines.push(`${indent}}`);
     }
 
-    _buildTreeNodeSingleDataChainCodegen(node, card, className, indentBase) {
+    _buildTreeNodeSingleDataChainCodegen(node, card, className, indentBase, cparticlePolicy = null, ctx = null) {
         return this.buildSingleDataChain({
+            effectClass: node?.effectClass || card?.singleEffectClass,
+            useTexture: node?.useTexture,
+            randomAgePreTick: cparticlePolicy?.randomAgePreTick === true,
             particleInit: Array.isArray(node?.particleInit) ? node.particleInit : [],
             controllerVars: Array.isArray(node?.controllerVars) ? node.controllerVars : [],
             controllerActions: Array.isArray(node?.controllerActions) ? node.controllerActions : []
-        }, className, indentBase);
+        }, className, indentBase, cparticlePolicy ? "cparticle" : "single", {
+            runtimeRelDepth: Math.max(1, int(ctx?.depth || 0) + 1),
+            initialAlphaZero: cparticlePolicy?.initialAlphaZero === true
+        });
     }
 
-    applyCardCompositionActions(card, className, innerIndent = "        ", supportsAnimate = false, scopeInfo = null, actionCtx = null) {
+    applyCardCompositionActions(card, className, innerIndent = "        ", supportsAnimate = false, scopeInfo = null, actionCtx = null, runtimeRelDepth = 1) {
         const lines = [];
         const displayActions = Array.isArray(card.shapeDisplayActions) && card.shapeDisplayActions.length
             ? card.shapeDisplayActions.map((a) => normalizeDisplayAction(a))
@@ -842,24 +1319,36 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
                     ? this.rewriteCodeExpr(String(act.angleExpr || "0.0"), className)
                     : U.angleToKotlinRadExpr(num(act.angleValue), normalizeAngleUnit(act.angleUnit));
                 if (act.type === "rotateToPoint") {
+                    const runtimeRel = this.rewritePreTickRuntimeRel(toExpr, runtimeRelDepth);
                     blockLines.push(`${innerIndent}    addPreTickAction {`);
-                    blockLines.push(`${innerIndent}        rotateToPoint(${toExpr})`);
+                    if (runtimeRel.used) {
+                        blockLines.push(this.emitPreTickRuntimeRelDeclaration(className, runtimeRel.relName, `${innerIndent}        `));
+                    }
+                    blockLines.push(`${innerIndent}        rotateToPoint(${runtimeRel.code})`);
                     blockLines.push(`${innerIndent}    }`);
                 } else if (act.type === "rotateAsAxis") {
                     blockLines.push(`${innerIndent}    addPreTickAction {`);
                     blockLines.push(`${innerIndent}        rotateAsAxis(${angleExpr})`);
                     blockLines.push(`${innerIndent}    }`);
                 } else if (act.type === "rotateToWithAngle") {
+                    const runtimeRel = this.rewritePreTickRuntimeRel(toExpr, runtimeRelDepth);
                     blockLines.push(`${innerIndent}    addPreTickAction {`);
-                    blockLines.push(`${innerIndent}        rotateToWithAngle(${toExpr}, ${angleExpr})`);
+                    if (runtimeRel.used) {
+                        blockLines.push(this.emitPreTickRuntimeRelDeclaration(className, runtimeRel.relName, `${innerIndent}        `));
+                    }
+                    blockLines.push(`${innerIndent}        rotateToWithAngle(${runtimeRel.code}, ${angleExpr})`);
                     blockLines.push(`${innerIndent}    }`);
                 } else if (act.type === "expression") {
                     const rawExpr = String(act.expression || "").trim();
                     const check = this.validateJsExpressionSource(rawExpr, { cardId: card.id, scope: scopeInfo || undefined });
                     const expr = this.rewriteCodeExpr(rawExpr, className);
                     if (expr && check.valid) {
+                        const runtimeRel = this.rewritePreTickRuntimeRel(expr, runtimeRelDepth);
                         blockLines.push(`${innerIndent}    addPreTickAction {`);
-                        blockLines.push(translateJsBlockToKotlin(expr, `${innerIndent}        `));
+                        if (runtimeRel.used) {
+                            blockLines.push(this.emitPreTickRuntimeRelDeclaration(className, runtimeRel.relName, `${innerIndent}        `));
+                        }
+                        blockLines.push(translateJsBlockToKotlin(runtimeRel.code, `${innerIndent}        `));
                         blockLines.push(`${innerIndent}    }`);
                     }
                 }

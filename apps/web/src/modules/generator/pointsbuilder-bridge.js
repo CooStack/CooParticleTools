@@ -92,3 +92,50 @@ export function mergeGeneratorPointsBuilderSnapshot(
     }
   }, TOOL_KEY);
 }
+
+export async function saveGeneratorPointsBuilderProject({
+  projectRepository,
+  shell,
+  projectId,
+  project
+} = {}) {
+  const id = String(projectId || '');
+  if (!id || !projectRepository?.save) return false;
+
+  const snapshot = JSON.parse(JSON.stringify(project || {}));
+  const existing = typeof projectRepository.get === 'function'
+    ? await projectRepository.get('generator', id)
+    : null;
+  const filePath = String(existing?.filePath || '');
+  if (filePath) {
+    if (!shell?.saveProjectFile) {
+      throw new Error('当前环境无法自动保存这个 Generator 项目文件。');
+    }
+    const text = JSON.stringify(snapshot, null, 2);
+    if (shell.autoSaveProjectFile) {
+      const backup = await shell.autoSaveProjectFile({ filePath, text });
+      if (!backup?.ok) {
+        throw new Error(backup?.message || 'Generator 项目自动备份失败。');
+      }
+    }
+    const result = await shell.saveProjectFile({
+      title: '自动保存 Generator 项目',
+      filePath,
+      addToRecent: false,
+      text
+    });
+    if (!result?.ok) {
+      throw new Error(result?.message || 'Generator 项目自动保存失败。');
+    }
+  }
+
+  await projectRepository.save({
+    id,
+    tool: 'generator',
+    name: snapshot.name || snapshot.kotlin?.className || 'EmitterGenerator',
+    description: snapshot.description || '',
+    filePath,
+    payload: snapshot
+  });
+  return true;
+}

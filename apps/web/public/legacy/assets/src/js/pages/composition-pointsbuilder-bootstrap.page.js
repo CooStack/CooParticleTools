@@ -1,25 +1,24 @@
 import {
   initStandaloneOrEmbeddedReturn,
   installStoragePrefixPatch,
+  migratePointsBuilderSharedStorage,
+  POINTS_BUILDER_SHARED_STORAGE_KEYS,
   setOptionalStorage,
-} from "../shared/storage-prefix-bootstrap.js";
+} from "../shared/storage-prefix-bootstrap.js?v=20260801_1";
 
 window.__PB_STORAGE_PREFIX = "cpb_";
+
+migratePointsBuilderSharedStorage({
+  prefix: String(window.__PB_STORAGE_PREFIX || ""),
+  storage: localStorage,
+  sharedKeys: POINTS_BUILDER_SHARED_STORAGE_KEYS,
+});
 
 installStoragePrefixPatch({
   prefix: String(window.__PB_STORAGE_PREFIX || ""),
   guardProperty: "__cpbPatched",
   keyPattern: /^pb_/,
-  sharedKeys: [
-    "pb_settings_v1",
-    "pb_presets_v1",
-    "pb_preset_groups_v1",
-    "pb_kotlin_end_v1",
-    "pb_hotkeys_v2",
-    "pb_layout_v1",
-    "pb_root_filter_v2",
-    "pb_theme_v2",
-  ],
+  sharedKeys: POINTS_BUILDER_SHARED_STORAGE_KEYS,
 });
 
 initStandaloneOrEmbeddedReturn({

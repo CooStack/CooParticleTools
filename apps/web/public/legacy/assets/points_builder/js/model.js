@@ -7,6 +7,10 @@ const OFFSET_KINDS = new Set([
     "add_radian_center",
     "add_radian",
     "add_ball",
+    "add_ball_surface",
+    "add_ball_solid",
+    "add_ball_volume",
+    "add_cube_surface",
     "add_polygon",
     "add_polygon_in_circle",
     "add_round_shape",
@@ -170,6 +174,23 @@ function normalizeNodeParams(node, options) {
         case "add_ball":
             if (params.countPow === undefined && params.count !== undefined) params.countPow = params.count;
             break;
+        case "add_ball_surface":
+        case "add_ball_solid":
+        case "add_ball_volume":
+            if (params.count === undefined) params.count = 600;
+            break;
+        case "add_cube_surface": {
+            const hasDimensions = params.width !== undefined || params.height !== undefined || params.depth !== undefined;
+            if (params.sizeMode !== "uniform" && params.sizeMode !== "dimensions") {
+                params.sizeMode = hasDimensions ? "dimensions" : "uniform";
+            }
+            if (params.size === undefined) params.size = 2;
+            if (params.width === undefined) params.width = params.size;
+            if (params.height === undefined) params.height = params.size;
+            if (params.depth === undefined) params.depth = params.size;
+            if (params.count === undefined) params.count = 600;
+            break;
+        }
         case "add_round_shape":
             if (params.preCircleCount === undefined && params.circleCount !== undefined) params.preCircleCount = params.circleCount;
             if (params.minCircleCount === undefined && params.minCount !== undefined) params.minCircleCount = params.minCount;

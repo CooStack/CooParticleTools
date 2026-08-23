@@ -253,7 +253,16 @@ test('binding resolver reports expression types instead of treating vectors as m
   assert.equal(invalid.status, 'invalid_expression');
   assert.match(invalid.message, /向量类型必须相同/);
 
-  assert.equal(resolver.resolve({ value: 'i' }, 'value', 'Double').status, 'type_mismatch');
+  assert.deepEqual(
+    resolver.resolve({ value: 'i' }, 'value', 'Double'),
+    {
+      status: 'resolved',
+      name: 'i',
+      value: typedValues[0],
+      type: 'Int',
+      kotlin: '(i).toDouble()'
+    }
+  );
   assert.equal(resolver.resolve({ value: '(i + i)' }, 'value', 'Double').status, 'expression');
 });
 
@@ -286,6 +295,24 @@ test('preview and Kotlin generation share vector expression semantics', () => {
   assert.match(kotlin, /import cn\.coostack\.cooparticlesapi\.extend\.\*/);
   assert.match(kotlin, /velocity = relative\.toVector\(\) \+ vec/);
   assert.match(kotlin, /velocity = relative\.toVector\(\) \+ vec/);
+  assert.match(kotlin, /val baseDir = template1\.velocity/);
+  assert.doesNotMatch(kotlin, /velocityJitter/);
+});
+
+test('bound random velocity keeps per-axis jitter generation', () => {
+  const project = createGeneratorProject();
+  const card = project.emitters[0];
+  project.parameters = {
+    variables: [{ name: 'spread', type: 'Vec3', value: 'Vec3(0.1, 0.2, 0.3)' }],
+    constants: []
+  };
+  card.particle.velocityRandom = { x: 0, y: 0, z: 0 };
+  card.bindings['particle.velocityRandom'] = 'spread';
+
+  const kotlin = generateEmitterKotlin(project);
+
+  assert.match(kotlin, /val velocityRandom = spread/);
+  assert.match(kotlin, /val velocityJitter = Vec3\([^\n]+velocityRandom\.x[^\n]+velocityRandom\.y[^\n]+velocityRandom\.z\)/);
   assert.match(kotlin, /val baseDir = template1\.velocity\.add\(velocityJitter\)/);
 });
 
@@ -299,6 +326,7 @@ test('tick and progress expressions freeze each particle at its spawn value', ()
   card.particle.lifeMin = 20;
   card.particle.lifeMax = 20;
   card.bindings['render.alpha'] = 'progress * 100';
+  card.curves.opacity.enabled = true;
 
   const runtime = createGeneratorPreviewRuntime();
   runtime.step(project, 1);

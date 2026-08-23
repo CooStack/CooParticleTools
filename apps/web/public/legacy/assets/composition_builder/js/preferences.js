@@ -3,7 +3,7 @@ import {
     cloneCompositionValue,
     createCompositionProject,
     normalizeCompositionProject
-} from "./model.js?v=20260720_1";
+} from "./model.js?v=20260729_6";
 
 export const COMPOSITION_PREFERENCES_STORAGE_KEY = "cb_preferences_v1";
 

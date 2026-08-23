@@ -88,6 +88,22 @@ test('Composition global and card settings use mutually exclusive editor tabs', 
   assert.match(styles, /\.preview-editor-tabs\s*{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s);
 });
 
+test('Composition toolbar omits duplicate actions and keeps code actions on the code page', async () => {
+  const [page, source] = await Promise.all([
+    readFile(compositionPageUrl, 'utf8'),
+    readFile(compositionMainUrl, 'utf8')
+  ]);
+  const codePage = page.match(/<section id="pageCode"[\s\S]*?<\/section>/)?.[0] || '';
+
+  for (const id of ['btnNewProject', 'btnAddCard', 'btnUndo', 'btnRedo', 'btnGenerateCode', 'btnCopyCode']) {
+    assert.doesNotMatch(page, new RegExp(`\\b${id}\\b`));
+    assert.doesNotMatch(source, new RegExp(`\\b${id}\\b`));
+  }
+  assert.match(codePage, /id="btnGenerateCode2"[^>]*>重新生成<\/button>/);
+  assert.match(codePage, /id="btnCopyCode2"[^>]*>复制<\/button>/);
+  assert.match(codePage, /id="btnDownloadCode"[^>]*>导出 Kotlin 代码<\/button>/);
+});
+
 test('Composition card and child-node preset windows expose global preset management controls', async () => {
   const [page, source, presetSource, styles] = await Promise.all([
     readFile(compositionPageUrl, 'utf8'),

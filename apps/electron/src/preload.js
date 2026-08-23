@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('cooParticlesShell', {
   chooseProjectFile: (options) => ipcRenderer.invoke('shell:chooseProjectFile', options || {}),
   readTextFile: (filePath, options) => ipcRenderer.invoke('shell:readTextFile', filePath, options || {}),
   saveProjectFile: (payload) => ipcRenderer.invoke('shell:saveProjectFile', payload || {}),
+  autoSaveProjectFile: (payload) => ipcRenderer.invoke('shell:autoSaveProjectFile', payload || {}),
   saveTextFile: (payload) => ipcRenderer.invoke('shell:saveTextFile', payload || {}),
   listProjectPresetFolders: (payload) => ipcRenderer.invoke('shell:listProjectPresetFolders', payload || {}),
   createProjectPresetFolder: (payload) => ipcRenderer.invoke('shell:createProjectPresetFolder', payload || {}),

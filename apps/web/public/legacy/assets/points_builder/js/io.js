@@ -86,6 +86,14 @@ export function loadPresetList() {
     }
 }
 
+export function hasPresetList() {
+    try {
+        return localStorage.getItem(PRESET_STORAGE_KEY) !== null;
+    } catch {
+        return false;
+    }
+}
+
 export function savePresetList(presets) {
     try {
         const list = Array.isArray(presets) ? presets : [];

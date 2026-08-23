@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>PointsBuilder 可视化构建器</title>
     <link rel="stylesheet" href="./assets/points_builder/css/style.css?v=20260711_2"/>
-    <link rel="stylesheet" href="./assets/shared/css/minecraft-theme.css?v=20260709_1"/>
+    <link rel="stylesheet" href="./assets/shared/css/minecraft-theme.css?v=20260709_2"/>
     <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
 </head>
 <body data-theme="dark-1" data-mc-theme="deep-pink">
@@ -191,6 +191,10 @@
                         <input id="presetRingOffsetY" class="input" type="number" step="0.1" value="0"/>
                         <input id="presetRingOffsetZ" class="input" type="number" step="0.1" value="0"/>
                         <label class="chk preset-ring-inline"><input id="presetRingReverse" type="checkbox"/><span>反向</span></label>
+                    </div>
+                    <div class="preset-ring-random">
+                        <label class="chk preset-ring-random-toggle"><input id="presetRingRandomEnabled" type="checkbox"/><span>随机预设组</span></label>
+                        <select id="presetRingRandomGroup" class="input" disabled></select>
                     </div>
                     <div id="presetRingSlots" class="preset-ring-slots"></div>
                     <div class="preset-ring-actions">
@@ -448,6 +452,6 @@
       }
     }
 </script>
-<script type="module" src="./assets/src/js/pages/pointsbuilder.page.js?v=20260711_2"></script>
+<script type="module" src="./assets/src/js/pages/pointsbuilder.page.js?v=20260801_1"></script>
 </body>
 </html>

@@ -1,13 +1,13 @@
 import "../../src/js/compat/legacy-utils.global.js";
-import { createExpressionRuntime } from "./expression_runtime.js?v=20260725_3";
-import { normalizeAlphaHelperConfig } from "./alpha_helper_utils.js";
+import { createExpressionRuntime } from "./expression_runtime.js?v=20260729_3";
+import { normalizeAlphaHelperConfig, normalizeCParticleAlphaConfig } from "./alpha_helper_utils.js?v=20260729_1";
 import { normalizeScaleHelperConfig } from "./scale_helper_utils.js";
 import {
     normalizeAngleUnit,
     normalizeAngleOffsetEaseName,
     normalizeAngleOffsetEaseSpecialParams
 } from "./angle_offset_utils.js";
-import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260725_6";
+import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260815_3";
 
 const U = globalThis.Utils;
 
@@ -351,6 +351,7 @@ class WorkerPreviewRuntime {
         this.snapshotSignature = String(snapshot.snapshotSignature || "");
         this.state = snapshot.state || {};
         if (this.exprRuntime?.invalidateCache) this.exprRuntime.invalidateCache();
+        this.compilePreviewScriptsFromState({ force: true });
         this.previewSourcePointTotal = Math.max(0, int(snapshot.totalCount || snapshot.previewBasePoints?.length || 0));
         this.previewBasePoints = Array.isArray(snapshot.previewBasePoints) ? snapshot.previewBasePoints : [];
         this.previewPoints = this.previewBasePoints.map((p) => U.v(num(p?.x), num(p?.y), num(p?.z)));
@@ -456,6 +457,7 @@ installPreviewRuntimeMethods(WorkerPreviewRuntime, {
     normalizeControllerAction,
     normalizeDisplayAction,
     normalizeAlphaHelperConfig,
+    normalizeCParticleAlphaConfig,
     normalizeScaleHelperConfig,
     ensureStatusHelperMethods,
     stripJsForLint,

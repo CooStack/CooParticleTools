@@ -15,8 +15,47 @@
             --accent: #8fa7b8;
             --danger: #c96f62;
             --ok: #b49363;
+            --bezier-chart-bg: #09060a;
+            --bezier-chart-border: rgba(255, 214, 232, 0.22);
+            --bezier-chart-grid: rgba(255, 214, 232, 0.12);
+            --bezier-chart-text: #fff3f8;
+            --bezier-chart-muted: rgba(222, 192, 207, 0.72);
+            --bezier-chart-helper: rgba(114, 213, 223, 0.52);
+            --bezier-chart-baseline: rgba(255, 243, 248, 0.36);
+            --bezier-chart-snap: rgba(114, 213, 223, 0.32);
+            --bezier-chart-curve: #ff78b6;
+            --bezier-chart-start: #72d5df;
+            --bezier-chart-handle: #f0cc5b;
+            --bezier-chart-point-stroke: #10070c;
+            --bezier-chart-range-fill: rgba(255, 107, 119, 0.1);
+            --bezier-chart-range-fill-hover: rgba(255, 107, 119, 0.18);
+            --bezier-chart-range-fill-active: rgba(255, 107, 119, 0.28);
+            --bezier-chart-range-stroke: rgba(255, 107, 119, 0.6);
+            --bezier-chart-range-stroke-hover: rgba(255, 107, 119, 0.82);
+            --bezier-chart-range-stroke-active: #ff6b77;
             --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial;
             --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+        }
+
+        body[data-theme="light-pink"] {
+            --bezier-chart-bg: #fff7fa;
+            --bezier-chart-border: rgba(86, 49, 62, 0.36);
+            --bezier-chart-grid: rgba(86, 49, 62, 0.16);
+            --bezier-chart-text: #372630;
+            --bezier-chart-muted: rgba(86, 49, 62, 0.68);
+            --bezier-chart-helper: rgba(39, 130, 150, 0.56);
+            --bezier-chart-baseline: rgba(86, 49, 62, 0.46);
+            --bezier-chart-snap: rgba(22, 128, 110, 0.4);
+            --bezier-chart-curve: #a92e67;
+            --bezier-chart-start: #277f92;
+            --bezier-chart-handle: #9b5d00;
+            --bezier-chart-point-stroke: #372630;
+            --bezier-chart-range-fill: rgba(184, 79, 97, 0.1);
+            --bezier-chart-range-fill-hover: rgba(184, 79, 97, 0.18);
+            --bezier-chart-range-fill-active: rgba(184, 79, 97, 0.26);
+            --bezier-chart-range-stroke: rgba(153, 49, 68, 0.68);
+            --bezier-chart-range-stroke-hover: rgba(153, 49, 68, 0.86);
+            --bezier-chart-range-stroke-active: #8f263d;
         }
 
         * {
@@ -145,8 +184,8 @@
             height: 100%;
             display: block;
             border-radius: 12px;
-            border: 1px solid var(--line);
-            background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.2));
+            border: 1px solid var(--bezier-chart-border);
+            background: var(--bezier-chart-bg);
             touch-action: none;
             cursor: crosshair;
         }
@@ -172,7 +211,7 @@
     <link rel="stylesheet" href="../shared/css/workbench-theme.css?v=20260313_2"/>
     <link rel="stylesheet" href="../shared/css/minecraft-theme.css?v=20260707_1"/>
 </head>
-<body>
+<body data-theme="dark-1" data-mc-theme="deep-pink">
 <div class="app">
     <div class="panel">
         <div class="row">
@@ -207,6 +246,6 @@
     </div>
 </div>
 
-<script type="module" src="../src/js/pages/composition-bezier-tool.page.js"></script>
+<script type="module" src="../src/js/pages/composition-bezier-tool.page.js?v=20260728_1"></script>
 </body>
 </html>

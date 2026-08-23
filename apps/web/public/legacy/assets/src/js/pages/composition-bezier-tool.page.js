@@ -1,5 +1,11 @@
 (() => {
     const q = new URLSearchParams(location.search);
+    const theme = q.get("theme") === "light-pink" ? "light-pink" : "dark-1";
+    const mcTheme = q.get("mcTheme") === "light-pink" && theme === "light-pink"
+        ? "light-pink"
+        : "deep-pink";
+    document.body.setAttribute("data-theme", theme);
+    document.body.setAttribute("data-mc-theme", mcTheme);
     const bezierMode = q.get("mode") === "angle_ease" ? "angle_ease" : "scale";
     const isScaleBezierMode = bezierMode === "scale";
     const num = (v, fb = 0) => {
@@ -43,6 +49,27 @@
     if (tickFieldLabel) tickFieldLabel.style.display = isScaleBezierMode ? "" : "none";
 
     const ctx = el.chart.getContext("2d", { alpha: true });
+    const canvasColor = (name, fallback) => (
+        getComputedStyle(document.body).getPropertyValue(name).trim() || fallback
+    );
+    const getCanvasPalette = () => ({
+        grid: canvasColor("--bezier-chart-grid", "rgba(255,255,255,0.12)"),
+        text: canvasColor("--bezier-chart-text", "#fff3f8"),
+        muted: canvasColor("--bezier-chart-muted", "rgba(222,192,207,0.72)"),
+        helper: canvasColor("--bezier-chart-helper", "rgba(114,213,223,0.52)"),
+        baseline: canvasColor("--bezier-chart-baseline", "rgba(255,243,248,0.36)"),
+        snap: canvasColor("--bezier-chart-snap", "rgba(114,213,223,0.32)"),
+        curve: canvasColor("--bezier-chart-curve", "#ff78b6"),
+        start: canvasColor("--bezier-chart-start", "#72d5df"),
+        handle: canvasColor("--bezier-chart-handle", "#f0cc5b"),
+        pointStroke: canvasColor("--bezier-chart-point-stroke", "#10070c"),
+        rangeFill: canvasColor("--bezier-chart-range-fill", "rgba(255,107,119,0.1)"),
+        rangeFillHover: canvasColor("--bezier-chart-range-fill-hover", "rgba(255,107,119,0.18)"),
+        rangeFillActive: canvasColor("--bezier-chart-range-fill-active", "rgba(255,107,119,0.28)"),
+        rangeStroke: canvasColor("--bezier-chart-range-stroke", "rgba(255,107,119,0.6)"),
+        rangeStrokeHover: canvasColor("--bezier-chart-range-stroke-hover", "rgba(255,107,119,0.82)"),
+        rangeStrokeActive: canvasColor("--bezier-chart-range-stroke-active", "#ff6b77")
+    });
     const pad = { l: 44, r: 16, t: 16, b: 34 };
     let dragTarget = "";
     let hoverTarget = "";
@@ -249,12 +276,13 @@
             el.chart.height = b.h;
         }
         const yr = getYRange();
+        const palette = getCanvasPalette();
 
         ctx.clearRect(0, 0, b.w, b.h);
 
         // grid
         ctx.save();
-        ctx.strokeStyle = "rgba(255,255,255,0.09)";
+        ctx.strokeStyle = palette.grid;
         ctx.lineWidth = 1;
         const gx = Math.max(4, Math.min(10, safeTick()));
         for (let i = 0; i <= gx; i++) {
@@ -282,15 +310,15 @@
             const hover = hoverTarget === kind;
             const y0 = y - zoneHeight / 2;
             const fill = active
-                ? "rgba(255,107,107,0.22)"
+                ? palette.rangeFillActive
                 : hover
-                    ? "rgba(255,107,107,0.14)"
-                    : "rgba(255,107,107,0.08)";
+                    ? palette.rangeFillHover
+                    : palette.rangeFill;
             const stroke = active
-                ? "rgba(255,107,107,0.95)"
+                ? palette.rangeStrokeActive
                 : hover
-                    ? "rgba(255,107,107,0.72)"
-                    : "rgba(255,107,107,0.46)";
+                    ? palette.rangeStrokeHover
+                    : palette.rangeStroke;
             ctx.save();
             ctx.fillStyle = fill;
             ctx.strokeStyle = stroke;
@@ -308,13 +336,13 @@
 
         // axis labels
         ctx.save();
-        ctx.fillStyle = "rgba(223,234,252,0.84)";
+        ctx.fillStyle = palette.text;
         ctx.font = "12px ui-monospace,Consolas,monospace";
         ctx.fillText("0", pad.l - 6, pad.t + b.ih + 20);
         ctx.fillText(String(safeTick()), pad.l + b.iw - 18, pad.t + b.ih + 20);
         ctx.fillText(toFixedCompact(yr.hi), 8, pad.t + 4);
         ctx.fillText(toFixedCompact(yr.lo), 8, pad.t + b.ih);
-        ctx.fillStyle = "rgba(223,234,252,0.5)";
+        ctx.fillStyle = palette.muted;
         ctx.font = "10px ui-monospace,Consolas,monospace";
         ctx.fillText("drag/edit", 8, pad.t + 16);
         ctx.fillText("drag/edit", 8, pad.t + b.ih - 10);
@@ -324,7 +352,7 @@
         const { p0, p1, p2, p3 } = getCurvePoints();
 
         ctx.save();
-        ctx.strokeStyle = "rgba(103,164,255,0.45)";
+        ctx.strokeStyle = palette.helper;
         ctx.lineWidth = 1.2;
         ctx.beginPath();
         ctx.moveTo(xToPx(p0.x, b), yToPx(p0.y, b, yr));
@@ -336,7 +364,7 @@
 
         // linear baseline
         ctx.save();
-        ctx.strokeStyle = "rgba(255,255,255,0.25)";
+        ctx.strokeStyle = palette.baseline;
         ctx.setLineDash([6, 6]);
         ctx.beginPath();
         ctx.moveTo(xToPx(0, b), yToPx(state.min, b, yr));
@@ -347,7 +375,7 @@
 
         // S / E horizontal snap lines
         ctx.save();
-        ctx.strokeStyle = "rgba(83,211,171,0.22)";
+        ctx.strokeStyle = palette.snap;
         ctx.setLineDash([4, 6]);
         ctx.beginPath();
         ctx.moveTo(pad.l, yToPx(state.min, b, yr));
@@ -360,7 +388,7 @@
 
         // bezier curve
         ctx.save();
-        ctx.strokeStyle = "rgba(103,164,255,0.95)";
+        ctx.strokeStyle = palette.curve;
         ctx.lineWidth = 2.2;
         ctx.beginPath();
         const samples = Math.max(80, safeTick() * 6);
@@ -383,19 +411,19 @@
             ctx.beginPath();
             ctx.arc(px, py, 6, 0, Math.PI * 2);
             ctx.fill();
-            ctx.strokeStyle = "rgba(15,23,36,0.9)";
+            ctx.strokeStyle = palette.pointStroke;
             ctx.lineWidth = 1.4;
             ctx.stroke();
-            ctx.fillStyle = "rgba(230,238,252,0.92)";
+            ctx.fillStyle = palette.text;
             ctx.font = "11px ui-monospace,Consolas,monospace";
             ctx.fillText(label, px + 8, py - 8);
             ctx.restore();
         };
 
-        drawPoint(p0.x, p0.y, "rgba(83,211,171,0.95)", "S");
-        drawPoint(p3.x, p3.y, "rgba(83,211,171,0.95)", "E");
-        drawPoint(p1.x, p1.y, "rgba(255,176,85,0.95)", "C1");
-        drawPoint(p2.x, p2.y, "rgba(255,176,85,0.95)", "C2");
+        drawPoint(p0.x, p0.y, palette.start, "S");
+        drawPoint(p3.x, p3.y, palette.start, "E");
+        drawPoint(p1.x, p1.y, palette.handle, "C1");
+        drawPoint(p2.x, p2.y, palette.handle, "C2");
     };
 
     const getMousePos = (ev) => {

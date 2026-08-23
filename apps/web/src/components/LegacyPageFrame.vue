@@ -323,11 +323,16 @@ async function saveIndexedProject() {
       throw new Error('当前环境无法自动保存这个项目文件。');
     }
     if (filePath) {
+      const text = JSON.stringify(filePayload, null, 2);
+      if (shell.autoSaveProjectFile) {
+        const backup = await shell.autoSaveProjectFile({ filePath, text });
+        if (!backup?.ok) throw new Error(backup?.message || '项目自动备份失败。');
+      }
       const result = await shell.saveProjectFile({
         title: '自动保存项目',
         filePath,
         addToRecent: false,
-        text: JSON.stringify(filePayload, null, 2)
+        text
       });
       if (!result?.ok) throw new Error(result?.message || '项目自动保存失败。');
     }

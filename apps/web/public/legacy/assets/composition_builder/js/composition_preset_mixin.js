@@ -7,10 +7,14 @@ import {
     normalizePresetDescription,
     normalizePresetName,
     normalizePresetTreePath
-} from "./preset_store.js?v=20260725_4";
+} from "./preset_store.js?v=20260729_4";
 
 export function installCompositionPresetMethods(CompositionBuilderApp, deps = {}) {
-    const { esc, normalizeCard, normalizeShapeTreeNode } = deps;
+    const {
+        esc,
+        normalizeCard,
+        normalizeShapeTreeNode
+    } = deps;
     if (!CompositionBuilderApp?.prototype) throw new Error("installCompositionPresetMethods requires CompositionBuilderApp");
     if (typeof esc !== "function" || typeof normalizeCard !== "function" || typeof normalizeShapeTreeNode !== "function") {
         throw new Error("installCompositionPresetMethods dependencies are incomplete");

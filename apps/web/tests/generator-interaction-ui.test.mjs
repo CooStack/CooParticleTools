@@ -40,6 +40,8 @@ test('curve view exposes editable two-decimal bounds and a resizable expanded su
   assert.match(curveSource, /\.curve-stage > \.curve-range-input:focus \{/);
   assert.match(curveSource, /resize: vertical/);
   assert.match(curveSource, /content-visibility: auto/);
+  assert.match(curveSource, /\.curve-editor\.expanded \{[\s\S]*?width: auto;[\s\S]*?max-width: none;/);
+  assert.match(pageSource, /:max-frames="selectedEmitter\.useGPU \? 8 : null"/);
 });
 
 test('generator color picker and numeric scrub defer project writes until commit', () => {

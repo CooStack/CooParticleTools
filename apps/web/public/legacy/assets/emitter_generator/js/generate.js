@@ -13,7 +13,7 @@ import {
     normalizeBuilderState,
     evaluateBuilderState,
     countBuilderNodes,
-} from "./points_builder_bridge.js";
+} from "./points_builder_bridge.js?v=20260820_2";
 import {
     createConditionRule,
     normalizeConditionFilter,

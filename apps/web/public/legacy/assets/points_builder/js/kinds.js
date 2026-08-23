@@ -767,8 +767,8 @@ export function createKindDefs(ctx) {
         },
 
         add_ball: {
-            title: "addBall(球面点集)",
-            desc: "添加球面点集（addBall / countPow）",
+            title: "addBall(旧版球面)",
+            desc: "兼容旧版 addBall，最终点数为 countPow 的平方",
             defaultParams: {r: 2, countPow: 24, ox: 0, oy: 0, oz: 0},
             apply(ctx, node) {
                 pushPoints(ctx, U.getBallLocations(num(node.params.r), int(node.params.countPow)), getOffset(node.params));
@@ -776,9 +776,87 @@ export function createKindDefs(ctx) {
             kotlin(node) {
                 const offset = getOffset(node.params);
                 const r = U.fmt(num(node.params.r));
-                const countPow = int(node.params.countPow);
+                const countPow = Math.max(1, int(node.params.countPow));
                 if (hasOffset(offset)) return `.addBall(${relExpr(offset.x, offset.y, offset.z)}, ${r}, ${countPow})`;
                 return `.addBall(${r}, ${countPow})`;
+            }
+        },
+
+        add_ball_surface: {
+            title: "addBallSurface(均匀球面)",
+            desc: "使用黄金角在球面均匀采样，count 是最终点数",
+            defaultParams: {r: 2, count: 600, ox: 0, oy: 0, oz: 0},
+            apply(ctx, node) {
+                pushPoints(ctx, U.getBallSurfaceLocations(num(node.params.r), Math.max(1, int(node.params.count))), getOffset(node.params));
+            },
+            kotlin(node) {
+                const offset = getOffset(node.params);
+                const args = [U.fmt(num(node.params.r)), Math.max(1, int(node.params.count))];
+                if (hasOffset(offset)) args.unshift(relExpr(offset.x, offset.y, offset.z));
+                return `.addBallSurface(${args.join(", ")})`;
+            }
+        },
+
+        add_ball_solid: {
+            title: "addBallSolid(球体内部)",
+            desc: "在整个球体内部均匀采样，count 是最终点数",
+            defaultParams: {r: 2, count: 600, ox: 0, oy: 0, oz: 0},
+            apply(ctx, node) {
+                pushPoints(ctx, U.getBallSolidLocations(num(node.params.r), Math.max(1, int(node.params.count))), getOffset(node.params));
+            },
+            kotlin(node) {
+                const offset = getOffset(node.params);
+                const args = [U.fmt(num(node.params.r)), Math.max(1, int(node.params.count))];
+                if (hasOffset(offset)) args.unshift(relExpr(offset.x, offset.y, offset.z));
+                return `.addBallSolid(${args.join(", ")})`;
+            }
+        },
+
+        add_ball_volume: {
+            title: "addBallVolume(球体体积)",
+            desc: "addBallSolid 的公开别名，在球体内部均匀采样",
+            defaultParams: {r: 2, count: 600, ox: 0, oy: 0, oz: 0},
+            apply(ctx, node) {
+                pushPoints(ctx, U.getBallSolidLocations(num(node.params.r), Math.max(1, int(node.params.count))), getOffset(node.params));
+            },
+            kotlin(node) {
+                const offset = getOffset(node.params);
+                const args = [U.fmt(num(node.params.r)), Math.max(1, int(node.params.count))];
+                if (hasOffset(offset)) args.unshift(relExpr(offset.x, offset.y, offset.z));
+                return `.addBallVolume(${args.join(", ")})`;
+            }
+        },
+
+        add_cube_surface: {
+            title: "addCubeSurface(方块表面)",
+            desc: "按面积权重在方块或长方体的六个表面采样",
+            defaultParams: {
+                sizeMode: "uniform",
+                size: 2,
+                width: 2,
+                height: 2,
+                depth: 2,
+                count: 600,
+                ox: 0,
+                oy: 0,
+                oz: 0
+            },
+            apply(ctx, node) {
+                const p = node.params;
+                const dimensions = p.sizeMode === "dimensions"
+                    ? [num(p.width), num(p.height), num(p.depth)]
+                    : [num(p.size), num(p.size), num(p.size)];
+                pushPoints(ctx, U.getCubeSurfaceLocations(...dimensions, Math.max(1, int(p.count))), getOffset(p));
+            },
+            kotlin(node) {
+                const p = node.params;
+                const offset = getOffset(p);
+                const dimensions = p.sizeMode === "dimensions"
+                    ? [U.fmt(num(p.width)), U.fmt(num(p.height)), U.fmt(num(p.depth))]
+                    : [U.fmt(num(p.size))];
+                const args = dimensions.concat(Math.max(1, int(p.count)));
+                if (hasOffset(offset)) args.unshift(relExpr(offset.x, offset.y, offset.z));
+                return `.addCubeSurface(${args.join(", ")})`;
             }
         },
 

@@ -68,6 +68,7 @@
                   <input v-model="card.name" class="plain-input" @click.stop />
                   <div class="sub emitter-card-meta">
                     <span>{{ emitterTypeLabel(card.emitter.type) }}</span>
+                    <span v-if="card.useGPU" class="chip">GPU</span>
                     <span v-if="duplicateEmitterSignCount(card)" class="duplicate-sign-badge">sign 重复</span>
                   </div>
                 </div>
@@ -97,6 +98,14 @@
             <input v-model="queue.name" class="plain-input" @click.stop />
             <div class="sub">标记：{{ queue.signs.length ? queue.signs.join(', ') : '全部' }}</div>
           </article>
+        </section>
+
+        <section v-else-if="project.leftTab === 'gpu_commands'" class="left-block">
+          <div class="panel-title-row compact">
+            <span class="block-title">GPU Commands</span>
+            <button class="btn small" :disabled="project.gpuCommands.length >= 16" @click="addGpuCommand">+ Command</button>
+          </div>
+          <div class="sub">{{ project.gpuCommands.length }} / 16</div>
         </section>
 
         <section v-else-if="project.leftTab === 'project'" class="left-block">
@@ -231,14 +240,16 @@
       <aside class="generator-panel generator-right">
         <template v-if="project.leftTab === 'queues' && selectedQueue">
           <div class="panel-title-row">
-            <strong>参数编辑</strong>
+            <strong>CPU 命令队列</strong>
             <div class="inline-actions">
               <span class="chip">{{ selectedQueue.name }}</span>
+              <button class="btn small" @click="convertSelectedQueueToGpu">转为 GPU</button>
               <button class="btn small danger" :disabled="project.commandQueues.length <= 1" @click="removeQueue(selectedQueue.id)">删除队列</button>
             </div>
           </div>
           <label class="field"><span>队列名称</span><input v-model="selectedQueue.name" class="input" type="text" /></label>
           <label class="field"><span>标记列表</span><input class="input" type="text" :value="selectedQueue.signs.join(', ')" placeholder="例如：0, 1, 2；留空表示全部" @input="updateQueueSigns($event.target.value)" /></label>
+          <div v-if="commandConversionMessage" class="compatibility-note" :class="{ 'compatibility-note--error': commandConversionWarning }">{{ commandConversionMessage }}</div>
           <section class="editor-section">
             <div class="panel-title-row compact">
               <span class="section-title">命令</span>
@@ -285,6 +296,55 @@
           </section>
         </template>
 
+        <template v-else-if="project.leftTab === 'gpu_commands'">
+          <div class="panel-title-row">
+            <strong>GPU Commands</strong>
+            <div class="inline-actions">
+              <span class="chip">{{ project.gpuCommands.length }} / 16</span>
+              <button class="btn small" :disabled="!project.gpuCommands.length" @click="convertGpuCommandsToSelectedQueue">转为 CPU</button>
+              <button class="btn small primary" :disabled="project.gpuCommands.length >= 16" @click="addGpuCommand">+ Command</button>
+            </div>
+          </div>
+          <div v-if="commandConversionMessage" class="compatibility-note" :class="{ 'compatibility-note--error': commandConversionWarning }">{{ commandConversionMessage }}</div>
+          <div v-if="!project.gpuCommands.length" class="empty-state">当前没有 GPU Command。</div>
+          <article v-for="command in project.gpuCommands" :key="command.id" class="command-card">
+            <div class="panel-title-row compact">
+              <label class="check-row"><input v-model="command.enabled" type="checkbox" />启用</label>
+              <button class="icon-btn" title="删除 GPU Command" @click="removeGpuCommand(command.id)">×</button>
+            </div>
+            <div class="grid2">
+              <label class="field"><span>名称</span><input v-model="command.label" class="input" type="text" /></label>
+              <label class="field"><span>类型</span><select v-model="command.type" class="input" @change="syncCommandType(command)"><option v-for="item in gpuCommandTypeOptions" :key="item.id" :value="item.id">{{ item.label }}</option></select></label>
+            </div>
+            <div v-if="commandParamFields(command).length" class="command-param-grid">
+              <label v-for="field in commandParamFields(command)" :key="field.key" class="mini-field">
+                <span>{{ field.label }}</span>
+                <select v-if="field.type === 'select'" v-model="command.params[field.key]" class="input">
+                  <option v-for="option in field.options" :key="option.value" :value="option.value">{{ option.label }}</option>
+                </select>
+                <select
+                  v-else-if="field.type === 'boolean'"
+                  class="input"
+                  :value="String(command.params[field.key])"
+                  @change="command.params[field.key] = $event.target.value === 'true'"
+                >
+                  <option value="true">开启</option>
+                  <option value="false">关闭</option>
+                </select>
+                <input
+                  v-else
+                  v-model.number="command.params[field.key]"
+                  class="input"
+                  type="number"
+                  :step="field.step || '0.01'"
+                  :min="field.min"
+                  :max="field.max"
+                />
+              </label>
+            </div>
+          </article>
+        </template>
+
         <template v-else-if="selectedEmitter">
           <div class="panel-title-row">
             <strong>参数编辑</strong>
@@ -297,6 +357,14 @@
               <label class="field"><span>发射器类型</span><select v-model="selectedEmitter.emitter.type" class="input"><option v-for="type in emitterTypes" :key="type.id" :value="type.id">{{ type.label }}</option></select></label>
               <BindableField :card="selectedEmitter" path="render.effectClass" label="Effect" value-type="none" input-type="text" :autocomplete-options="effectAutocompleteOptions" />
               <BindableField :card="selectedEmitter" path="render.textureSheet" label="RenderType" value-type="string" input-type="text" :autocomplete-options="renderTypeAutocompleteOptions" />
+            </div>
+
+            <div class="gpu-parameter-panel">
+              <label class="check-row gpu-enable-control"><input v-model="selectedEmitter.useGPU" type="checkbox" @change="restartPreview" />使用 CParticle (GPU)</label>
+              <div v-if="selectedEmitter.useGPU" class="gpu-parameter-options">
+                <label class="field"><span>更新模式</span><select v-model="selectedEmitter.gpu.updateMode" class="input"><option value="static">STATIC</option><option value="dynamic">DYNAMIC</option></select></label>
+                <label class="field"><span>随机种子</span><input v-model.number="selectedEmitter.gpu.randomSeed" class="input" type="number" step="1" placeholder="自动" /></label>
+              </div>
             </div>
 
             <div class="grid2 external-parameter-grid">
@@ -333,26 +401,38 @@
             <div class="grid4">
               <BindableField :card="selectedEmitter" path="particle.sizeMin" label="最小大小" min="0" step="0.01" />
               <BindableField :card="selectedEmitter" path="particle.sizeMax" label="最大大小" min="0" step="0.01" />
-              <label class="field"><span>颜色过渡</span><select v-model="selectedEmitter.particle.colorOverLifeEnabled" class="input"><option :value="true">开启</option><option :value="false">关闭</option></select></label>
               <BindableField :card="selectedEmitter" path="particle.visibleRange" label="可见距离" value-type="float" min="1" step="1" />
             </div>
-            <BindableColorVector :card="selectedEmitter" path="particle.colorStart" label="颜色 0%" />
-            <BindableColorVector :card="selectedEmitter" path="particle.colorEnd" label="颜色 100%" />
+            <div class="curve-option-row">
+              <label class="check-row"><input v-model="selectedEmitter.particle.colorGradientEnabled" type="checkbox" />颜色渐变</label>
+              <label
+                v-if="selectedEmitter.useGPU && selectedEmitter.externalData && selectedEmitter.externalTemplate && selectedEmitter.particle.colorGradientEnabled && selectedEmitter.curves.color.enabled"
+                class="check-row"
+              >
+                <input v-model="selectedEmitter.gpu.useDataColorCurve" type="checkbox" />引用 simpleData 颜色
+              </label>
+            </div>
+            <div
+              v-if="selectedEmitter.useGPU && selectedEmitter.externalData && selectedEmitter.externalTemplate && selectedEmitter.particle.colorGradientEnabled && selectedEmitter.curves.color.enabled && selectedEmitter.gpu.useDataColorCurve"
+              class="compatibility-note"
+            >每个粒子生成时都会从 simpleData 创建颜色曲线。外部修改会生效，但会增加对象分配。</div>
+            <BindableColorVector :card="selectedEmitter" path="particle.colorStart" label="起始颜色" />
+            <BindableColorVector v-if="selectedEmitter.particle.colorGradientEnabled" :card="selectedEmitter" path="particle.colorEnd" label="最终颜色" />
             <BindableVector :card="selectedEmitter" path="particle.velocity" label="速度方向" value-type="vec3" step="0.01" />
             <BindableVector :card="selectedEmitter" path="particle.velocityRandom" label="速度随机量" value-type="vec3" min="0" step="0.01" />
             <div class="grid3">
               <BindableField :card="selectedEmitter" path="particle.speedMin" label="最小速度" min="0" step="0.01" />
               <BindableField :card="selectedEmitter" path="particle.speedMax" label="最大速度" min="0" step="0.01" />
-              <label class="field"><span>速度模式</span><select v-model="selectedEmitter.particle.velocityMode" class="input"><option value="fixed">固定方向</option><option value="spawn_relative">从发射点向外</option></select></label>
+              <label class="field"><span>速度模式</span><select v-model="selectedEmitter.particle.velocityMode" class="input"><option value="fixed">固定方向</option><option value="spawn_relative">从发射点向外</option><option value="spawn_inward">从发射点朝内</option></select></label>
             </div>
           </section>
 
           <section class="editor-section">
             <div class="section-title">物理</div>
             <div class="grid3 physics-grid">
-              <BindableField :card="selectedEmitter" path="physics.gravity" label="重力强度（0=关闭）" min="0" step="0.01" />
-              <label class="field"><span>粒子物理碰撞</span><select v-model="selectedEmitter.physics.collision" class="input"><option :value="false">关闭</option><option :value="true">开启</option></select></label>
-              <label class="field">
+              <BindableField v-if="!selectedEmitter.useGPU" :card="selectedEmitter" path="physics.gravity" label="重力强度（0=关闭）" min="0" step="0.01" />
+              <label class="field"><span>{{ selectedEmitter.useGPU ? 'GPU 方块碰撞' : '粒子物理碰撞' }}</span><select v-model="selectedEmitter.physics.collision" class="input"><option :value="false">关闭</option><option :value="true">开启</option></select></label>
+              <label v-if="!selectedEmitter.useGPU" class="field">
                 <span>粒子碰撞目标</span>
                 <input
                   class="input"
@@ -364,6 +444,7 @@
                 />
               </label>
             </div>
+            <div v-if="selectedEmitter.useGPU" class="compatibility-note">GPU 碰撞写入 ControlableCParticleData.blockCollision；碰撞目标仅用于 CPU 粒子的 sign 筛选。GPU 运动使用 GPU Commands。</div>
           </section>
 
           <section class="editor-section">
@@ -374,23 +455,25 @@
               <BindableField :card="selectedEmitter" path="render.light" label="亮度" value-type="int" min="-1" max="15" step="1" />
             </div>
             <div class="grid3">
-              <BindableField :card="selectedEmitter" path="render.roll" label="滚转角 °" step="1" />
+              <BindableField :card="selectedEmitter" path="render.roll" :label="selectedEmitter.render.billboardMode === 'none' && selectedEmitter.render.relativeRotation ? '滚转基础偏移 °' : '滚转角 °'" step="1" />
               <template v-if="selectedEmitter.render.billboardMode === 'axis_billboard'">
                 <label class="field"><span>轴向偏航角 °</span><input class="input" type="number" step="1" :value="axisYaw(selectedEmitter)" @input="updateAxisAngle(selectedEmitter, 'yaw', $event.target.value)" /></label>
                 <label class="field"><span>轴向俯仰角 °</span><input class="input" type="number" step="1" :value="axisPitch(selectedEmitter)" @input="updateAxisAngle(selectedEmitter, 'pitch', $event.target.value)" /></label>
               </template>
               <template v-else-if="selectedEmitter.render.billboardMode === 'none'">
-                <BindableField :card="selectedEmitter" path="render.yaw" label="偏航角 °" step="1" />
-                <BindableField :card="selectedEmitter" path="render.pitch" label="俯仰角 °" step="1" />
+                <BindableField :card="selectedEmitter" path="render.yaw" :label="selectedEmitter.render.relativeRotation ? '偏航基础偏移 °' : '偏航角 °'" step="1" />
+                <BindableField :card="selectedEmitter" path="render.pitch" :label="selectedEmitter.render.relativeRotation ? '俯仰基础偏移 °' : '俯仰角 °'" step="1" />
               </template>
             </div>
+            <label v-if="selectedEmitter.render.billboardMode === 'none'" class="check-row">
+              <input v-model="selectedEmitter.render.relativeRotation" type="checkbox" />相对出生位置旋转
+            </label>
             <div class="grid3">
               <label class="field"><span>缩放模式</span><select v-model="selectedEmitter.render.scaleMode" class="input"><option v-for="mode in scaleModeOptions(selectedEmitter)" :key="mode.id" :value="mode.id">{{ mode.label }}</option></select></label>
               <BindableField :card="selectedEmitter" path="render.baseScale.x" label="宽度倍率" value-type="float" min="0" step="0.01" />
               <BindableField :card="selectedEmitter" path="render.baseScale.y" label="高度倍率" value-type="float" min="0" step="0.01" />
             </div>
             <div class="grid3 sign-grid-row">
-              <BindableField v-if="usesDepthScale(selectedEmitter)" :card="selectedEmitter" path="render.baseScale.z" label="深度倍率" value-type="float" min="0" step="0.01" />
               <div class="field-pack sign-field-wrap" :class="{ 'duplicate-sign-field': duplicateEmitterSignCount(selectedEmitter) }">
                 <BindableField :card="selectedEmitter" path="render.sign" label="标记值" value-type="int" step="1" />
                 <small v-if="duplicateEmitterSignCount(selectedEmitter)" class="duplicate-sign-message">
@@ -403,33 +486,44 @@
 
           <section class="editor-section">
             <div class="section-title">生命周期曲线</div>
+            <div v-if="selectedEmitter.useGPU" class="compatibility-note">GPU 开启大小同步时使用等比缩放曲线；关闭后分别使用 X/Y 缩放曲线。亮度与姿态曲线仅用于 CPU 粒子。</div>
             <div class="curve-stack">
               <div class="curve-option-row">
                 <label class="check-row"><input v-model="selectedEmitter.curves.size.syncAxes" type="checkbox" />大小同步</label>
               </div>
-              <LifecycleCurveEditor v-if="selectedEmitter.curves.size.syncAxes" title="大小 / 缩放" :curve="selectedEmitter.curves.size.x" />
+              <LifecycleCurveEditor v-if="selectedEmitter.curves.size.syncAxes" title="大小 / 缩放" :curve="selectedEmitter.curves.size.x" toggleable />
               <details v-else class="axis-curve-box" open>
                 <summary>缩放轴向曲线</summary>
                 <div class="axis-curve-content">
-                  <LifecycleCurveEditor title="大小 X / 宽度" :curve="selectedEmitter.curves.size.x" />
-                  <LifecycleCurveEditor title="大小 Y / 高度" :curve="selectedEmitter.curves.size.y" />
-                  <LifecycleCurveEditor v-if="usesDepthScale(selectedEmitter)" title="大小 Z / 深度" :curve="selectedEmitter.curves.size.z" />
+                  <LifecycleCurveEditor title="大小 X / 宽度" :curve="selectedEmitter.curves.size.x" toggleable />
+                  <LifecycleCurveEditor title="大小 Y / 高度" :curve="selectedEmitter.curves.size.y" toggleable />
                 </div>
               </details>
-              <LifecycleCurveEditor title="亮度" :curve="selectedEmitter.curves.brightness" :hard-min="-1" :hard-max="15" />
-              <div class="curve-option-row">
+              <LifecycleCurveEditor v-if="!selectedEmitter.useGPU" title="亮度" :curve="selectedEmitter.curves.light" :hard-min="-1" :hard-max="15" toggleable />
+              <div v-if="!selectedEmitter.useGPU" class="curve-option-row">
                 <label class="check-row"><input v-model="selectedEmitter.curves.rotation.syncAxes" type="checkbox" />旋转同步</label>
               </div>
-              <LifecycleCurveEditor v-if="selectedEmitter.curves.rotation.syncAxes || !showRotationAxisCurves(selectedEmitter)" title="滚转角" :curve="selectedEmitter.curves.rotation.roll" />
-              <details v-else class="axis-curve-box" open>
+              <LifecycleCurveEditor v-if="!selectedEmitter.useGPU && (selectedEmitter.curves.rotation.syncAxes || !showRotationAxisCurves(selectedEmitter))" title="滚转角" :curve="selectedEmitter.curves.rotation.roll" toggleable />
+              <details v-else-if="!selectedEmitter.useGPU" class="axis-curve-box" open>
                 <summary>旋转轴向曲线</summary>
                 <div class="axis-curve-content">
-                  <LifecycleCurveEditor title="滚转角" :curve="selectedEmitter.curves.rotation.roll" />
-                  <LifecycleCurveEditor title="偏航角" :curve="selectedEmitter.curves.rotation.yaw" />
-                  <LifecycleCurveEditor title="俯仰角" :curve="selectedEmitter.curves.rotation.pitch" />
+                  <LifecycleCurveEditor title="滚转角" :curve="selectedEmitter.curves.rotation.roll" toggleable />
+                  <LifecycleCurveEditor title="偏航角" :curve="selectedEmitter.curves.rotation.yaw" toggleable />
+                  <LifecycleCurveEditor title="俯仰角" :curve="selectedEmitter.curves.rotation.pitch" toggleable />
                 </div>
               </details>
-              <LifecycleCurveEditor title="不透明度" :curve="selectedEmitter.curves.opacity" :hard-min="0" :hard-max="100" value-suffix="%" />
+              <LifecycleCurveEditor title="不透明度" :curve="selectedEmitter.curves.opacity" :hard-min="0" :hard-max="100" value-suffix="%" toggleable />
+              <LifecycleCurveEditor
+                v-if="selectedEmitter.particle.colorGradientEnabled"
+                title="颜色渐变进度"
+                :curve="selectedEmitter.curves.color"
+                :hard-min="0"
+                :hard-max="1"
+                :color-low="selectedEmitter.particle.colorStart"
+                :color-high="selectedEmitter.particle.colorEnd"
+                :max-frames="selectedEmitter.useGPU ? 8 : null"
+                toggleable
+              />
             </div>
           </section>
         </template>
@@ -473,6 +567,7 @@ import GeneratorSettingsModal from '../components/GeneratorSettingsModal.vue';
 import { highlightKotlin } from '../utils/legacy-code-highlight.js';
 import {
   BILLBOARD_MODES,
+  CPARTICLE_COMMAND_TYPE_IDS,
   COMMAND_TYPE_OPTIONS,
   EFFECT_OPTIONS,
   EMITTER_TYPES,
@@ -480,6 +575,8 @@ import {
   GENERATOR_HOTKEY_DEFAULTS,
   GENERATOR_THEME_OPTIONS,
   TEXTURE_SHEET_OPTIONS,
+  convertGpuCommandsToParticle,
+  convertParticleCommandsToGpu,
   createCommandQueue,
   createDefaultCommandParams,
   createEmitterCard,
@@ -566,6 +663,7 @@ const redoStack = [];
 const leftTabs = [
   { id: 'emitters', label: '发射器' },
   { id: 'queues', label: '命令队列' },
+  { id: 'gpu_commands', label: 'GPU Commands' },
   { id: 'project', label: '项目设置' },
   { id: 'tick', label: '每 Tick' },
   { id: 'death', label: '死亡行为' },
@@ -580,6 +678,9 @@ const effectAutocompleteOptions = EFFECT_OPTIONS.map((item) => ({ value: item.cl
 const renderTypeAutocompleteOptions = TEXTURE_SHEET_OPTIONS.map((item) => ({ value: item.id, label: item.label }));
 const generatorValueTypes = GENERATOR_VALUE_TYPES;
 const commandTypeOptions = COMMAND_TYPE_OPTIONS;
+const gpuCommandTypeOptions = COMMAND_TYPE_OPTIONS
+  .filter((item) => CPARTICLE_COMMAND_TYPE_IDS.includes(item.id))
+  .map((item) => item.id === 'gravity' ? { ...item, label: '重力' } : item);
 const generatorThemeOptions = GENERATOR_THEME_OPTIONS;
 const hotkeyFields = [
   { key: 'toggleSettings', label: '设置' },
@@ -594,7 +695,16 @@ const hotkeyFields = [
 
 const selectedEmitter = computed(() => project.value.emitters.find((card) => card.id === project.value.selectedEmitterId) || project.value.emitters[0] || null);
 const selectedQueue = computed(() => project.value.commandQueues.find((queue) => queue.id === project.value.selectedQueueId) || project.value.commandQueues[0] || null);
-const kotlinOutput = computed(() => generateEmitterKotlin(project.value));
+const commandConversionMessage = ref('');
+const commandConversionWarning = ref(false);
+const kotlinOutput = computed(() => {
+  try {
+    return generateEmitterKotlin(project.value);
+  } catch (error) {
+    const message = String(error?.message || error || '未知错误');
+    return `// Kotlin 代码生成失败\n${message.split('\n').map((line) => `// ${line}`).join('\n')}`;
+  }
+});
 const highlightedKotlinOutput = computed(() => highlightKotlin(kotlinOutput.value));
 const previewInterpolationMs = computed(() => {
   const ticksPerSecond = Math.max(1, Number(project.value.ticksPerSecond || 20));
@@ -1965,11 +2075,18 @@ async function saveIndexedProject() {
       throw new Error('当前环境无法自动保存这个项目文件。');
     }
     if (filePath) {
+      const text = JSON.stringify(snapshot, null, 2);
+      if (shell.autoSaveProjectFile) {
+        const backup = await shell.autoSaveProjectFile({ filePath, text });
+        if (!backup?.ok) {
+          throw new Error(backup?.message || 'Generator 项目自动备份失败。');
+        }
+      }
       const result = await shell.saveProjectFile({
         title: '自动保存 Generator 项目',
         filePath,
         addToRecent: false,
-        text: JSON.stringify(snapshot, null, 2)
+        text
       });
       if (!result?.ok) {
         throw new Error(result?.message || '项目自动保存失败。');
@@ -2073,16 +2190,21 @@ function applyPreviewRenderScale(data, scale) {
   if (Math.abs(factor - 1) < 0.0001) return data;
   if (data?.kind === 'preview-buffers') {
     const sizes = new Float32Array(data.sizes);
+    const scaleXs = data.scaleXs ? new Float32Array(data.scaleXs) : null;
+    const scaleYs = data.scaleYs ? new Float32Array(data.scaleYs) : null;
     const count = Math.max(0, Math.trunc(Number(data.count || 0)));
-    for (let index = 0; index < count; index += 1) sizes[index] *= factor;
-    return { ...data, sizes };
+    for (let index = 0; index < count; index += 1) {
+      sizes[index] *= factor;
+      if (scaleXs) scaleXs[index] *= factor;
+      if (scaleYs) scaleYs[index] *= factor;
+    }
+    return { ...data, sizes, ...(scaleXs ? { scaleXs } : {}), ...(scaleYs ? { scaleYs } : {}) };
   }
   if (!Array.isArray(data)) return data;
   const scaled = data.map((point) => ({
     ...point,
     scaleX: multiplyPositive(point.scaleX, factor),
     scaleY: multiplyPositive(point.scaleY, factor),
-    scaleZ: multiplyPositive(point.scaleZ, factor),
     size: multiplyPositive(point.size, factor)
   }));
   if (Object.prototype.hasOwnProperty.call(data, 'effectSignature')) {
@@ -2152,6 +2274,67 @@ function addQueueCommandToSelected() {
   selectedQueue.value.commands.push(createQueueCommand({ label: `命令 ${selectedQueue.value.commands.length + 1}` }));
 }
 
+function addGpuCommand() {
+  if (project.value.gpuCommands.length >= 16) return;
+  project.value.gpuCommands.push(createQueueCommand({
+    tick: 0,
+    label: `GPU Command ${project.value.gpuCommands.length + 1}`
+  }));
+}
+
+function removeGpuCommand(commandId) {
+  const index = project.value.gpuCommands.findIndex((command) => command.id === commandId);
+  if (index >= 0) project.value.gpuCommands.splice(index, 1);
+}
+
+function convertSelectedQueueToGpu() {
+  if (!selectedQueue.value) return;
+  const result = convertParticleCommandsToGpu(selectedQueue.value.commands, {
+    signs: selectedQueue.value.signs
+  });
+  const available = Math.max(0, 16 - project.value.gpuCommands.length);
+  const converted = result.commands.slice(0, available);
+  const capacitySkipped = result.commands.slice(available);
+  const convertedIds = new Set(converted.map((command) => command.id));
+  const adjustments = result.adjustments.filter((item) => (
+    item.field === 'signs' ? converted.length > 0 : convertedIds.has(item.id)
+  ));
+  project.value.gpuCommands.push(...converted);
+  showCommandConversionResult('GPU Commands', converted.length, result.incompatible, capacitySkipped, adjustments);
+}
+
+function convertGpuCommandsToSelectedQueue() {
+  let queue = selectedQueue.value;
+  if (!queue) {
+    queue = createCommandQueue({ name: '命令队列 1' });
+    project.value.commandQueues.push(queue);
+    project.value.selectedQueueId = queue.id;
+  }
+  const result = convertGpuCommandsToParticle(project.value.gpuCommands);
+  queue.commands.push(...result.commands);
+  showCommandConversionResult(queue.name, result.commands.length, result.incompatible, [], result.adjustments);
+}
+
+function showCommandConversionResult(targetName, convertedCount, incompatible, capacitySkipped, adjustments) {
+  const details = [];
+  const tickAdjustments = adjustments.filter((item) => item.field === 'tick');
+  const signAdjustment = adjustments.find((item) => item.field === 'signs');
+  if (incompatible.length) {
+    details.push(`不兼容：${incompatible.map((item) => `${item.label} (${item.type})`).join('、')}`);
+  }
+  if (capacitySkipped.length) {
+    details.push(`超过 16 个上限：${capacitySkipped.map((item) => item.label || item.type).join('、')}`);
+  }
+  if (tickAdjustments.length) {
+    details.push(`命令级延迟不兼容，Tick 已改为 0：${tickAdjustments.map((item) => `${item.label} (${item.from})`).join('、')}`);
+  }
+  if (signAdjustment) {
+    details.push(`命令队列的 sign 范围不兼容，GPU Commands 将作用于全部 GPU 粒子：${signAdjustment.values.join('、')}`);
+  }
+  commandConversionWarning.value = details.length > 0;
+  commandConversionMessage.value = `已转换 ${convertedCount} 个命令到 ${targetName}${details.length ? `；${details.join('；')}` : ''}。`;
+}
+
 function removeQueueCommand(queue, commandId) {
   const index = queue.commands.findIndex((command) => command.id === commandId);
   if (index >= 0) queue.commands.splice(index, 1);
@@ -2175,24 +2358,14 @@ function syncBillboardScaleMode(card) {
   if (!card?.render) return;
   if (card.render.billboardMode !== 'none') {
     card.curves.rotation.syncAxes = false;
-    card.render.baseScale.z = card.render.baseScale.y || card.render.baseScale.x || 1;
   }
 }
 
-function scaleModeOptions(card) {
-  return usesDepthScale(card)
-    ? [
-      { id: 'uniform_xy', label: 'XY 等比' },
-      { id: 'xyz', label: 'XYZ 独立' }
-    ]
-    : [
-      { id: 'uniform_xy', label: 'XY 等比' },
-      { id: 'xyz', label: '宽高独立' }
-    ];
-}
-
-function usesDepthScale(card) {
-  return card?.render?.billboardMode === 'none';
+function scaleModeOptions() {
+  return [
+    { id: 'uniform_xy', label: 'XY 等比' },
+    { id: 'xyz', label: '宽高独立' }
+  ];
 }
 
 function showRotationAxisCurves(card) {
@@ -2257,11 +2430,11 @@ function formatHotkey(code) {
 }
 
 function commandParamFields(command) {
-  return commandTypeOptions.find((item) => item.id === command.type)?.params || [];
+  return COMMAND_TYPE_OPTIONS.find((item) => item.id === command.type)?.params || [];
 }
 
 function syncCommandType(command) {
-  const option = commandTypeOptions.find((item) => item.id === command.type);
+  const option = COMMAND_TYPE_OPTIONS.find((item) => item.id === command.type);
   command.params = createDefaultCommandParams(command.type);
   if (option) command.label = option.label;
 }
@@ -2800,30 +2973,29 @@ function buildPreviewParticle(card, cardIndex, particleIndex, age, agePercent, l
   const sizeY = card.render.scaleMode === 'xyz' && !card.curves.size.syncAxes
     ? Math.max(0, samplePreviewCurve(card.curves.size.y, agePercent))
     : sizeX;
-  const sizeZ = card.render.scaleMode === 'xyz' && !card.curves.size.syncAxes
-    ? Math.max(0, samplePreviewCurve(card.curves.size.z, agePercent))
-    : sizeX;
   const baseScale = card.render.scaleMode === 'xyz'
     ? {
       x: Math.max(0, Number(card.render.baseScale.x || 0)),
-      y: Math.max(0, Number(card.render.baseScale.y || card.render.baseScale.x || 0)),
-      z: Math.max(0, Number(card.render.baseScale.z || card.render.baseScale.x || 0))
+      y: Math.max(0, Number(card.render.baseScale.y || card.render.baseScale.x || 0))
     }
     : {
       x: Math.max(0, Number(card.render.baseScale.x || 0)),
-      y: Math.max(0, Number(card.render.baseScale.x || 0)),
-      z: Math.max(0, Number(card.render.baseScale.x || 0))
+      y: Math.max(0, Number(card.render.baseScale.x || 0))
     };
   const alpha = clamp01((Number(card.render.alpha ?? 100) / 100) * (samplePreviewCurve(card.curves.opacity, agePercent) / 100));
-  const light = clampNumber(samplePreviewCurve(card.curves.brightness, agePercent), -1, 15, Number(card.render.light ?? 15));
-  const color = interpolateHex(card.particle.colorStart, card.particle.colorOverLifeEnabled ? card.particle.colorEnd : card.particle.colorStart, lifeAlpha, light);
+  const light = card.curves.light?.enabled
+    ? clampNumber(samplePreviewCurve(card.curves.light, agePercent), -1, 15, Number(card.render.light ?? 15))
+    : Number(card.render.light ?? 15);
+  const colorProgress = card.curves.color?.enabled
+    ? clamp01(samplePreviewCurve(card.curves.color, agePercent))
+    : 0;
+  const color = interpolateHex(card.particle.colorStart, card.particle.colorEnd, colorProgress, light);
   const rotation = samplePreviewRotation(card, agePercent);
   const base = sampleEmitterPoint(card, rand);
   const velocity = sampleVelocity(card, rand);
   const scale = {
     x: baseScale.x * sizeX,
-    y: baseScale.y * sizeY,
-    z: baseScale.z * sizeZ
+    y: baseScale.y * sizeY
   };
   return {
     x: base.x + velocity.x * age * 0.18,
@@ -2841,8 +3013,7 @@ function buildPreviewParticle(card, cardIndex, particleIndex, age, agePercent, l
     pitch: rotation.pitch,
     scaleX: scale.x,
     scaleY: scale.y,
-    scaleZ: scale.z,
-    size: Math.max(0.01, (scale.x + scale.y + scale.z) / 3),
+    size: Math.max(0.01, (scale.x + scale.y) / 2),
     age,
     life,
     seed: cardIndex * 100000 + particleIndex
@@ -3350,6 +3521,13 @@ function normalizeVector(vector) {
   gap: 10px;
 }
 
+.curve-stack,
+.axis-curve-box,
+.axis-curve-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .emitter-list {
   container-type: inline-size;
 }
@@ -3416,6 +3594,21 @@ function normalizeVector(vector) {
 .empty-state {
   color: var(--text-soft);
   font-size: 12px;
+}
+
+.compatibility-note {
+  padding: 8px 10px;
+  border-left: 3px solid #d6a94b;
+  color: var(--text-soft);
+  background: rgb(214 169 75 / 10%);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.compatibility-note--error {
+  border-left-color: #dc5f6d;
+  color: #ffb1ba;
+  background: rgb(220 95 109 / 12%);
 }
 
 .row-actions {
@@ -3518,6 +3711,30 @@ function normalizeVector(vector) {
 
 .external-parameter-grid {
   align-items: start;
+}
+
+.gpu-parameter-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px 2px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.gpu-enable-control {
+  min-height: 24px;
+  font-weight: 700;
+}
+
+.gpu-parameter-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.generator-right .gpu-parameter-options .field > span {
+  min-height: auto;
 }
 
 .external-parameter-option .check-row {
@@ -4189,6 +4406,18 @@ function normalizeVector(vector) {
   .preview-title {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .generator-topbar,
+  .generator-brand,
+  .generator-actions,
+  .generator-workspace,
+  .generator-left,
+  .generator-preview,
+  .generator-right {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .grid2,

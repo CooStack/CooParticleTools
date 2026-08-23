@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  getLifecycleCurveDisplayBounds
+  getLifecycleCurveDisplayBounds,
+  sampleLifecycleCurve
 } from '../src/modules/generator/curves.js';
+import { samplePreparedCurve } from '../src/modules/generator/preview-simulation.js';
 
 function curve(overrides = {}) {
   return {
@@ -17,6 +19,27 @@ function curve(overrides = {}) {
     ...overrides
   };
 }
+
+test('preview lifecycle sampling matches the shared Bezier curve sampler', () => {
+  const raw = curve({
+    keyframes: [
+      { id: 'narrow-start', time: 0, value: 0, out: { x: 88, y: 1.8 } },
+      { id: 'narrow-end', time: 100, value: 1, in: { x: -88, y: -0.4 } }
+    ]
+  });
+  const prepared = {
+    mode: raw.mode,
+    defaultValue: raw.defaultValue,
+    frames: raw.keyframes
+  };
+  for (const percent of [0, 7.5, 25, 50, 73.5, 100]) {
+    assert.equal(
+      samplePreparedCurve(prepared, percent, 0),
+      sampleLifecycleCurve(raw, percent)
+    );
+  }
+});
+
 
 test('bezier display bounds include only handles used by active segments', () => {
   assert.deepEqual(getLifecycleCurveDisplayBounds(curve()), { min: -25, max: 20 });

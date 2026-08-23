@@ -1,5 +1,8 @@
 import { normalizePointsBuilderState } from "../../points_builder/js/model.js";
-import { normalizeAlphaHelperConfig } from "./alpha_helper_utils.js";
+import {
+    normalizeAlphaHelperConfig,
+    normalizeCParticleAlphaConfig
+} from "./alpha_helper_utils.js?v=20260729_1";
 import {
     formatVectorLiteral,
     isVectorLiteralType,
@@ -76,6 +79,47 @@ export const COMPOSITION_CARD_SECTION_KEYS = [
 ];
 
 const COMPOSITION_DATA_TYPES = new Set(["single", "particle_shape", "sequenced_shape"]);
+const CPARTICLE_RENDER_LAYERS = new Set([
+    "OPAQUE",
+    "TRANSLUCENT",
+    "ADDITION_BLEND",
+    "ADDITION_BLEND_NOT_HDR",
+    "ADDITION_BLEND_NOT_HDR_NO_DEPTH_WRITE",
+    "ADDITION_BLEND_TRANSLUCENT",
+    "ADDITION_BLEND_TRANSLUCENT_NOT_HDR",
+    "ADDITION_BLEND_TRANSLUCENT_NOT_HDR_NO_DEPTH_WRITE",
+    "ADDITION_BLEND_TRANSLUCENT_NO_DEPTH_WRITE"
+]);
+
+export function isCompositionLeafParticleType(type) {
+    return type === "single" || type === "cparticle";
+}
+
+export function isCompositionShapeType(type) {
+    return type === "particle_shape" || type === "sequenced_shape";
+}
+
+export function isCompositionCardUsingCParticle(card) {
+    if (!card || typeof card !== "object") return false;
+    const type = String(card.dataType || "single");
+    if (isCompositionShapeType(type)) return card.useCParticle === true;
+    return isCompositionLeafParticleType(type) && card.particleBackend === "cparticle";
+}
+
+export function findCompositionNestedShapePaths(card) {
+    if (!card || !isCompositionShapeType(card.dataType) || !Array.isArray(card.shapeChildren)) return [];
+    const paths = [];
+    const walk = (nodes, parentPath) => {
+        for (let index = 0; index < (Array.isArray(nodes) ? nodes.length : 0); index += 1) {
+            const node = nodes[index];
+            const path = [...parentPath, index];
+            if (isCompositionShapeType(node?.type)) paths.push(path);
+            walk(node?.children, path);
+        }
+    };
+    walk(card.shapeChildren, []);
+    return paths;
+}
 
 function cloneJson(value) {
     if (value === undefined) return undefined;
@@ -113,6 +157,15 @@ function ensureId(value, options) {
 function normalizeDataType(value) {
     const type = String(value || "");
     return COMPOSITION_DATA_TYPES.has(type) ? type : "single";
+}
+
+function normalizeParticleBackend(value) {
+    return String(value || "") === "cparticle" ? "cparticle" : "single";
+}
+
+function normalizeCParticleRenderLayer(value) {
+    const layer = String(value || "");
+    return CPARTICLE_RENDER_LAYERS.has(layer) ? layer : "ADDITION_BLEND_TRANSLUCENT";
 }
 
 function parseVectorLiteralNumbers(rawExpression, fallback = { x: 0, y: 1, z: 0 }) {
@@ -391,6 +444,7 @@ export function normalizeCompositionNestedLevel(raw, index = 0, options = {}) {
     level.collapsed = !!level.collapsed;
     level.effectClass = String(level.effectClass || DEFAULT_COMPOSITION_EFFECT_CLASS);
     level.useTexture = level.useTexture !== false;
+    level.cparticleRenderLayer = normalizeCParticleRenderLayer(level.cparticleRenderLayer);
     level.name = String(level.name || `嵌套层${index + 2}`);
     return level;
 }
@@ -404,6 +458,11 @@ export function normalizeCompositionShapeNode(raw = {}, index = 0, options = {})
     node.name = String(node.name || `子节点 ${index + 1}`);
     node.effectClass = String(node.effectClass || DEFAULT_COMPOSITION_EFFECT_CLASS);
     node.useTexture = node.useTexture !== false;
+    node.useCParticle = false;
+    node.cparticleRenderLayer = normalizeCParticleRenderLayer(node.cparticleRenderLayer);
+    node.randomAgePreTick = node.randomAgePreTick === true;
+    node.cparticleAlpha = normalizeCParticleAlphaConfig(node.cparticleAlpha);
+    delete node.randomInitialAge;
     node.particleInit = Array.isArray(node.particleInit)
         ? node.particleInit.map((item) => normalizeParticleInit(item, options))
         : [];
@@ -413,7 +472,7 @@ export function normalizeCompositionShapeNode(raw = {}, index = 0, options = {})
     node.controllerActions = Array.isArray(node.controllerActions)
         ? node.controllerActions.map((action) => normalizeCompositionControllerAction(action, options))
         : [];
-    node.children = node.type === "single"
+    node.children = isCompositionLeafParticleType(node.type)
         ? []
         : (Array.isArray(node.children)
             ? node.children.map((child, childIndex) => normalizeCompositionShapeNode(child, childIndex, options))
@@ -428,8 +487,14 @@ export function createCompositionCard(index = 0, options = {}) {
         point: { x: 0, y: 0, z: 0 },
         builderState: createEmbeddedPointsBuilderState(options),
         dataType: "single",
+        particleBackend: "single",
+        globalCParticleAuto: false,
+        useCParticle: false,
         singleEffectClass: DEFAULT_COMPOSITION_EFFECT_CLASS,
         singleUseTexture: true,
+        cparticleRenderLayer: "ADDITION_BLEND_TRANSLUCENT",
+        randomAgePreTick: false,
+        cparticleAlpha: normalizeCParticleAlphaConfig(),
         particleInit: [],
         controllerVars: [],
         controllerActions: [],
@@ -481,9 +546,19 @@ export function normalizeCompositionCard(raw, index = 0, options = {}) {
     card.point = normalizePoint(card.point);
     card.builderState = normalizeEmbeddedPointsBuilderState(card.builderState, options);
     card.builderKotlinOverride = String(card.builderKotlinOverride || "");
+    const legacyCParticle = String(card.dataType || "") === "cparticle";
     card.dataType = normalizeDataType(card.dataType);
+    card.particleBackend = card.dataType === "single"
+        ? normalizeParticleBackend(legacyCParticle ? "cparticle" : card.particleBackend)
+        : "single";
+    card.globalCParticleAuto = card.globalCParticleAuto === true;
+    card.useCParticle = isCompositionShapeType(card.dataType) && card.useCParticle === true;
     card.singleEffectClass = String(card.singleEffectClass || DEFAULT_COMPOSITION_EFFECT_CLASS);
     card.singleUseTexture = card.singleUseTexture !== false;
+    card.cparticleRenderLayer = normalizeCParticleRenderLayer(card.cparticleRenderLayer);
+    card.randomAgePreTick = card.randomAgePreTick === true;
+    card.cparticleAlpha = normalizeCParticleAlphaConfig(card.cparticleAlpha);
+    delete card.randomInitialAge;
     card.particleInit = Array.isArray(card.particleInit)
         ? card.particleInit.map((item) => normalizeParticleInit(item, options))
         : [];
@@ -530,7 +605,9 @@ export function normalizeCompositionCard(raw, index = 0, options = {}) {
         : [];
     card.shapeScale = normalizeScaleHelperConfig(card.shapeScale, { type: "none" });
     card.shapeScale.runMode = "auto";
-    card.shapeChildren = Array.isArray(card.shapeChildren)
+    card.shapeChildren = isCompositionLeafParticleType(card.dataType)
+        ? []
+        : Array.isArray(card.shapeChildren)
         ? card.shapeChildren.map((child, childIndex) => normalizeCompositionShapeNode(child, childIndex, options))
         : [];
     card.viewPath = Array.isArray(card.viewPath) ? card.viewPath.map(integerValue) : [];
@@ -596,6 +673,7 @@ export function createCompositionProject(init = {}, options = {}) {
             compositionLayersOpen: true,
             projectSectionHeight: 42
         },
+        useCParticle: false,
         hotkeys: cloneJson(DEFAULT_COMPOSITION_HOTKEYS),
         ...cloneJson(init || {})
     }, options);
@@ -622,6 +700,8 @@ export function normalizeCompositionProject(raw, options = {}) {
     project.packageName = normalizeCompositionPackageName(project.packageName);
     project.mapping = normalizeCompositionMapping(project.mapping);
     project.enableRemoveStatusOverride = project.enableRemoveStatusOverride === true;
+    project.useCParticle = project.useCParticle === true || project.globalUseCParticle === true;
+    delete project.globalUseCParticle;
     project.compositionType = project.compositionType === "sequenced" ? "sequenced" : "particle";
     project.previewPlayTicks = Math.max(1, integerValue(project.previewPlayTicks || 70));
     project.disabledInterval = Math.max(0, integerValue(project.disabledInterval || 0));
@@ -713,5 +793,26 @@ export function normalizeCompositionProject(raw, options = {}) {
                 || card.shapeDisplayActions.some((action) => String(action?.toExpr || "").includes("direction")));
     });
     if (!project.cards.length) project.cards.push(createCompositionCard(0, options));
+    for (const card of project.cards) {
+        const isShape = isCompositionShapeType(card.dataType);
+        if (project.useCParticle && (isCompositionLeafParticleType(card.dataType) || isShape)) {
+            const alreadyUsesCParticle = isCompositionLeafParticleType(card.dataType)
+                ? card.particleBackend === "cparticle"
+                : card.useCParticle === true;
+            if (isCompositionLeafParticleType(card.dataType)) {
+                card.particleBackend = "cparticle";
+            } else {
+                card.useCParticle = true;
+            }
+            if (!alreadyUsesCParticle) card.globalCParticleAuto = true;
+        } else if (!project.useCParticle && card.globalCParticleAuto) {
+            if (isCompositionLeafParticleType(card.dataType)) {
+                card.particleBackend = "single";
+            } else if (isShape) {
+                card.useCParticle = false;
+            }
+            card.globalCParticleAuto = false;
+        }
+    }
     return project;
 }

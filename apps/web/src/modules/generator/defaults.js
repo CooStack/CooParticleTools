@@ -138,7 +138,11 @@ export const TEXTURE_SHEET_OPTIONS = [
   { id: 'PARTICLE_SHEET_LIT', label: 'PARTICLE_SHEET_LIT' },
   { id: 'PARTICLE_SHEET_OPAQUE', label: 'PARTICLE_SHEET_OPAQUE' },
   { id: 'ADDITION_BLEND_TRANSLUCENT', label: 'ADDITION_BLEND_TRANSLUCENT' },
+  { id: 'ADDITION_BLEND_TRANSLUCENT_NOT_HDR', label: 'ADDITION_BLEND_TRANSLUCENT_NOT_HDR' },
+  { id: 'ADDITION_BLEND_TRANSLUCENT_NOT_HDR_NO_DEPTH_WRITE', label: 'ADDITION_BLEND_TRANSLUCENT_NOT_HDR_NO_DEPTH_WRITE' },
   { id: 'ADDITION_BLEND', label: 'ADDITION_BLEND' },
+  { id: 'ADDITION_BLEND_NOT_HDR', label: 'ADDITION_BLEND_NOT_HDR' },
+  { id: 'ADDITION_BLEND_NOT_HDR_NO_DEPTH_WRITE', label: 'ADDITION_BLEND_NOT_HDR_NO_DEPTH_WRITE' },
   { id: 'ADDITION_BLEND_TRANSLUCENT_NO_DEPTH_WRITE', label: 'ADDITION_BLEND_TRANSLUCENT_NO_DEPTH_WRITE' },
   { id: 'TERRAIN_SHEET', label: 'TERRAIN_SHEET' },
   { id: 'CUSTOM', label: 'CUSTOM' },
@@ -397,16 +401,35 @@ export const COMMAND_TYPE_OPTIONS = [
   }
 ];
 
+export const CPARTICLE_COMMAND_TYPE_IDS = Object.freeze([
+  'drag',
+  'gravity',
+  'attraction',
+  'noise',
+  'flow_field',
+  'vortex',
+  'rotation_force',
+  'velocity_add'
+]);
+
 export function createCurveGroup() {
   return {
     size: {
       syncAxes: false,
       x: createLifecycleCurve({ min: 0, max: 2, defaultValue: 1 }),
-      y: createLifecycleCurve({ min: 0, max: 2, defaultValue: 1 }),
-      z: createLifecycleCurve({ min: 0, max: 2, defaultValue: 1 })
+      y: createLifecycleCurve({ min: 0, max: 2, defaultValue: 1 })
     },
-    brightness: createLifecycleCurve({ min: -1, max: 15, defaultValue: 15 }),
+    light: createLifecycleCurve({ min: -1, max: 15, defaultValue: 15 }),
     opacity: createLifecycleCurve({ min: 0, max: 100, defaultValue: 100 }),
+    color: createLifecycleCurve({
+      min: 0,
+      max: 1,
+      defaultValue: 0,
+      keyframes: [
+        { time: 0, value: 0 },
+        { time: 100, value: 1 }
+      ]
+    }),
     rotation: {
       syncAxes: false,
       roll: createLifecycleCurve({ min: -180, max: 180, defaultValue: 0 }),
@@ -479,6 +502,12 @@ export function createEmitterCard(overrides = {}) {
     id,
     name: '发射器 #1',
     enabled: true,
+    useGPU: false,
+    gpu: {
+      updateMode: 'static',
+      randomSeed: null,
+      useDataColorCurve: false
+    },
     externalData: false,
     externalTemplate: false,
     vars: {
@@ -511,9 +540,9 @@ export function createEmitterCard(overrides = {}) {
       lifeMax: 120,
       sizeMin: 0.08,
       sizeMax: 0.18,
+      colorGradientEnabled: true,
       colorStart: '#ffd1d1',
       colorEnd: '#ff8b8b',
-      colorOverLifeEnabled: true,
       velocityMode: 'fixed',
       velocity: { x: 0, y: 0.12, z: 0 },
       velocityRandom: { x: 0.04, y: 0.04, z: 0.04 },
@@ -532,12 +561,13 @@ export function createEmitterCard(overrides = {}) {
       billboardMode: 'face_camera',
       axis: { x: 0, y: 1, z: 0 },
       scaleMode: 'xyz',
-      baseScale: { x: 1, y: 1, z: 1 },
+      baseScale: { x: 1, y: 1 },
       alpha: 100,
       light: 15,
       roll: 0,
       yaw: 0,
       pitch: 0,
+      relativeRotation: false,
       sign: 0,
       speedLimit: 32
     },
@@ -604,7 +634,7 @@ export function createGeneratorProject(overrides = {}) {
   return normalizeGeneratorProject({
     id: '',
     tool: 'generator',
-    schemaVersion: 7,
+    schemaVersion: 12,
     name: 'EmitterGenerator',
     description: '参数化粒子发射器生成器',
     ticksPerSecond: 20,
@@ -648,8 +678,59 @@ export function createGeneratorProject(overrides = {}) {
     },
     emitters: [createEmitterCard()],
     commandQueues: [createCommandQueue()],
+    gpuCommands: [],
     ...overrides
   });
+}
+
+export function convertParticleCommandsToGpu(rawCommands = [], options = {}) {
+  const result = convertCommands(rawCommands, (type) => CPARTICLE_COMMAND_TYPE_IDS.includes(type));
+  const signs = normalizeCollisionTargets(options.signs || []);
+  if (signs.length && result.commands.length) {
+    result.adjustments.push({ field: 'signs', values: signs });
+  }
+  return result;
+}
+
+export function convertGpuCommandsToParticle(rawCommands = []) {
+  return convertCommands(rawCommands, (type) => COMMAND_TYPE_OPTIONS.some((item) => item.id === type));
+}
+
+function convertCommands(rawCommands, isCompatible) {
+  const commands = [];
+  const incompatible = [];
+  const adjustments = [];
+  (Array.isArray(rawCommands) ? rawCommands : []).forEach((command, index) => {
+    const type = resolveKnownCommandType(command?.type);
+    if (!type || !isCompatible(type)) {
+      incompatible.push({
+        id: String(command?.id || ''),
+        type: String(command?.type || ''),
+        label: String(command?.label || command?.type || `命令 ${index + 1}`)
+      });
+      return;
+    }
+    const converted = normalizeQueueCommand({
+      ...command,
+      id: makeId('cmd'),
+      tick: 0,
+      type,
+      params: { ...(command?.params || {}) }
+    }, index);
+    commands.push(converted);
+    const sourceTick = Math.trunc(toNumber(command?.tick, 0));
+    if (sourceTick !== 0) {
+      adjustments.push({
+        id: converted.id,
+        type,
+        label: String(command?.label || command?.type || `命令 ${index + 1}`),
+        field: 'tick',
+        from: sourceTick,
+        to: 0
+      });
+    }
+  });
+  return { commands, incompatible, adjustments };
 }
 
 export function normalizeGeneratorProject(raw = {}) {
@@ -672,11 +753,17 @@ export function normalizeGeneratorProject(raw = {}) {
   const legacyPercentUnit = sourceSchemaVersion < 3;
   const legacySizeInRenderScale = sourceSchemaVersion < 4;
   const repairOverscaledOpacityHandles = sourceSchemaVersion >= 3 && sourceSchemaVersion < 7;
+  const legacyUseGPU = base.particleBackend?.type === 'cparticle';
+  const legacyGpuUpdateMode = base.particleBackend?.cparticleUpdateMode === 'dynamic' ? 'dynamic' : 'static';
   const emitters = Array.isArray(base.emitters) && base.emitters.length
     ? base.emitters.map((card, index) => normalizeEmitterCard(card, index, {
         legacyPercentUnit,
         legacySizeInRenderScale,
-        repairOverscaledOpacityHandles
+        repairOverscaledOpacityHandles,
+        legacyUseGPU,
+        legacyGpuUpdateMode,
+        inferLegacyCurveEnabled: sourceSchemaVersion < 11,
+        legacyColorCurveEnabledByDefault: sourceSchemaVersion <= 7
       }))
     : [createEmitterCard()];
   const commandQueues = Array.isArray(base.commandQueues) && base.commandQueues.length
@@ -687,16 +774,20 @@ export function normalizeGeneratorProject(raw = {}) {
       commands: Array.isArray(queue.commands) ? queue.commands.map((command, commandIndex) => normalizeQueueCommand(command, commandIndex)) : []
     }))
     : [createCommandQueue()];
+  const gpuCommandSource = Array.isArray(base.gpuCommands) ? base.gpuCommands : [];
+  const gpuCommands = gpuCommandSource.map((command, index) => normalizeQueueCommand(command, index, {
+    preserveUnknownType: true
+  }));
   const parameters = normalizeGeneratorParameters(base.parameters);
   const legacyDoTick = Array.isArray(base.doTickExpressions)
     ? base.doTickExpressions.filter(Boolean).join('\n')
     : '';
-  return {
+  const normalized = {
     ...base,
-    schemaVersion: 7,
+    schemaVersion: 12,
     ticksPerSecond: clampInt(base.ticksPerSecond, 1, 200, 20),
     previewTicks: clampInt(base.previewTicks, 1, 2000, 120),
-    leftTab: ['emitters', 'queues', 'project', 'tick', 'death'].includes(base.leftTab) ? base.leftTab : 'emitters',
+    leftTab: ['emitters', 'queues', 'gpu_commands', 'project', 'tick', 'death'].includes(base.leftTab) ? base.leftTab : 'emitters',
     pageMode: base.pageMode === 'code' ? 'code' : 'editor',
     selectedEmitterId: emitters.some((item) => item.id === base.selectedEmitterId) ? base.selectedEmitterId : emitters[0]?.id || '',
     selectedQueueId: commandQueues.some((item) => item.id === base.selectedQueueId) ? base.selectedQueueId : commandQueues[0]?.id || '',
@@ -728,23 +819,27 @@ export function normalizeGeneratorProject(raw = {}) {
       rightPanelWidth: clampInt(base.settings.rightPanelWidth, 260, 2400, 480)
     },
     emitters,
-    commandQueues
+    commandQueues,
+    gpuCommands
   };
+  delete normalized.particleBackend;
+  return normalized;
 }
 
 export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
   const card = raw && typeof raw === 'object' ? raw : {};
   const defaults = createCurveGroup();
+  const gpuSource = card.gpu && typeof card.gpu === 'object' ? card.gpu : {};
   const particleSource = card.particle || {};
   const physicsSource = card.physics || {};
   const renderSource = card.render || {};
   const templateSource = card.template || {};
-  const legacyBaseScale = normalizeVector(renderSource.baseScale, { x: 0.14, y: 0.14, z: 0.14 });
+  const legacyBaseScale = normalizePlanarScale(renderSource.baseScale, { x: 0.14, y: 0.14 });
   const hasExplicitSize = particleSource.sizeMin !== undefined || particleSource.sizeMax !== undefined || particleSource.size !== undefined;
   const inferredLegacySize = options.legacySizeInRenderScale && !hasExplicitSize ? Math.max(0.001, Number(legacyBaseScale.x || 0.14)) : undefined;
   const baseScale = options.legacySizeInRenderScale && !hasExplicitSize
     ? normalizeLegacyScaleMultiplier(legacyBaseScale)
-    : normalizeVector(renderSource.baseScale, { x: 1, y: 1, z: 1 });
+    : normalizePlanarScale(renderSource.baseScale, { x: 1, y: 1 });
   const alphaUsesUnit = options.legacyPercentUnit || (renderSource.alpha === undefined && templateSource.alpha !== undefined);
   const velocityMode = particleSource.velocityMode || particleSource.velMode;
   const next = {
@@ -752,6 +847,18 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
     id: String(card.id || makeId('emitter')),
     name: String(card.name || `发射器 #${index + 1}`),
     enabled: card.enabled !== false,
+    useGPU: card.useGPU === true || options.legacyUseGPU === true,
+    gpu: {
+      updateMode: gpuSource.updateMode === 'dynamic'
+        ? 'dynamic'
+        : options.legacyGpuUpdateMode === 'dynamic'
+          ? 'dynamic'
+          : 'static',
+      randomSeed: gpuSource.randomSeed === null || gpuSource.randomSeed === undefined || gpuSource.randomSeed === ''
+        ? null
+        : clampInt(gpuSource.randomSeed, -2147483648, 2147483647, 0),
+      useDataColorCurve: gpuSource.useDataColorCurve === true
+    },
     externalData: card.externalData === true,
     externalTemplate: card.externalTemplate === true,
     vars: {
@@ -817,10 +924,14 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
       lifeMax: clampInt(particleSource.lifeMax, 1, 100000, 120),
       sizeMin: clampNumber(particleSource.sizeMin ?? particleSource.size ?? inferredLegacySize, 0.001, 100, 0.08),
       sizeMax: clampNumber(particleSource.sizeMax ?? particleSource.size ?? inferredLegacySize, 0.001, 100, 0.18),
+      colorGradientEnabled: particleSource.colorGradientEnabled !== false,
       colorStart: normalizeHex(particleSource.colorStart, '#ffd1d1'),
       colorEnd: normalizeHex(particleSource.colorEnd, '#ff8b8b'),
-      colorOverLifeEnabled: particleSource.colorOverLifeEnabled !== false,
-      velocityMode: velocityMode === 'spawn_relative' || velocityMode === 'spawn_rel' ? 'spawn_relative' : 'fixed',
+      velocityMode: velocityMode === 'spawn_inward' || velocityMode === 'spawn_in'
+        ? 'spawn_inward'
+        : velocityMode === 'spawn_relative' || velocityMode === 'spawn_rel'
+          ? 'spawn_relative'
+          : 'fixed',
       velocity: normalizeVector(particleSource.velocity || particleSource.vel, { x: 0, y: 0.12, z: 0 }),
       velocityRandom: normalizeVector(particleSource.velocityRandom || particleSource.velRandom, { x: 0.04, y: 0.04, z: 0.04 }),
       speedMin: clampNumber(particleSource.speedMin ?? particleSource.velSpeedMin, 0, 100, 0.2),
@@ -848,6 +959,7 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
       roll: clampNumber(renderSource.roll ?? templateSource.roll, -3600, 3600, 0),
       yaw: clampNumber(renderSource.yaw ?? templateSource.yaw, -3600, 3600, 0),
       pitch: clampNumber(renderSource.pitch ?? templateSource.pitch, -3600, 3600, 0),
+      relativeRotation: renderSource.relativeRotation === true,
       sign: clampInt(renderSource.sign ?? templateSource.sign, -2147483648, 2147483647, 0),
       speedLimit: clampNumber(renderSource.speedLimit ?? templateSource.speedLimit, 0, 1000, 32)
     },
@@ -856,22 +968,32 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
     curves: {
       size: {
         syncAxes: card.curves?.size?.syncAxes === true,
-        x: normalizeLifecycleCurve({ ...defaults.size.x, ...(card.curves?.size?.x || {}) }),
-        y: normalizeLifecycleCurve({ ...defaults.size.y, ...(card.curves?.size?.y || {}) }),
-        z: normalizeLifecycleCurve({ ...defaults.size.z, ...(card.curves?.size?.z || {}) })
+        x: normalizeEmitterLifecycleCurve(card.curves?.size?.x, defaults.size.x, options),
+        y: normalizeEmitterLifecycleCurve(card.curves?.size?.y, defaults.size.y, options)
       },
-      brightness: normalizeLifecycleCurve({ ...defaults.brightness, ...(card.curves?.brightness || {}) }),
-      opacity: normalizeOpacityCurve(
+      light: normalizeEmitterLifecycleCurve(card.curves?.light ?? card.curves?.brightness, defaults.light, options),
+      opacity: applyEmitterCurveEnabled(
+        normalizeOpacityCurve(
+          card.curves?.opacity,
+          defaults.opacity,
+          options.legacyPercentUnit,
+          options.repairOverscaledOpacityHandles
+        ),
         card.curves?.opacity,
         defaults.opacity,
-        options.legacyPercentUnit,
-        options.repairOverscaledOpacityHandles
+        options
+      ),
+      color: normalizeEmitterColorCurve(
+        card.curves?.color,
+        defaults.color,
+        particleSource.colorOverLifeEnabled,
+        options
       ),
       rotation: {
         syncAxes: card.curves?.rotation?.syncAxes === true,
-        roll: normalizeLifecycleCurve({ ...defaults.rotation.roll, ...(card.curves?.rotation?.roll || {}) }),
-        yaw: normalizeLifecycleCurve({ ...defaults.rotation.yaw, ...(card.curves?.rotation?.yaw || {}) }),
-        pitch: normalizeLifecycleCurve({ ...defaults.rotation.pitch, ...(card.curves?.rotation?.pitch || {}) })
+        roll: normalizeEmitterLifecycleCurve(card.curves?.rotation?.roll, defaults.rotation.roll, options),
+        yaw: normalizeEmitterLifecycleCurve(card.curves?.rotation?.yaw, defaults.rotation.yaw, options),
+        pitch: normalizeEmitterLifecycleCurve(card.curves?.rotation?.pitch, defaults.rotation.pitch, options)
       }
     }
   };
@@ -880,6 +1002,45 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
   if (next.particle.sizeMax < next.particle.sizeMin) next.particle.sizeMax = next.particle.sizeMin;
   if (next.particle.speedMax < next.particle.speedMin) next.particle.speedMax = next.particle.speedMin;
   return next;
+}
+
+function normalizeEmitterLifecycleCurve(raw, fallback, options = {}) {
+  const normalized = normalizeLifecycleCurve({ ...fallback, ...(raw || {}) });
+  return applyEmitterCurveEnabled(normalized, raw, fallback, options);
+}
+
+function normalizeEmitterColorCurve(raw, fallback, legacyEnabled, options = {}) {
+  const normalized = normalizeEmitterLifecycleCurve(raw, fallback, options);
+  const hasExplicitState = raw && Object.prototype.hasOwnProperty.call(raw, 'enabled');
+  if (hasExplicitState || options.inferLegacyCurveEnabled !== true) return normalized;
+  if (legacyEnabled !== undefined) normalized.enabled = legacyEnabled !== false;
+  else if (options.legacyColorCurveEnabledByDefault === true) normalized.enabled = true;
+  return normalized;
+}
+
+function applyEmitterCurveEnabled(normalized, raw, fallback, options = {}) {
+  const hasExplicitState = raw && Object.prototype.hasOwnProperty.call(raw, 'enabled');
+  normalized.enabled = hasExplicitState
+    ? raw.enabled === true
+    : options.inferLegacyCurveEnabled === true && lifecycleCurveBehaviorDiffers(normalized, fallback);
+  return normalized;
+}
+
+function lifecycleCurveBehaviorDiffers(left, right) {
+  return JSON.stringify(lifecycleCurveBehavior(left)) !== JSON.stringify(lifecycleCurveBehavior(right));
+}
+
+function lifecycleCurveBehavior(raw) {
+  const curve = normalizeLifecycleCurve(raw);
+  return {
+    mode: curve.mode,
+    keyframes: curve.keyframes.map((frame) => ({
+      time: frame.time,
+      value: frame.value,
+      out: { x: frame.out.x, y: frame.out.y },
+      in: { x: frame.in.x, y: frame.in.y }
+    }))
+  };
 }
 
 function normalizeGeneratorParameters(raw = {}) {
@@ -942,7 +1103,7 @@ function normalizeEmitterBindings(raw = {}) {
   if (!raw || typeof raw !== 'object') return {};
   return Object.fromEntries(Object.entries(raw)
     .map(([path, value]) => [String(path || '').trim(), String(value || '').trim()])
-    .filter(([path, value]) => path && value));
+    .filter(([path, value]) => isSupportedEmitterBindingPath(path) && value));
 }
 
 function normalizeEmitterBindingModes(raw = {}) {
@@ -950,7 +1111,11 @@ function normalizeEmitterBindingModes(raw = {}) {
   const modes = new Set(['constant', 'independent', 'vector']);
   return Object.fromEntries(Object.entries(raw)
     .map(([path, value]) => [String(path || '').trim(), String(value || '').trim()])
-    .filter(([path, value]) => path && modes.has(value)));
+    .filter(([path, value]) => isSupportedEmitterBindingPath(path) && modes.has(value)));
+}
+
+function isSupportedEmitterBindingPath(path) {
+  return path && path !== 'render.baseScale.z';
 }
 
 function normalizeRootLifecycle(raw = {}) {
@@ -1015,12 +1180,18 @@ function normalizeVector(raw = {}, fallback = { x: 0, y: 0, z: 0 }) {
   };
 }
 
+function normalizePlanarScale(raw = {}, fallback = { x: 1, y: 1 }) {
+  return {
+    x: toNumber(raw?.x, fallback.x),
+    y: toNumber(raw?.y, fallback.y)
+  };
+}
+
 function normalizeLegacyScaleMultiplier(baseScale) {
   const base = Math.max(0.001, toNumber(baseScale?.x, 0.14));
   return {
     x: 1,
-    y: clampNumber(toNumber(baseScale?.y, base) / base, 0.001, 100, 1),
-    z: clampNumber(toNumber(baseScale?.z, base) / base, 0.001, 100, 1)
+    y: clampNumber(toNumber(baseScale?.y, base) / base, 0.001, 100, 1)
   };
 }
 
@@ -1029,26 +1200,36 @@ function normalizeHex(raw, fallback) {
   return /^#[0-9a-fA-F]{6}$/.test(text) ? text : fallback;
 }
 
-function normalizeQueueCommand(raw = {}, index = 0) {
+function normalizeQueueCommand(raw = {}, index = 0, options = {}) {
   const command = raw && typeof raw === 'object' ? raw : {};
-  const type = normalizeCommandType(command.type);
-  const option = getCommandTypeOption(type);
+  const knownType = resolveKnownCommandType(command.type);
+  const preserveUnknownType = options.preserveUnknownType === true && !knownType;
+  const type = preserveUnknownType
+    ? String(command.type || 'unknown').trim() || 'unknown'
+    : knownType || 'drag';
+  const option = COMMAND_TYPE_OPTIONS.find((item) => item.id === type);
   return {
     id: String(command.id || makeId('cmd')),
     enabled: command.enabled !== false,
     tick: clampInt(command.tick, 0, 100000, 0),
     type,
     label: String(command.label || option?.label || `命令 ${index + 1}`),
-    params: normalizeCommandParams(type, command.params)
+    params: preserveUnknownType
+      ? { ...(command.params && typeof command.params === 'object' ? command.params : {}) }
+      : normalizeCommandParams(type, command.params)
   };
 }
 
 function normalizeCommandType(raw) {
+  return resolveKnownCommandType(raw) || 'drag';
+}
+
+function resolveKnownCommandType(raw) {
   const text = String(raw || 'velocity_add');
   if (text === 'acceleration') return 'velocity_add';
   const byClassName = COMMAND_TYPE_OPTIONS.find((item) => item.className === text);
   if (byClassName) return byClassName.id;
-  return COMMAND_TYPE_OPTIONS.some((item) => item.id === text) ? text : 'drag';
+  return COMMAND_TYPE_OPTIONS.some((item) => item.id === text) ? text : '';
 }
 
 export function getCommandTypeOption(type) {

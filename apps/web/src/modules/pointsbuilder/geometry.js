@@ -254,22 +254,77 @@ export function getRadianXZ(radius, count, startRadian, endRadian, rotateRad = 0
   });
 }
 
-export function getBallLocations(radius, countPow) {
+export function getBallSurfaceLocations(radius, count) {
   const r = num(radius);
-  const total = Math.max(1, int(countPow, 1));
-  const points = [];
-  for (let latitude = 0; latitude < total; latitude += 1) {
-    const phi = -Math.PI / 2 + Math.PI * latitude / total;
-    for (let longitude = 0; longitude < total; longitude += 1) {
-      const theta = TAU * longitude / total;
-      points.push(v(
-        r * Math.cos(phi) * Math.cos(theta),
-        r * Math.sin(phi),
-        r * Math.cos(phi) * Math.sin(theta)
-      ));
+  const total = Math.max(1, int(count, 1));
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  return Array.from({ length: total }, (_, index) => {
+    const y = 1 - 2 * (index + 0.5) / total;
+    const ringRadius = Math.sqrt(Math.max(0, 1 - y * y));
+    const angle = goldenAngle * index;
+    return v(
+      r * ringRadius * Math.cos(angle),
+      r * y,
+      r * ringRadius * Math.sin(angle)
+    );
+  });
+}
+
+export function getBallSolidLocations(radius, count) {
+  const r = num(radius);
+  const total = Math.max(1, int(count, 1));
+  return getBallSurfaceLocations(1, total).map((point, index) => (
+    mul(point, r * Math.pow((index + 0.5) / total, 1 / 3))
+  ));
+}
+
+export function getBallLocations(radius, countPow) {
+  const resolution = Math.max(1, int(countPow, 1));
+  return getBallSurfaceLocations(radius, resolution * resolution);
+}
+
+export function getCubeSurfaceLocations(width, height, depth, count) {
+  const w = num(width);
+  const h = num(height);
+  const d = num(depth);
+  if (w < 0 || h < 0 || d < 0) return [];
+
+  const total = Math.max(1, int(count, 1));
+  const halfX = w / 2;
+  const halfY = h / 2;
+  const halfZ = d / 2;
+  const areas = [w * d, w * d, w * h, w * h, h * d, h * d];
+  const totalArea = areas.reduce((sum, area) => sum + area, 0);
+
+  return Array.from({ length: total }, (_, index) => {
+    let selectedFace = 0;
+    if (totalArea > 0) {
+      const target = totalArea * (index + 0.5) / total;
+      let accumulated = 0;
+      while (selectedFace < areas.length - 1 && target > accumulated + areas[selectedFace]) {
+        accumulated += areas[selectedFace];
+        selectedFace += 1;
+      }
     }
-  }
-  return points;
+
+    const u = (index * 0.6180339887498949) % 1;
+    const surfaceV = (index * 0.7548776662466927) % 1;
+    const xU = -halfX + w * u;
+    const xV = -halfX + w * surfaceV;
+    const yU = -halfY + h * u;
+    const yV = -halfY + h * surfaceV;
+    const zU = -halfZ + d * u;
+    const zV = -halfZ + d * surfaceV;
+
+    switch (selectedFace) {
+      case 0: return v(xU, -halfY, zV);
+      case 1: return v(xU, halfY, zV);
+      case 2: return v(xU, yV, -halfZ);
+      case 3: return v(xU, yV, halfZ);
+      case 4: return v(-halfX, yU, zV);
+      default: return v(halfX, yU, zV);
+    }
+  });
 }
 
 export function getDiscreteCircleXZ(radius, count, discrete, seed = null) {

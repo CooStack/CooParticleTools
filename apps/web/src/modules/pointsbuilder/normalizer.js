@@ -124,6 +124,13 @@ function normalizeNodeParams(kind, params, rawNode = {}) {
     case 'add_ball':
       if (!hasRawValue('countPow') && hasRawValue('count')) params.countPow = rawValue('count');
       break;
+    case 'add_cube_surface':
+      if (!hasRawValue('sizeMode')) {
+        params.sizeMode = hasRawValue('width') || hasRawValue('height') || hasRawValue('depth')
+          ? 'dimensions'
+          : 'uniform';
+      }
+      break;
     case 'add_round_shape':
       if (!hasRawValue('preCircleCount') && hasRawValue('circleCount')) params.preCircleCount = rawValue('circleCount');
       if (!hasRawValue('minCircleCount') && hasRawValue('minCount')) params.minCircleCount = rawValue('minCount');
@@ -182,6 +189,11 @@ export function normalizeNode(rawNode) {
 export function normalizePointsBuilderProject(source, tool = 'pointsbuilder') {
   const base = createPointsBuilderBaseProject(tool);
   const raw = source && typeof source === 'object' ? deepClone(source) : {};
+  const hasExplicitNodeList = (
+    Array.isArray(raw?.state?.root?.children)
+    || Array.isArray(raw?.root?.children)
+    || Array.isArray(raw?.nodes)
+  );
   const rawState = raw?.state?.root && Array.isArray(raw.state.root.children)
     ? raw.state
     : raw?.root && Array.isArray(raw.root.children)
@@ -218,7 +230,7 @@ export function normalizePointsBuilderProject(source, tool = 'pointsbuilder') {
     }
   };
 
-  if (!normalized.state.root.children.length) {
+  if (!normalized.state.root.children.length && !hasExplicitNodeList) {
     normalized.state.root.children.push(createNodeByKind('add_circle'));
   }
 

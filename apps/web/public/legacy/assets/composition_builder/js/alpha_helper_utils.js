@@ -35,3 +35,32 @@ export function normalizeAlphaHelperConfig(raw, defaults = {}) {
     x.decreaseOnDisable = !!x.decreaseOnDisable;
     return x;
 }
+
+export function normalizeCParticleFadeConfig(raw, defaults = {}) {
+    const base = Object.assign({
+        enabled: false,
+        durationTicks: 10,
+        fromAlpha: 0,
+        toAlpha: 1
+    }, defaults || {});
+    const value = Object.assign({}, base, raw || {});
+    value.enabled = value.enabled === true;
+    value.durationTicks = Math.max(1, toInt(value.durationTicks || base.durationTicks));
+    value.fromAlpha = Math.min(1, Math.max(0, toNum(value.fromAlpha)));
+    value.toAlpha = Math.min(1, Math.max(0, toNum(value.toAlpha)));
+    return value;
+}
+
+export function normalizeCParticleAlphaConfig(raw) {
+    const value = raw && typeof raw === "object" ? raw : {};
+    return {
+        fadeIn: normalizeCParticleFadeConfig(value.fadeIn, {
+            fromAlpha: 0,
+            toAlpha: 1
+        }),
+        fadeOut: normalizeCParticleFadeConfig(value.fadeOut, {
+            fromAlpha: 1,
+            toAlpha: 0
+        })
+    };
+}
