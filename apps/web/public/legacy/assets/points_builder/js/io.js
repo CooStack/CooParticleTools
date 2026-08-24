@@ -94,10 +94,15 @@ export function hasPresetList() {
     }
 }
 
-export function savePresetList(presets) {
+export function savePresetList(presets, groups) {
     try {
         const list = Array.isArray(presets) ? presets : [];
-        localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify({ presets: list, ts: Date.now() }));
+        const groupList = Array.isArray(groups) ? groups : loadPresetGroups();
+        localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify({
+            presets: list,
+            groups: groupList,
+            ts: Date.now()
+        }));
         return true;
     } catch {
         return false;
@@ -107,9 +112,13 @@ export function savePresetList(presets) {
 export function loadPresetGroups() {
     try {
         const raw = localStorage.getItem(PRESET_GROUPS_KEY);
-        if (!raw) return [];
-        const obj = JSON.parse(raw);
-        const list = Array.isArray(obj) ? obj : (Array.isArray(obj?.groups) ? obj.groups : []);
+        let obj = raw ? JSON.parse(raw) : null;
+        let list = Array.isArray(obj) ? obj : (Array.isArray(obj?.groups) ? obj.groups : []);
+        if (!list.length) {
+            const presetRaw = localStorage.getItem(PRESET_STORAGE_KEY);
+            const presetObj = presetRaw ? JSON.parse(presetRaw) : null;
+            list = Array.isArray(presetObj?.groups) ? presetObj.groups : list;
+        }
         return list.map((it) => String(it || "").trim()).filter(Boolean);
     } catch {
         return [];

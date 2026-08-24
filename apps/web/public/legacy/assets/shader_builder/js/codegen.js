@@ -1,6 +1,6 @@
 import { GRAPH_INPUT_ID, GRAPH_OUTPUT_ID } from "./store.js";
 import { parseVec } from "./utils.js";
-import { MC_COMPAT } from "./constants.js";
+import { MC_COMPAT } from "./constants.js?v=20260824_1";
 
 function safeName(name, fallback) {
     const n = String(name || "").replace(/[^a-zA-Z0-9_]/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");

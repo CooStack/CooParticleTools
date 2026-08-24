@@ -4,11 +4,11 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>RendererAPI 着色器构建器</title>
-    <link rel="stylesheet" href="./assets/shader_builder/css/style.css?v=20260430_1"/>
-    <link rel="stylesheet" href="./assets/shared/css/minecraft-theme.css?v=20260707_1"/>
+    <link rel="stylesheet" href="./assets/shader_builder/css/style.css?v=20260823_1"/>
+    <link rel="stylesheet" href="./assets/shared/css/glass-theme.css?v=20260824_1"/>
     <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
 </head>
-<body data-theme="dark-1" data-mc-theme="deep-pink">
+<body data-theme="dark-1">
 <div id="app">
     <header class="topbar">
         <div class="topbar-left">
@@ -343,14 +343,42 @@
                 <label class="field">
                     <span>主题</span>
                     <select id="themeSelect" class="input">
-                        <option value="dark-1">夜岚</option>
-                        <option value="dark-2">深潮</option>
-                        <option value="dark-3">焰砂</option>
-                        <option value="light-1">雾蓝</option>
-                        <option value="light-2">杏露</option>
-                        <option value="light-3">薄荷</option>
+                        <optgroup label="扁平">
+                            <option value="dark-1">夜岚</option>
+                            <option value="dark-2">深潮</option>
+                            <option value="dark-3">焰砂</option>
+                            <option value="light-1">雾蓝</option>
+                            <option value="light-2">杏露</option>
+                            <option value="light-3">薄荷</option>
+                        </optgroup>
+                        <optgroup label="玻璃拟态 · 深色">
+                            <option value="glass-dark-blue">蓝</option>
+                            <option value="glass-dark-green">绿</option>
+                            <option value="glass-dark-violet">紫</option>
+                            <option value="glass-dark-neutral">黑</option>
+                        </optgroup>
+                        <optgroup label="玻璃拟态 · 浅色">
+                            <option value="glass-light-blue">蓝</option>
+                            <option value="glass-light-green">绿</option>
+                            <option value="glass-light-violet">紫</option>
+                            <option value="glass-light-neutral">白</option>
+                        </optgroup>
                     </select>
                 </label>
+                <div class="field glass-pref-row">
+                    <span>玻璃模糊度</span>
+                    <div class="glass-pref-field">
+                        <input type="range" data-glass-pref="blur" aria-label="玻璃模糊度"/>
+                        <span class="glass-pref-value" data-glass-pref-value="blur"></span>
+                    </div>
+                </div>
+                <div class="field glass-pref-row">
+                    <span>玻璃磨砂度</span>
+                    <div class="glass-pref-field">
+                        <input type="range" data-glass-pref="frost" aria-label="玻璃磨砂度"/>
+                        <span class="glass-pref-value" data-glass-pref-value="frost"></span>
+                    </div>
+                </div>
                 <label class="field">
                     <span>参数步长</span>
                     <input id="inpParamStep" class="input" type="number" min="0.0001" step="0.01" value="0.1"/>

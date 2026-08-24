@@ -19,6 +19,109 @@ const OFFSET_KINDS = new Set([
 
 let fallbackIdSequence = 0;
 
+const NUMERIC_VARIABLE_TYPES = new Set(["Int", "Long", "Float", "Double", "Number", "scalar"]);
+const VECTOR_VARIABLE_TYPES = new Set(["Vec3", "RelativeLocation", "vector"]);
+
+function normalizeVariableIdentifier(raw) {
+    const text = String(raw || "").trim().replace(/this@[A-Za-z_][A-Za-z0-9_]*\./g, "");
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(text)) return "";
+    return text;
+}
+
+function normalizeVariableVector(raw) {
+    const value = raw && typeof raw === "object" ? raw : {};
+    const x = Number(value.x ?? value[0]);
+    const y = Number(value.y ?? value[1]);
+    const z = Number(value.z ?? value[2]);
+    return {
+        x: Number.isFinite(x) ? x : 0,
+        y: Number.isFinite(y) ? y : 0,
+        z: Number.isFinite(z) ? z : 0
+    };
+}
+
+function collectVariableEntries(raw) {
+    const entries = [];
+    const add = (name, type, value, explicitType = true) => entries.push({ name, type, value, explicitType });
+    const visit = (source, defaultType = "Double") => {
+        if (Array.isArray(source)) {
+            for (const item of source) {
+                if (!item || typeof item !== "object") continue;
+                const name = item.name ?? item.key ?? item.id;
+                const explicitType = item.type !== undefined || item.valueType !== undefined;
+                const type = item.type ?? item.valueType ?? defaultType;
+                const value = item.value ?? item.initial ?? item.defaultValue ?? item.default ?? item.expr;
+                add(name, type, value, explicitType);
+            }
+            return;
+        }
+        if (!source || typeof source !== "object") return;
+        if (source.scalar && typeof source.scalar === "object" && !Array.isArray(source.scalar)) {
+            for (const [name, value] of Object.entries(source.scalar)) add(name, "Double", value);
+        }
+        if (source.vector && typeof source.vector === "object" && !Array.isArray(source.vector)) {
+            for (const [name, value] of Object.entries(source.vector)) add(name, "Vec3", value);
+        }
+        const scopedKeys = ["items", "globals", "locals", "variables", "constants"];
+        for (const key of scopedKeys) {
+            const nested = source[key];
+            if (Array.isArray(nested)) visit(nested, defaultType);
+            else if (nested && typeof nested === "object") visit(nested, defaultType);
+        }
+        const hasKnownShape = ["scalar", "vector", ...scopedKeys].some((key) => Object.prototype.hasOwnProperty.call(source, key));
+        if (!hasKnownShape) {
+            for (const [name, value] of Object.entries(source)) add(name, defaultType, value, false);
+        }
+    };
+    visit(raw);
+    return entries;
+}
+
+export function normalizePointsBuilderVariables(raw) {
+    const scalar = {};
+    const vector = {};
+    for (const entry of collectVariableEntries(raw)) {
+        const name = normalizeVariableIdentifier(entry.name);
+        if (!name) continue;
+        const type = String(entry.type || "Double").trim();
+        const value = entry.value;
+        if (VECTOR_VARIABLE_TYPES.has(type) || !entry.explicitType && value && typeof value === "object") {
+            vector[name] = normalizeVariableVector(value);
+            continue;
+        }
+        if (!NUMERIC_VARIABLE_TYPES.has(type)) continue;
+        const number = Number(value);
+        if (Number.isFinite(number)) scalar[name] = number;
+    }
+    return { scalar, vector };
+}
+
+export function buildPointsBuilderVariableCompletions(raw) {
+    const variables = normalizePointsBuilderVariables(raw);
+    const numeric = Object.keys(variables.scalar).map((name) => ({
+        value: name,
+        type: "Double",
+        label: `${name}（本地数值）`,
+        numeric: true
+    }));
+    for (const name of Object.keys(variables.vector)) {
+        numeric.push(
+            { value: `${name}.x`, type: "Double", label: `${name}.x（本地数值）`, numeric: true },
+            { value: `${name}.y`, type: "Double", label: `${name}.y（本地数值）`, numeric: true },
+            { value: `${name}.z`, type: "Double", label: `${name}.z（本地数值）`, numeric: true }
+        );
+    }
+    return {
+        numeric,
+        vectors: Object.keys(variables.vector).map((name) => ({
+            name,
+            ref: name,
+            type: "Vec3",
+            label: `${name}（本地 Vec3）`
+        }))
+    };
+}
+
 function cloneJson(value) {
     if (value === undefined) return undefined;
     return JSON.parse(JSON.stringify(value));

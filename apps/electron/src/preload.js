@@ -25,6 +25,19 @@ ipcRenderer.on('shell:project-close-request', async (_event, payload = {}) => {
 contextBridge.exposeInMainWorld('cooParticlesShell', {
   isElectron: true,
   getBackendInfo: () => ipcRenderer.invoke('shell:getBackendInfo'),
+  getWindowChrome: () => ipcRenderer.invoke('shell:getWindowChrome'),
+  getWindowState: () => ipcRenderer.invoke('shell:getWindowState'),
+  getMenuModel: () => ipcRenderer.invoke('shell:getMenuModel'),
+  runMenuCommand: (id) => ipcRenderer.invoke('shell:runMenuCommand', id),
+  setTitleBarTheme: (theme) => ipcRenderer.invoke('shell:setTitleBarTheme', theme || {}),
+  onMenuModel: (handler) => {
+    if (typeof handler !== 'function') {
+      return () => {};
+    }
+    const listener = (_event, model) => handler(model);
+    ipcRenderer.on('shell:menu-model', listener);
+    return () => ipcRenderer.removeListener('shell:menu-model', listener);
+  },
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   openProjectFile: (options) => ipcRenderer.invoke('shell:openProjectFile', options || {}),
   chooseProjectFile: (options) => ipcRenderer.invoke('shell:chooseProjectFile', options || {}),

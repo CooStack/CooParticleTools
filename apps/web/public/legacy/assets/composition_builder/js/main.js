@@ -45,6 +45,7 @@ import {
     normalizeCompositionMapping
 } from "./kotlin_mapping.js?v=20260720_1";
 import { createExpressionRuntime } from "./expression_runtime.js?v=20260729_3";
+import { APP_THEME_KEY, watchAppTheme, writeAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
 import { InlineCodeEditor, mergeCompletionGroups } from "./code_editor.js?v=20260725_1";
 import {
     normalizeAlphaHelperConfig,
@@ -77,7 +78,7 @@ import {
     hasAngleOffsetEaseSpecialParams,
     formatAngleValue
 } from "./angle_offset_utils.js";
-import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260815_3";
+import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260824_14";
 import { installKotlinCodegenMethods } from "./kotlin_codegen_mixin.js?v=20260730_3";
 import { compositionVectorApiTypeDeclaration } from "./composition_vector_expression.js?v=20260729_3";
 import { installCodeOutputMethods } from "./code_output_mixin.js";
@@ -98,7 +99,7 @@ import {
     setBasePath
 } from "../../particles/particle_data_loader.js";
 import { createPreviewDistanceTool } from "../../src/js/shared/preview-distance-tool.js";
-import { minecraftThemeFor, normalizeWorkbenchTheme } from "./theme.js";
+import { normalizeWorkbenchTheme } from "./theme.js";
 
 const U = globalThis.Utils;
 if (!U) throw new Error("Utils 未加载：请先加载 points_builder/utils.js");
@@ -107,7 +108,6 @@ const EXPORTED_SIG_KEY = "cb_export_sig_v1";
 const CPB_PREFIX = "cpb_";
 const CPB_STATE_KEY = `${CPB_PREFIX}pb_state_v1`;
 const CPB_PROJECT_KEY = `${CPB_PREFIX}pb_project_name_v1`;
-const CPB_THEME_KEY = `${CPB_PREFIX}pb_theme_v2`;
 const CPB_RETURN_CARD_KEY = `${CPB_PREFIX}return_card_v1`;
 const CPB_RETURN_TARGET_KEY = `${CPB_PREFIX}return_target_v1`;
 const CPB_COMP_CONTEXT_KEY = `${CPB_PREFIX}pb_comp_context_v1`;
@@ -155,7 +155,16 @@ const PARTICLE_INIT_TARGET_OPTIONS = [
     "currentAge",
     "textureSheet"
 ];
-const CPARTICLE_INIT_TARGET_OPTIONS = ["color", "size", "alpha", "age", "maxAge"];
+const CPARTICLE_INIT_TARGET_OPTIONS = [
+    "color",
+    "size",
+    "alpha",
+    "age",
+    "maxAge",
+    "alphaCurve",
+    "scaleCurve",
+    "colorCurve"
+];
 
 const CPARTICLE_RENDER_LAYER_OPTIONS = [
     "OPAQUE",
@@ -692,8 +701,24 @@ class CompositionBuilderApp {
         this.previewAlphaFactors = [];
         this.previewGpuParticlePathEnabled = false;
         this.previewGpuActivePointCount = 0;
+        this.previewGpuConfiguredPointCount = 0;
         this.previewGpuElapsedTick = 0;
         this.previewGpuParticleFallbackReason = "";
+        this.previewGpuTransformsDynamic = false;
+        this.previewGpuTransformAppliedTick = -1;
+        this.previewGpuVisibilityDynamic = false;
+        this.previewGpuVisibilityAppliedTick = -1;
+        this.previewGpuVisibilityTick = 0;
+        this.previewGpuVisibilityMaskProxy = null;
+        this.previewGpuUnlockTicks = [];
+        this.previewGpuTransformStartTicks = null;
+        this.previewGpuAttributeUsage = null;
+        this.previewGpuHasLifecycleData = false;
+        this.previewGpuSharedTransformEnabled = false;
+        this.previewGpuSharedTransformPointIndex = -1;
+        this.previewGpuSharedTransform = { x: 0, y: 0, z: 0, w: 0 };
+        this.previewGpuSharedScale = 1;
+        this.previewSceneDirty = true;
         this.cardColorCache = new Map();
         this.previewAnimStart = performance.now();
         this.previewPerfLastTs = 0;
@@ -970,18 +995,23 @@ class CompositionBuilderApp {
             this.scheduleSave();
         });
         d.themeSelect.addEventListener("change", () => {
-            this.state.settings.theme = normalizeWorkbenchTheme(d.themeSelect.value);
+            // 先写入全局主题，applyTheme() 再从统一状态读取。
+            writeAppTheme(normalizeWorkbenchTheme(d.themeSelect.value));
             this.applyTheme();
             this.scheduleSave();
         });
+        // 其他工具或外壳修改主题时，当前页面同步更新。
+        watchAppTheme(() => this.applyTheme());
         d.chkAxes.addEventListener("change", () => {
             this.state.settings.showAxes = !!d.chkAxes.checked;
             if (this.axes) this.axes.visible = this.state.settings.showAxes;
+            this.previewSceneDirty = true;
             this.scheduleSave();
         });
         d.chkGrid.addEventListener("change", () => {
             this.state.settings.showGrid = !!d.chkGrid.checked;
             if (this.grid) this.grid.visible = this.state.settings.showGrid;
+            this.previewSceneDirty = true;
             this.scheduleSave();
         });
         d.chkPreviewFocusSingleCard.addEventListener("change", () => {
@@ -1118,9 +1148,13 @@ class CompositionBuilderApp {
             aGpuTransform: [0, 0, 0, 0],
             aGpuTransformVector: [0, 0, 0],
             aGpuScale: [1],
-            aGpuLifecycle: [0, 100]
+            aGpuLifecycle: [0, -100],
+            aGpuAlphaCurve: [1, 1, -2, -2],
+            aGpuScaleCurve: [1, 1, -2, -2],
+            aGpuColorCurve: [1, 1]
         };
         this.pointsMat.onBeforeCompile = (shader) => {
+            const gpuTransformGroupLimit = 24;
             shader.uniforms.uAtlas = { value: null };
             shader.uniforms.uFrameCount = { value: 0 };
             shader.uniforms.uUseTexture = { value: 0 };
@@ -1128,12 +1162,35 @@ class CompositionBuilderApp {
             shader.uniforms.uGpuPreviewTick = { value: this.previewGpuElapsedTick || 0 };
             shader.uniforms.uGpuPreviewPlayTicks = { value: 1 };
             shader.uniforms.uGpuPreviewCycleTicks = { value: 1 };
+            shader.uniforms.uGpuPreviewGlobalAlpha = { value: 1 };
+            shader.uniforms.uGpuPreviewHasLifecycle = { value: 0 };
+            shader.uniforms.uGpuPreviewHasColorCurve = { value: 0 };
+            shader.uniforms.uGpuPreviewUseSharedTransform = { value: 0 };
+            shader.uniforms.uGpuPreviewSharedTransform = { value: new THREE.Vector4() };
+            shader.uniforms.uGpuPreviewSharedScale = { value: 1 };
+            shader.uniforms.uGpuPreviewGroupCount = { value: 0 };
+            shader.uniforms.uGpuPreviewGroupTransforms = {
+                value: Array.from({ length: gpuTransformGroupLimit }, () => new THREE.Vector4())
+            };
+            shader.uniforms.uGpuPreviewGroupScales = {
+                value: new Float32Array(gpuTransformGroupLimit).fill(1)
+            };
             shader.uniforms.uGpuPreviewGlobalTransform = { value: new THREE.Matrix4() };
             this._pointsShaderRef = shader;
+            const groupTransformSelectors = [];
+            const groupScaleSelectors = [];
+            for (let i = 0; i < gpuTransformGroupLimit; i++) {
+                const groupUpperBound = (i + 1.5).toFixed(1);
+                groupTransformSelectors.push(
+                    `  if (uGpuPreviewGroupCount > ${i} && groupIndex < ${groupUpperBound}) return uGpuPreviewGroupTransforms[${i}];`
+                );
+                groupScaleSelectors.push(
+                    `  if (uGpuPreviewGroupCount > ${i} && groupIndex < ${groupUpperBound}) return uGpuPreviewGroupScales[${i}];`
+                );
+            }
             shader.vertexShader = [
                 "attribute float aSize;",
                 "attribute float aAlpha;",
-                "attribute float aFrameIndex;",
                 "attribute vec4 aGpuMeta;",
                 "attribute vec4 aGpuFadeIn;",
                 "attribute vec4 aGpuFadeOut;",
@@ -1141,13 +1198,26 @@ class CompositionBuilderApp {
                 "attribute vec3 aGpuTransformVector;",
                 "attribute float aGpuScale;",
                 "attribute vec2 aGpuLifecycle;",
+                "attribute vec4 aGpuAlphaCurve;",
+                "attribute vec4 aGpuScaleCurve;",
+                "attribute vec2 aGpuColorCurve;",
                 "uniform int uGpuPreviewEnabled;",
                 "uniform float uGpuPreviewTick;",
                 "uniform float uGpuPreviewPlayTicks;",
                 "uniform float uGpuPreviewCycleTicks;",
+                "uniform float uGpuPreviewGlobalAlpha;",
+                "uniform int uGpuPreviewHasLifecycle;",
+                "uniform int uGpuPreviewHasColorCurve;",
+                "uniform int uGpuPreviewUseSharedTransform;",
+                "uniform vec4 uGpuPreviewSharedTransform;",
+                "uniform float uGpuPreviewSharedScale;",
+                `uniform int uGpuPreviewGroupCount;`,
+                `uniform vec4 uGpuPreviewGroupTransforms[${gpuTransformGroupLimit}];`,
+                `uniform float uGpuPreviewGroupScales[${gpuTransformGroupLimit}];`,
                 "uniform mat4 uGpuPreviewGlobalTransform;",
                 "varying float vAlpha;",
                 "varying float vFrameIndex;",
+                "varying vec3 vGpuColorScale;",
                 "vec3 rotateGpuVector(vec3 value, vec3 axis, float angle) {",
                 "  float axisLength = length(axis);",
                 "  if (axisLength < 0.0001) return value;",
@@ -1156,18 +1226,83 @@ class CompositionBuilderApp {
                 "  float s = sin(angle);",
                 "  return value * c + cross(unitAxis, value) * s + unitAxis * dot(unitAxis, value) * (1.0 - c);",
                 "}",
+                "vec4 resolveGpuGroupTransform(float groupIndex, vec4 fallbackValue) {",
+                "  if (groupIndex < 0.5) return fallbackValue;",
+                ...groupTransformSelectors,
+                "  return fallbackValue;",
+                "}",
+                "float resolveGpuGroupScale(float groupIndex, float fallbackValue) {",
+                "  if (groupIndex < 0.5) return fallbackValue;",
+                ...groupScaleSelectors,
+                "  return fallbackValue;",
+                "}",
+                "float sampleGpuScalarCurve(vec4 curve, float progress) {",
+                "  float t = clamp(progress, 0.0, 1.0);",
+                "  if (curve.z < -1.5) return 1.0;",
+                "  if (curve.z < -0.5) return mix(curve.x, curve.y, t);",
+                "  float fadeIn = clamp(curve.z, 0.0, 1.0);",
+                "  float fadeOut = clamp(curve.w, fadeIn, 1.0);",
+                "  if (t <= fadeIn) return fadeIn > 0.000001 ? curve.x * t / fadeIn : curve.x;",
+                "  if (t <= fadeOut) return curve.x;",
+                "  return fadeOut < 0.999999 ? curve.x * (1.0 - (t - fadeOut) / (1.0 - fadeOut)) : curve.x;",
+                "}",
+                "float linearToSrgbGpuChannel(float value) {",
+                "  float c = clamp(value, 0.0, 1.0);",
+                "  return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 0.4166667) - 0.055;",
+                "}",
+                "vec3 linearToSrgbGpu(vec3 value) {",
+                "  return vec3(linearToSrgbGpuChannel(value.r), linearToSrgbGpuChannel(value.g), linearToSrgbGpuChannel(value.b));",
+                "}",
+                "float srgbToLinearGpuChannel(float value) {",
+                "  float c = clamp(value, 0.0, 1.0);",
+                "  return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);",
+                "}",
+                "vec3 srgbToLinearGpu(vec3 value) {",
+                "  return vec3(srgbToLinearGpuChannel(value.r), srgbToLinearGpuChannel(value.g), srgbToLinearGpuChannel(value.b));",
+                "}",
+                "vec3 decodeGpuColorCurve(float packed) {",
+                "  float value = floor(clamp(packed, 0.0, 1.0) * 16777215.0 + 0.5);",
+                "  float red = floor(value / 65536.0);",
+                "  value -= red * 65536.0;",
+                "  float green = floor(value / 256.0);",
+                "  float blue = value - green * 256.0;",
+                "  return vec3(red, green, blue) / 255.0;",
+                "}",
                 ""
             ].join("\n") + shader.vertexShader;
             shader.vertexShader = shader.vertexShader.replace(
                 /gl_PointSize\s*=\s*size\s*;/g,
                 [
                     "float previewAlpha = clamp(aAlpha, 0.0, 1.0);",
-                    "float previewFrameIndex = aFrameIndex;",
+                    "if (uGpuPreviewEnabled == 1) previewAlpha *= clamp(uGpuPreviewGlobalAlpha, 0.0, 1.0);",
+                    "float previewSizeScale = 1.0;",
+                    "vGpuColorScale = vec3(1.0);",
+                    "float previewFrameIndex = aGpuMeta.z;",
                     "if (uGpuPreviewEnabled == 1 && abs(aGpuMeta.x) > 0.5) {",
-                    "  if (aGpuMeta.x < 0.0 || uGpuPreviewTick < aGpuMeta.y) {",
+                    "  float previewCycleAge = mod(uGpuPreviewTick, max(uGpuPreviewCycleTicks, 1.0));",
+                    "  float previewBirthTick = max(aGpuMeta.y, 0.0);",
+                    "  if (aGpuMeta.x < 0.0 || previewCycleAge < previewBirthTick) {",
                     "    previewAlpha = 0.0;",
                     "  } else {",
-                    "    float previewAge = mod(max(uGpuPreviewTick - aGpuMeta.y, 0.0), max(uGpuPreviewCycleTicks, 1.0));",
+                    "    float previewAge = mod(max(previewCycleAge - previewBirthTick, 0.0), max(uGpuPreviewCycleTicks, 1.0));",
+                    "    float lifecycleLifetime = max(abs(aGpuLifecycle.y), 1.0);",
+                    "    float lifecycleAge = aGpuLifecycle.x;",
+                    "    if (aGpuLifecycle.y > 0.0 && uGpuPreviewHasLifecycle == 1) {",
+                    "      lifecycleAge = clamp(aGpuLifecycle.x + previewAge, 0.0, lifecycleLifetime);",
+                    "    }",
+                    "    float lifecycleProgress = clamp(lifecycleAge / lifecycleLifetime, 0.0, 1.0);",
+                    "    previewAlpha *= sampleGpuScalarCurve(aGpuAlphaCurve, lifecycleProgress);",
+                    "    previewSizeScale = sampleGpuScalarCurve(aGpuScaleCurve, lifecycleProgress);",
+                    "    if (uGpuPreviewHasColorCurve == 1) {",
+                    "      vec3 gpuColorCurve = mix(",
+                    "        decodeGpuColorCurve(aGpuColorCurve.x),",
+                    "        decodeGpuColorCurve(aGpuColorCurve.y),",
+                    "        lifecycleProgress",
+                    "      );",
+                    "      vec3 gpuBaseColor = clamp(color, 0.0, 1.0);",
+                    "      vec3 gpuCurvedColor = srgbToLinearGpu(linearToSrgbGpu(gpuBaseColor) * gpuColorCurve);",
+                    "      vGpuColorScale = gpuCurvedColor / max(gpuBaseColor, vec3(0.000001));",
+                    "    }",
                     "    if (aGpuFadeOut.x > 0.0 && previewAge >= uGpuPreviewPlayTicks) {",
                     "      float progress = clamp((previewAge - uGpuPreviewPlayTicks) / aGpuFadeOut.x, 0.0, 1.0);",
                     "      previewAlpha *= mix(aGpuFadeOut.y, aGpuFadeOut.z, progress);",
@@ -1179,12 +1314,12 @@ class CompositionBuilderApp {
                     "      float randomValue = fract(sin(aGpuFadeIn.w + floor(uGpuPreviewTick) * 12.9898) * 43758.5453);",
                     "      previewFrameIndex = aGpuMeta.z + floor(randomValue * aGpuMeta.w);",
                     "    } else if (aGpuMeta.w > 0.5) {",
-                    "      float textureProgress = clamp(aGpuLifecycle.x / max(aGpuLifecycle.y, 1.0), 0.0, 1.0);",
+                    "      float textureProgress = clamp(lifecycleAge / lifecycleLifetime, 0.0, 1.0);",
                     "      previewFrameIndex = aGpuMeta.z + min(aGpuMeta.w - 1.0, floor(textureProgress * aGpuMeta.w));",
                     "    }",
                     "  }",
                     "}",
-                    "gl_PointSize = previewAlpha > 0.0001 ? size * max(aSize, 0.05) : 0.0;",
+                    "gl_PointSize = previewAlpha > 0.0001 ? size * max(aSize * previewSizeScale, 0.05) : 0.0;",
                     "vAlpha = previewAlpha;",
                     "vFrameIndex = previewFrameIndex;"
                 ].join("\n    ")
@@ -1194,13 +1329,24 @@ class CompositionBuilderApp {
                 [
                     "#include <begin_vertex>",
                     "if (uGpuPreviewEnabled == 1 && aGpuMeta.x > 0.5) {",
-                    "  vec3 scaledGpuVector = aGpuTransformVector * max(aGpuScale, 0.0001);",
-                    "  transformed += scaledGpuVector - aGpuTransformVector;",
-                    "  if (abs(aGpuTransform.w) > 0.000001) {",
-                    "    vec3 rotatedGpuVector = rotateGpuVector(scaledGpuVector, aGpuTransform.xyz, aGpuTransform.w);",
-                    "    transformed += rotatedGpuVector - scaledGpuVector;",
+                    "  float gpuTransformGroup = aGpuFadeOut.w;",
+                    "  if (gpuTransformGroup < -0.5) {",
+                    "    transformed = aGpuTransformVector;",
+                    "  } else {",
+                    "    vec4 gpuTransform = uGpuPreviewUseSharedTransform == 1",
+                    "      ? uGpuPreviewSharedTransform",
+                    "      : resolveGpuGroupTransform(gpuTransformGroup, aGpuTransform);",
+                    "    float gpuScale = uGpuPreviewUseSharedTransform == 1",
+                    "      ? uGpuPreviewSharedScale",
+                    "      : resolveGpuGroupScale(gpuTransformGroup, aGpuScale);",
+                    "    vec3 gpuAnchor = transformed - aGpuTransformVector;",
+                    "    vec3 transformedGpuLocal = aGpuTransformVector * max(gpuScale, 0.0001);",
+                    "    if (abs(gpuTransform.w) > 0.000001) {",
+                    "      transformedGpuLocal = rotateGpuVector(transformedGpuLocal, gpuTransform.xyz, gpuTransform.w);",
+                    "    }",
+                    "    vec3 transformedGpuAnchor = (uGpuPreviewGlobalTransform * vec4(gpuAnchor, 1.0)).xyz;",
+                    "    transformed = transformedGpuAnchor + transformedGpuLocal;",
                     "  }",
-                    "  transformed = (uGpuPreviewGlobalTransform * vec4(transformed, 1.0)).xyz;",
                     "}"
                 ].join("\n    ")
             );
@@ -1210,6 +1356,7 @@ class CompositionBuilderApp {
                 "uniform int uUseTexture;",
                 "varying float vAlpha;",
                 "varying float vFrameIndex;",
+                "varying vec3 vGpuColorScale;",
                 ""
             ].join("\n") + shader.fragmentShader;
             shader.fragmentShader = shader.fragmentShader.replace(
@@ -1227,15 +1374,15 @@ class CompositionBuilderApp {
                     "  vec4 texel = texture2D(uAtlas, uv);",
                     "  if (texel.a < 0.02) discard;",
                     "  vec3 texColor = clamp(texel.rgb / max(texel.a, 0.0001), 0.0, 1.0);",
-                    "  diffuseColor = vec4(diffuse * texColor, opacity * clamp(vAlpha, 0.0, 1.0) * texel.a);",
+                    "  diffuseColor = vec4(diffuse * vGpuColorScale * texColor, opacity * clamp(vAlpha, 0.0, 1.0) * texel.a);",
                     "} else {",
-                    "  diffuseColor = vec4( diffuse, opacity * clamp(vAlpha, 0.0, 1.0) );",
+                    "  diffuseColor = vec4( diffuse * vGpuColorScale, opacity * clamp(vAlpha, 0.0, 1.0) );",
                     "}"
                 ].join("\n")
             );
             this.syncPreviewGpuParticleUniforms?.();
         };
-        this.pointsMat.customProgramCacheKey = () => "cb_points_size_alpha_tex_gpu_v11";
+        this.pointsMat.customProgramCacheKey = () => "cb_points_size_alpha_tex_gpu_v18";
         this.pointsMesh = new THREE.Points(this.pointsGeom, this.pointsMat);
         this.pointsMesh.frustumCulled = false;
         this.scene.add(this.pointsMesh);
@@ -1258,10 +1405,18 @@ class CompositionBuilderApp {
         const animate = () => {
             requestAnimationFrame(animate);
             const frameNow = performance.now();
-            this.controls.update();
+            const controlsChanged = this.controls.update();
+            if (controlsChanged) this.previewSceneDirty = true;
             if (!this.previewPaused) this.updatePreviewAnimation();
             this.updatePreviewFps(frameNow);
-            this.renderer.render(this.scene, this.camera);
+            const hasPreviewPoints = !!this.previewBasePoints?.length;
+            const hasRenderablePreview = hasPreviewPoints
+                && (this.previewGpuParticlePathEnabled !== true || this.previewGpuActivePointCount > 0);
+            const previewAnimating = !this.previewPaused && hasRenderablePreview;
+            if (!this.previewBuildInProgress && (previewAnimating || this.previewSceneDirty || controlsChanged)) {
+                this.renderer.render(this.scene, this.camera);
+                this.previewSceneDirty = false;
+            }
         };
         animate();
     }
@@ -1294,10 +1449,27 @@ class CompositionBuilderApp {
     }
 
     applyTheme() {
-        const theme = normalizeWorkbenchTheme(this.state.settings.theme);
+        /*
+         * 全局主题优先于项目文件中的旧值。主题属于当前设备偏好，不属于 Composition；
+         * 按项目保存会导致各工具外观不一致。旧项目仍可通过后备逻辑初始化全局主题。
+         */
+        let stored = "";
+        try {
+            stored = window.localStorage.getItem(APP_THEME_KEY) || "";
+        } catch {
+            stored = "";
+        }
+        const theme = normalizeWorkbenchTheme(stored || this.state.settings.theme);
         this.state.settings.theme = theme;
+        if (!stored) writeAppTheme(theme);
         document.body.setAttribute("data-theme", theme);
-        document.body.setAttribute("data-mc-theme", minecraftThemeFor(theme));
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: "coo-legacy-theme", theme }, window.location.origin);
+            }
+        } catch {
+            // 跨域父页面无法接收该提示，直接忽略。
+        }
         if (this.dom?.themeSelect && this.dom.themeSelect.value !== theme) this.dom.themeSelect.value = theme;
         const styles = getComputedStyle(document.body);
         const gridColor = styles.getPropertyValue("--line2").trim() || "#2b405c";
@@ -1773,7 +1945,8 @@ class CompositionBuilderApp {
             default:
                 return;
         }
-        this.afterStructureMutate({ rerenderProject: true, rerenderCards: false, rebuildPreview: false });
+        const rebuildPreview = act === "add-comp-animate" || act === "remove-comp-animate";
+        this.afterStructureMutate({ rerenderProject: true, rerenderCards: false, rebuildPreview });
     }
 
     onProjectInput(e) {
@@ -1847,7 +2020,8 @@ class CompositionBuilderApp {
             const item = this.state.compositionAnimates[int(t.dataset.compAnimateIdx)];
             if (!item) return;
             this.applyAnimateField(item, t.dataset.compAnimateField, t);
-            this.afterValueMutate({ rebuildPreview: false });
+            // 生长条件直接决定 Sequenced GPU 的解锁 tick，必须重建元数据。
+            this.afterValueMutate({ rebuildPreview: true });
             return;
         }
         if (t.dataset.displayIdx !== undefined) {
@@ -1873,13 +2047,13 @@ class CompositionBuilderApp {
         if (this.flushCodeEditorRefresh(t)) return;
         if (this.commitGlobalSymbolNameOnBlur(t)) return;
         if (t.dataset.projectScaleField) {
-            // Fallback for environments where <select> only emits "change".
+            // 兼容只对 <select> 派发 "change" 的环境。
             this.applyProjectScaleField(t.dataset.projectScaleField, t);
             this.afterValueMutate({ rebuildPreview: true, rerenderProject: ["type", "runMode"].includes(t.dataset.projectScaleField) });
             return;
         }
         if (t.dataset.projectAlphaField) {
-            // Fallback for environments where <select> only emits "change".
+            // 兼容只对 <select> 派发 "change" 的环境。
             this.applyProjectAlphaField(t.dataset.projectAlphaField, t);
             this.afterValueMutate({ rebuildPreview: true, rerenderProject: ["type", "runMode"].includes(t.dataset.projectAlphaField) });
             return;
@@ -1892,13 +2066,11 @@ class CompositionBuilderApp {
         }
         if (t.dataset.pf === "compositionType") {
             this.applyProjectFieldInput("compositionType", t);
-            this.renderProjectSection();
-            this.generateCodeAndRender(this.state.settings.realtimeCode);
-            this.scheduleSave();
+            this.afterValueMutate({ rebuildPreview: true, rerenderProject: true });
             return;
         }
         if (t.matches("select,input[type='checkbox']")) {
-            // Fallback: some controls only dispatch "change", not "input".
+            // 兼容只派发 "change"、不派发 "input" 的控件。
             this.onProjectInput(e);
             this.renderProjectSection();
         }
@@ -2878,7 +3050,7 @@ class CompositionBuilderApp {
                         const pNode = this.getShapeNodeByPath(card, parentPath);
                         if (pNode) this.removeChildFromNode(pNode, childIdx);
                     }
-                    // fix viewPath if it pointed at or beyond removed child
+                    // 删除子节点后修正越界的 viewPath。
                     if (card.viewPath && card.viewPath.length > parentPath.length) {
                         const vpIdx = card.viewPath[parentPath.length];
                         if (vpIdx === childIdx) card.viewPath = [...parentPath];
@@ -3597,7 +3769,7 @@ class CompositionBuilderApp {
         if (!t || !t.matches) return;
         if (this.flushCodeEditorRefresh(t)) return;
         if (!t.matches("select,input[type='checkbox']")) return;
-        // Fallback: some card controls (especially <select>) only emit "change".
+        // 兼容部分只派发 "change" 的卡片控件，尤其是 <select>。
         this.onCardInput(e);
     }
 
@@ -5282,7 +5454,32 @@ class CompositionBuilderApp {
     }
 
     _renderTreeNodeSingleView(card, node, tp, cardId, typeBlock, bindBlock, axisBlock, displayBlock, angleOffsetBlock, scaleBlock, effectHtml, treePath) {
+        const isGpuCParticle = isCompositionCardUsingCParticle(card);
         const cparticleBlock = this.renderCParticleNodeSettings(node, { card, cardId, treePath });
+        const controllerBlock = isGpuCParticle
+            ? `<div class="mini-note">CParticle 不支持 preTick action；透明度、颜色和大小曲线由 GPU 生命周期数据处理。</div>`
+            : `
+                <div class="mini-note">控制器</div>
+                <div class="list-tools">
+                    <button class="btn small primary" data-act="add-tree-node-cvar" data-card-id="${cardId}" data-tree-path="${tp}">添加局部变量</button>
+                    <button class="btn small primary" data-act="add-tree-node-caction" data-card-id="${cardId}" data-tree-path="${tp}">添加每帧动作</button>
+                </div>
+                <div class="kv-list">
+                    ${(node.controllerVars || []).map((it, cIdx) => `
+                        <div class="kv-row grid-var">
+                            <input class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="name" value="${esc(it.name)}" placeholder="name"/>
+                            <select class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="type">
+                                ${CONTROLLER_VAR_TYPES.map((t) => `<option value="${esc(t)}" ${it.type === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
+                            </select>
+                            <input class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
+                            <div></div><div></div>
+                            <button class="btn small" data-act="remove-tree-node-cvar" data-card-id="${cardId}" data-tree-path="${tp}" data-idx="${cIdx}">删除</button>
+                        </div>
+                    `).join("")}
+                </div>
+                <div class="kv-list">
+                    ${(node.controllerActions || []).map((a, aIdx) => this.renderTreeNodeControllerActionRow(cardId, tp, a, aIdx)).join("")}
+                </div>`;
         return `
             ${typeBlock}
             <div class="grid2">
@@ -5304,27 +5501,7 @@ class CompositionBuilderApp {
             <div class="kv-list">
                 ${this.renderTreeNodeParticleInitRows(cardId, node, tp, treePath)}
             </div>
-            <div class="mini-note">控制器</div>
-            <div class="list-tools">
-                <button class="btn small primary" data-act="add-tree-node-cvar" data-card-id="${cardId}" data-tree-path="${tp}">添加局部变量</button>
-                <button class="btn small primary" data-act="add-tree-node-caction" data-card-id="${cardId}" data-tree-path="${tp}">添加每帧动作</button>
-            </div>
-            <div class="kv-list">
-                ${(node.controllerVars || []).map((it, cIdx) => `
-                    <div class="kv-row grid-var">
-                        <input class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="name" value="${esc(it.name)}" placeholder="name"/>
-                        <select class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="type">
-                            ${CONTROLLER_VAR_TYPES.map((t) => `<option value="${esc(t)}" ${it.type === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
-                        </select>
-                        <input class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
-                        <div></div><div></div>
-                        <button class="btn small" data-act="remove-tree-node-cvar" data-card-id="${cardId}" data-tree-path="${tp}" data-idx="${cIdx}">删除</button>
-                    </div>
-                `).join("")}
-            </div>
-            <div class="kv-list">
-                ${(node.controllerActions || []).map((a, aIdx) => this.renderTreeNodeControllerActionRow(cardId, tp, a, aIdx)).join("")}
-            </div>`;
+            ${controllerBlock}`;
     }
 
     _renderTreeNodeShapeView(card, node, tp, cardId, typeBlock, bindBlock, axisBlock, displayBlock, angleOffsetBlock, scaleBlock, nodeType, treePath, opts = {}) {
@@ -6279,21 +6456,10 @@ class CompositionBuilderApp {
     }
 
     renderSingleEffectStackPanel(card) {
-        return `
-            <div class="workbench-panel-title">
-                <span>效果栈</span>
-                <span class="badge">${isCompositionCardUsingCParticle(card) ? "C粒子" : "单粒子"}</span>
-            </div>
-            <div class="effect-stack-content">
-                <div class="subgroup" data-section-key="single_particle_init">
-                    <div class="subgroup-title">粒子初始化</div>
-                    <div class="list-tools">
-                        <button class="btn small primary" data-act="add-pinit" data-card-id="${card.id}">添加初始化</button>
-                    </div>
-                    <div class="kv-list">
-                        ${this.renderParticleInitRows(card)}
-                    </div>
-                </div>
+        const isGpuCParticle = isCompositionCardUsingCParticle(card);
+        const controllerBlock = isGpuCParticle
+            ? `<div class="mini-note">CParticle 不支持 preTick action；透明度、颜色和大小曲线由 GPU 生命周期数据处理。</div>`
+            : `
                 <div class="subgroup" data-section-key="single_controller_init">
                     <div class="subgroup-title">控制器</div>
                     <div class="list-tools">
@@ -6316,7 +6482,23 @@ class CompositionBuilderApp {
                     <div class="kv-list">
                         ${(card.controllerActions || []).map((a, aIdx) => this.renderControllerActionRow(card.id, a, aIdx)).join("")}
                     </div>
+                </div>`;
+        return `
+            <div class="workbench-panel-title">
+                <span>效果栈</span>
+                <span class="badge">${isGpuCParticle ? "C粒子" : "单粒子"}</span>
+            </div>
+            <div class="effect-stack-content">
+                <div class="subgroup" data-section-key="single_particle_init">
+                    <div class="subgroup-title">粒子初始化</div>
+                    <div class="list-tools">
+                        <button class="btn small primary" data-act="add-pinit" data-card-id="${card.id}">添加初始化</button>
+                    </div>
+                    <div class="kv-list">
+                        ${this.renderParticleInitRows(card)}
+                    </div>
                 </div>
+                ${controllerBlock}
             </div>
         `;
     }
@@ -6437,6 +6619,7 @@ class CompositionBuilderApp {
 
     renderCardHtml(card, idx) {
         const selected = this.selectedCardIds.has(card.id);
+        const isGpuCParticle = isCompositionCardUsingCParticle(card);
         const fold = card.folded ? "▸" : "▾";
         const builderStats = this.evaluateBuilderPoints(card.builderState);
         const builderNodeCount = this.countBuilderNodes(card.builderState?.root?.children || []);
@@ -6535,29 +6718,31 @@ class CompositionBuilderApp {
                                 </div>
                             </div>
 
-                            <div class="subgroup" data-section-key="single_controller_init">
-                                <div class="subgroup-title">单粒子：控制器初始化</div>
-                                <div class="list-tools">
-                                    <button class="btn small primary" data-act="add-cvar" data-card-id="${card.id}">添加局部变量</button>
-                                    <button class="btn small primary" data-act="add-caction" data-card-id="${card.id}">添加每帧动作</button>
-                                </div>
-                                <div class="kv-list">
-                                    ${card.controllerVars.map((it, cIdx) => `
-                                        <div class="kv-row grid-var">
-                                            <input class="input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="name" value="${esc(it.name)}" placeholder="name"/>
-                                            <select class="input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="type">
-                                                ${CONTROLLER_VAR_TYPES.map((tp) => `<option value="${esc(tp)}" ${it.type === tp ? "selected" : ""}>${esc(tp)}</option>`).join("")}
-                                            </select>
-                                            <input class="input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
-                                            <div></div><div></div>
-                                            <button class="btn small" data-act="remove-cvar" data-card-id="${card.id}" data-idx="${cIdx}">删除</button>
-                                        </div>
-                                    `).join("")}
-                                </div>
-                                <div class="kv-list">
-                                    ${(card.controllerActions || []).map((a, aIdx) => this.renderControllerActionRow(card.id, a, aIdx)).join("")}
-                                </div>
-                            </div>
+                            ${isGpuCParticle
+                                ? `<div class="mini-note">CParticle 不支持 preTick action；透明度、颜色和大小曲线由 GPU 生命周期数据处理。</div>`
+                                : `<div class="subgroup" data-section-key="single_controller_init">
+                                    <div class="subgroup-title">单粒子：控制器初始化</div>
+                                    <div class="list-tools">
+                                        <button class="btn small primary" data-act="add-cvar" data-card-id="${card.id}">添加局部变量</button>
+                                        <button class="btn small primary" data-act="add-caction" data-card-id="${card.id}">添加每帧动作</button>
+                                    </div>
+                                    <div class="kv-list">
+                                        ${card.controllerVars.map((it, cIdx) => `
+                                            <div class="kv-row grid-var">
+                                                <input class="input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="name" value="${esc(it.name)}" placeholder="name"/>
+                                                <select class="input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="type">
+                                                    ${CONTROLLER_VAR_TYPES.map((tp) => `<option value="${esc(tp)}" ${it.type === tp ? "selected" : ""}>${esc(tp)}</option>`).join("")}
+                                                </select>
+                                                <input class="input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
+                                                <div></div><div></div>
+                                                <button class="btn small" data-act="remove-cvar" data-card-id="${card.id}" data-idx="${cIdx}">删除</button>
+                                            </div>
+                                        `).join("")}
+                                    </div>
+                                    <div class="kv-list">
+                                        ${(card.controllerActions || []).map((a, aIdx) => this.renderControllerActionRow(card.id, a, aIdx)).join("")}
+                                    </div>
+                                </div>`}
                         ` : `
                             ${this.renderShapeChildParamsSection(card)}
                         `}
@@ -7039,8 +7224,7 @@ class CompositionBuilderApp {
             let cached = byBirth.get(birthKey);
             if (!cached) {
                 const ageBase = ((elapsedTick - birthOffset) % cycleTotal + cycleTotal) % cycleTotal;
-                // Keep dissolve timing in cycle-local ticks, or second-cycle fade
-                // can jump straight to the minimum scale.
+                // 消散计时保持为周期内 tick，避免第二轮淡出直接跳到最小缩放。
                 let age = this.resolvePreviewAgeWithStatus(ageBase, globalCycleAge, cycleCfg, frameRuntimeGlobals);
                 const card = this.getCardById(owner);
                 let shapeRuntimeLevels = [];
@@ -7638,7 +7822,7 @@ class CompositionBuilderApp {
         if (!card) return "single";
         const d = Math.max(0, int(depth));
         if (d === 0) return String(card.dataType || "single");
-        // traverse first-child path for depth
+        // 沿首个子节点路径计算层级深度。
         let nodes = card.shapeChildren || [];
         for (let i = 1; i <= d; i++) {
             if (!nodes.length) return "single";
@@ -7685,14 +7869,14 @@ class CompositionBuilderApp {
             actions: rootActions,
             hasExpression: !!rootActions.__hasExpression
         });
-        // Collect levels from tree children (depth-first, first-child path for preview)
+        // 按深度优先收集树层级，预览沿首个子节点路径解析。
         this._collectTreeNodeRuntimeLevels(card, card.shapeChildren || [], levels, 1, elapsedTick, skipExpression);
         return levels;
     }
 
     _collectTreeNodeRuntimeLevels(card, children, levels, depth, elapsedTick, skipExpression) {
         if (!children || !children.length) return;
-        // For preview, use first child at each level to determine composition behavior
+        // 预览使用每层首个子节点确定 Composition 行为。
         const node = children[0];
         if (!node || isCompositionLeafParticleType(node.type || "single")) return;
         const scope = this.getShapeScopeInfoByRuntimeLevel(card, depth);
@@ -8776,6 +8960,7 @@ class CompositionBuilderApp {
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(width, height);
+        this.previewSceneDirty = true;
     }
 
     initLayoutSplitters() {
@@ -9197,8 +9382,7 @@ class CompositionBuilderApp {
             }
             return none;
         }
-        // Scope detection should rely on stable index markers instead of field-value checks,
-        // so preview/code-editor wrappers won't accidentally drop shapeRel* availability.
+        // 作用域检测使用稳定的索引标记，避免预览或代码编辑器包装层误删 shapeRel*。
         if (
             textarea.dataset.shapeLevelIdx !== undefined
             || textarea.dataset.shapeLevelDisplayIdx !== undefined
@@ -9845,7 +10029,11 @@ class CompositionBuilderApp {
                 ts: Date.now()
             }));
             localStorage.setItem(CPB_PROJECT_KEY, sanitizeFileBase(card.name || this.state.projectName || "Builder"));
-            localStorage.setItem(CPB_THEME_KEY, this.state.settings.theme || "dark-1");
+            /*
+             * 不在此处写入主题。该键现在属于应用级全局主题；若每次打开内嵌
+             * PointsBuilder 都写入项目默认值，会覆盖用户选择并在下次启动时表现为重置。
+             * 内嵌 Builder 会自行读取全局主题键。
+             */
             this.writeBuilderCompositionContext(card, target);
         } catch (e) {
             console.warn("seed builder sandbox failed:", e);
@@ -10138,7 +10326,6 @@ class CompositionBuilderApp {
         if (this.dom.bezierFrame) {
             const q = new URLSearchParams({
                 theme: normalizeWorkbenchTheme(this.state.settings.theme),
-                mcTheme: minecraftThemeFor(this.state.settings.theme),
                 min: String(num(cfg.min)),
                 max: String(num(cfg.max)),
                 tick: String(Math.max(1, int(cfg.tick || 18))),

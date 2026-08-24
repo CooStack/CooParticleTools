@@ -1,7 +1,7 @@
 import {
     MC_COMPAT,
     STORAGE_KEYS
-} from "./constants.js";
+} from "./constants.js?v=20260824_1";
 import {
     countTextureParams,
     createDefaultPostNode,
@@ -23,7 +23,7 @@ import {
     resolveNodeFragmentPath,
 } from "./store.js";
 import { GraphEditor } from "./graph.js";
-import { initSettingsSystem } from "./settings.js";
+import { initSettingsSystem } from "./settings.js?v=20260824_1";
 import { initHotkeysSystem } from "./hotkeys.js";
 import { generateModelBuilderKotlin, generateModelKotlin, generatePostKotlin } from "./codegen.js";
 import {

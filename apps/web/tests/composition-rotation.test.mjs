@@ -800,7 +800,7 @@ test('axis-dependent rotation expressions stay on the live expression path', () 
   assert.equal(app.tryFoldSimpleExpressionAction('rotateToWithAngle(axis, PI / 32)', 0), null);
 });
 
-test('shape rel follows the project rotateAsAxis transform on every preview frame', () => {
+test('shape rel points from the child Composition back to the rotated project origin', () => {
   const app = createRealtimeRelFrameHarness();
   const cycleCfg = { appear: 0, live: 100, fade: 0, play: 100, total: 100 };
 
@@ -824,7 +824,7 @@ test('shape rel follows the project rotateAsAxis transform on every preview fram
       frame.positions[2] - anchor.z
     );
 
-    assertVectorClose(actualLocal, normalize(anchor), 1e-6);
+    assertVectorClose(actualLocal, normalize(U.v(-anchor.x, -anchor.y, -anchor.z)), 1e-6);
   }
 });
 

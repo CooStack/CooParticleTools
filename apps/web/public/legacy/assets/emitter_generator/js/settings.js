@@ -1,15 +1,25 @@
 import { countDecimalsFromString, safeNum } from "./utils.js";
+import { APP_THEME_KEY, watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
 
 const THEMES = [
     { id: "dark-1", label: "夜岚" },
     { id: "dark-2", label: "深潮" },
     { id: "dark-3", label: "焰砂" },
-    { id: "light-1", label: "" },
-    { id: "light-2", label: "¶" },
-    { id: "light-3", label: "薄荷" }
+    { id: "light-1", label: "雾蓝" },
+    { id: "light-2", label: "杏露" },
+    { id: "light-3", label: "薄荷" },
+    { id: "glass-dark-blue", label: "玻璃·深蓝" },
+    { id: "glass-dark-green", label: "玻璃·深绿" },
+    { id: "glass-dark-violet", label: "玻璃·深紫" },
+    { id: "glass-dark-neutral", label: "玻璃·黑" },
+    { id: "glass-light-blue", label: "玻璃·浅蓝" },
+    { id: "glass-light-green", label: "玻璃·浅绿" },
+    { id: "glass-light-violet", label: "玻璃·浅紫" },
+    { id: "glass-light-neutral", label: "玻璃·白" }
 ];
 const THEME_ORDER = THEMES.map(t => t.id);
-const THEME_KEY = "pe_theme_v2";
+// Shared with every other tool so the theme is global, not per-builder.
+const THEME_KEY = APP_THEME_KEY;
 
 export function initSettingsSystem(ctx = {}) {
     const {
@@ -99,13 +109,26 @@ export function initSettingsSystem(ctx = {}) {
         return hasTheme(id) ? id : "dark-1";
     }
 
+    function broadcastThemeToShell(theme) {
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: "coo-legacy-theme", theme: String(theme || "") }, window.location.origin);
+            }
+        } catch {
+            // Cross-origin parents simply do not get the hint.
+        }
+    }
+
     function applyTheme(themeId) {
         const finalId = normalizeTheme(themeId);
         document.body.setAttribute("data-theme", finalId);
+        broadcastThemeToShell(finalId);
         if (themeSelect && themeSelect.value !== finalId) themeSelect.value = finalId;
     }
 
     function initThemeToggle() {
+        // Another tool (or the shell) changing the theme applies here live.
+        watchAppTheme((next) => applyTheme(next));
         const saved = localStorage.getItem(THEME_KEY) || "";
         const initial = normalizeTheme(saved || "dark-1");
         applyTheme(initial);

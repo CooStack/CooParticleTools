@@ -17,6 +17,10 @@ function mergePreferences(...sources) {
   for (const source of sources) {
     if (!isRecord(source)) continue;
     for (const [key, value] of Object.entries(source)) {
+      if (Array.isArray(value)) {
+        merged[key] = value.slice();
+        continue;
+      }
       if (!isRecord(value)) continue;
       const previous = isRecord(merged[key]) ? merged[key] : {};
       merged[key] = { ...previous, ...value };

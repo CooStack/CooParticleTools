@@ -1,8 +1,11 @@
+import { APP_THEME_KEY } from "../../shared/js/app-theme.js?v=20260824_1";
+
 export const STORAGE_KEYS = {
     project: "sb_project_v1",
     settings: "sb_settings_v1",
     hotkeys: "sb_hotkeys_v1",
-    theme: "sb_theme_v1"
+    // Shared with every other tool so the theme is global, not per-builder.
+    theme: APP_THEME_KEY
 };
 
 export const MC_COMPAT = {
@@ -18,7 +21,15 @@ export const THEMES = [
     { id: "dark-3", label: "焰砂" },
     { id: "light-1", label: "雾蓝" },
     { id: "light-2", label: "杏露" },
-    { id: "light-3", label: "薄荷" }
+    { id: "light-3", label: "薄荷" },
+    { id: "glass-dark-blue", label: "玻璃·深蓝" },
+    { id: "glass-dark-green", label: "玻璃·深绿" },
+    { id: "glass-dark-violet", label: "玻璃·深紫" },
+    { id: "glass-dark-neutral", label: "玻璃·黑" },
+    { id: "glass-light-blue", label: "玻璃·浅蓝" },
+    { id: "glass-light-green", label: "玻璃·浅绿" },
+    { id: "glass-light-violet", label: "玻璃·浅紫" },
+    { id: "glass-light-neutral", label: "玻璃·白" }
 ];
 
 export const DEFAULT_MODEL_VERTEX = `

@@ -706,17 +706,22 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .curve-editor {
+  /*
+   * Derived from the theme tokens rather than pinned to the old sky-blue/amber
+   * pair, so the curve editor follows whichever accent the active theme (flat or
+   * any glass hue) supplies instead of looking bolted on.
+   */
   --curve-canvas-bg: var(--bg-panel-strong);
-  --curve-grid-color: rgba(148, 163, 184, 0.16);
-  --curve-line-color: var(--brand-2);
-  --curve-fill-start: rgba(56, 189, 248, 0.34);
-  --curve-fill-end: rgba(56, 189, 248, 0.04);
-  --curve-handle-color: var(--warning);
-  --curve-handle-line-color: rgba(245, 158, 11, 0.6);
-  --curve-point-color: #e2e8f0;
-  --curve-point-stroke: #020617;
-  --curve-selected-color: var(--warning);
-  --curve-selected-border: rgba(245, 158, 11, 0.5);
+  --curve-grid-color: color-mix(in srgb, var(--muted, #94a3b8) 26%, transparent);
+  --curve-line-color: var(--accent, var(--brand-2));
+  --curve-fill-start: color-mix(in srgb, var(--accent, #38bdf8) 34%, transparent);
+  --curve-fill-end: color-mix(in srgb, var(--accent, #38bdf8) 4%, transparent);
+  --curve-handle-color: var(--ok, var(--warning));
+  --curve-handle-line-color: color-mix(in srgb, var(--ok, #f59e0b) 60%, transparent);
+  --curve-point-color: var(--text, #e2e8f0);
+  --curve-point-stroke: var(--bg, #020617);
+  --curve-selected-color: var(--ok, var(--warning));
+  --curve-selected-border: color-mix(in srgb, var(--ok, #f59e0b) 50%, transparent);
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-soft);

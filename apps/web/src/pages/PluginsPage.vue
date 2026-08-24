@@ -83,11 +83,11 @@ onMounted(loadPlugins);
 
 <style scoped>
 .plugins-page {
-  min-height: 100vh;
+  min-height: var(--app-vh);
+  color: var(--text);
   background:
-    linear-gradient(180deg, rgba(255, 116, 176, 0.08), transparent 34%),
-    linear-gradient(180deg, #1b0a15 0%, #12070e 60%, #080408 100%);
-  color: #fff3f8;
+    radial-gradient(1100px 760px at 6% -6%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 56%),
+    var(--bg);
 }
 
 .plugins-header {
@@ -96,8 +96,8 @@ onMounted(loadPlugins);
   justify-content: space-between;
   gap: 16px;
   padding: 28px;
-  border-bottom: 1px solid rgba(255, 214, 232, 0.14);
-  background: rgba(20, 8, 17, 0.96);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
 }
 
 .plugins-header h1 {
@@ -106,21 +106,42 @@ onMounted(loadPlugins);
 
 .plugins-header p {
   margin: 8px 0 0;
-  color: #dec0cf;
+  color: var(--muted);
 }
 
 .back-link {
-  color: #f06aa7;
-  font-size: 13px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: color var(--speed) ease;
+}
+
+.back-link:hover {
+  color: var(--text);
 }
 
 .plugins-header button {
-  border: 1px solid rgba(255, 214, 232, 0.26);
-  border-radius: 0;
-  background: #321621;
-  color: #fff3f8;
-  padding: 9px 12px;
-  box-shadow: 0 2px 0 #090408;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius2);
+  background: var(--card);
+  color: var(--text);
+  transition: background var(--speed) ease, border-color var(--speed) ease;
+}
+
+.plugins-header button:hover {
+  border-color: var(--line2);
+  background: color-mix(in srgb, var(--card) 88%, var(--hover-veil));
+}
+
+.plugins-header button:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .plugins-main {
@@ -129,9 +150,10 @@ onMounted(loadPlugins);
 }
 
 .plugins-section {
-  border: 1px solid rgba(255, 214, 232, 0.14);
-  border-radius: 0;
-  background: rgba(36, 16, 27, 0.72);
+  border: 1px solid var(--line);
+  border-radius: var(--radius2);
+  background: var(--card);
+  box-shadow: var(--shadow2);
   padding: 18px;
 }
 
@@ -145,47 +167,63 @@ onMounted(loadPlugins);
 
 .plugins-section-head h2 {
   margin: 0;
+  font-size: 17px;
 }
 
 .plugins-section-head small,
 .plugin-main small,
 .plugin-path {
-  color: #dec0cf;
+  color: var(--muted);
 }
 
 .plugin-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   margin-top: 14px;
 }
 
 .plugin-row {
-  border: 1px solid rgba(255, 214, 232, 0.14);
-  border-radius: 0;
-  background: rgba(31, 14, 24, 0.78);
+  border: 1px solid var(--line);
+  border-radius: var(--radius2);
+  background: var(--panel2);
   padding: 14px;
+  transition: background var(--speed) ease, border-color var(--speed) ease;
+}
+
+.plugin-row:hover {
+  border-color: var(--line2);
+  background: color-mix(in srgb, var(--panel2) 88%, var(--hover-veil));
 }
 
 .plugin-main small {
   display: block;
   margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .plugin-status {
-  border: 1px solid rgba(255, 214, 232, 0.22);
-  border-radius: 0;
-  padding: 4px 9px;
-  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .plugin-status.enabled {
-  color: #8ee7ef;
-  border-color: rgba(142, 231, 239, 0.34);
+  color: color-mix(in srgb, var(--ok) 80%, white 20%);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
-.plugin-status.disabled,
+.plugin-status.disabled {
+  color: var(--muted);
+  background: var(--card2);
+}
+
 .plugin-error {
-  color: #ffb4c8;
+  color: color-mix(in srgb, var(--danger) 78%, white 22%);
 }
 
 .plugin-path {
@@ -193,6 +231,8 @@ onMounted(loadPlugins);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .route-list {
@@ -203,20 +243,22 @@ onMounted(loadPlugins);
 }
 
 .route-list span {
-  border-radius: 0;
-  background: rgba(240, 106, 167, 0.1);
-  color: #f7a6c9;
-  padding: 4px 8px;
-  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card2);
+  color: var(--muted);
+  padding: 3px 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .empty-state {
   margin-top: 14px;
-  color: #dec0cf;
+  color: var(--muted);
 }
 
 .empty-state.error {
-  color: #ffb4c8;
+  color: color-mix(in srgb, var(--danger) 78%, white 22%);
 }
 
 @media (max-width: 760px) {
@@ -224,5 +266,38 @@ onMounted(loadPlugins);
   .plugin-main {
     display: grid;
   }
+}
+
+/* Glass variants — see the note in WorkbenchPage.vue about :global() placement. */
+/* Must not paint: body carries the field the panels refract. */
+:global(body[data-theme^='glass-'] .plugins-page) {
+  background: transparent;
+}
+
+:global(body[data-theme^='glass-'] .plugins-header),
+:global(body[data-theme^='glass-'] .plugins-section) {
+  border: 0;
+  background:
+    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 30%, transparent 68%, var(--glass-sheen-2) 100%),
+    var(--glass-fill-2);
+  backdrop-filter: var(--glass-blur);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-rim-top),
+    inset 1px 0 0 0 var(--glass-rim-side),
+    inset -1px 0 0 0 var(--glass-rim-side),
+    inset 0 -1px 0 0 var(--glass-rim-bottom),
+    var(--glass-shadow);
+}
+
+:global(body[data-theme^='glass-'] .plugin-row),
+:global(body[data-theme^='glass-'] .plugins-header button) {
+  border: 0;
+  background:
+    linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 42%),
+    var(--glass-fill);
+  backdrop-filter: var(--glass-blur-2);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-rim-side),
+    inset 0 -1px 0 0 var(--glass-rim-bottom);
 }
 </style>

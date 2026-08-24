@@ -1,5 +1,6 @@
 import { createLifecycleCurve, normalizeLifecycleCurve } from './curves.js';
 import { createPointsBuilderProject, normalizePointsBuilderProject } from '../pointsbuilder/defaults.js';
+import { THEME_OPTIONS, normalizeThemeId } from '../theme/options.js';
 import {
   GENERATOR_VALUE_TYPES,
   getGeneratorTypeDefault,
@@ -149,10 +150,9 @@ export const TEXTURE_SHEET_OPTIONS = [
   { id: 'NO_RENDER', label: 'NO_RENDER' }
 ];
 
-export const GENERATOR_THEME_OPTIONS = [
-  { id: 'dark-1', label: '深粉' },
-  { id: 'light-pink', label: '浅粉' }
-];
+// Re-exported from the canonical list so the generator, the app shell and the
+// legacy builders can never disagree about which themes exist.
+export const GENERATOR_THEME_OPTIONS = THEME_OPTIONS;
 
 export const GENERATOR_HOTKEY_DEFAULTS = {
   toggleSettings: 'KeyH',
@@ -1148,9 +1148,7 @@ function normalizeTextureSheet(raw) {
 }
 
 function normalizeGeneratorTheme(raw) {
-  const text = String(raw || 'dark-1');
-  if (text === 'light-pink' || ['light-1', 'light-2', 'light-3'].includes(text)) return 'light-pink';
-  return GENERATOR_THEME_OPTIONS.some((item) => item.id === text) ? text : 'dark-1';
+  return normalizeThemeId(raw);
 }
 
 function normalizeGeneratorHotkeys(raw = {}) {

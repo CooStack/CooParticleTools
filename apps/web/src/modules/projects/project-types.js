@@ -28,6 +28,15 @@ function compositionPreferencesFromDraft(payload) {
   return Object.keys(preferences).length ? preferences : null;
 }
 
+function pointsBuilderPreferencesFromDraft(payload) {
+  const source = Array.isArray(payload) ? { presets: payload } : payload;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+  const preferences = {};
+  if (Array.isArray(source.presets)) preferences.presets = source.presets;
+  if (Array.isArray(source.groups)) preferences.groups = source.groups;
+  return Object.keys(preferences).length ? preferences : null;
+}
+
 function defineProject(definition) {
   return Object.freeze({
     ...definition,
@@ -146,6 +155,8 @@ export const PROJECT_DEFINITIONS = Object.freeze([
       page: 'pointsbuilder.html',
       storageKey: 'pb_state_v1',
       nameStorageKey: 'pb_project_name_v1',
+      preferencesStorageKey: 'pb_presets_v1',
+      preferencesFromDraft: pointsBuilderPreferencesFromDraft,
       toDraft(payload) {
         const state = payload?.state?.root ? payload.state : payload;
         return { state, ts: Date.now() };

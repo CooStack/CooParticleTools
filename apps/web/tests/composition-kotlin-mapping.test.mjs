@@ -294,25 +294,25 @@ test('Composition runtime modules use cache-busted Vec3d-aware sources', async (
     readFile(new URL('../public/legacy/assets/composition_builder/js/preview_render_cache_worker.js', import.meta.url), 'utf8')
   ]);
 
-  assert.match(htmlSource, /composition-builder\.page\.js\?v=20260815_2/);
-  assert.match(htmlSource, /composition_builder\/css\/style\.css\?v=20260729_2/);
-  assert.match(pageSource, /main\.js\?v=20260815_2/);
+  assert.match(htmlSource, /composition-builder\.page\.js\?v=20260824_14/);
+  assert.match(htmlSource, /composition_builder\/css\/style\.css\?v=20260823_1/);
+  assert.match(pageSource, /main\.js\?v=20260824_14/);
   assert.match(mainSource, /model\.js\?v=20260729_6/);
   assert.match(mainSource, /preferences\.js\?v=20260729_3/);
   assert.match(mainSource, /alpha_helper_utils\.js\?v=20260729_1/);
   assert.match(mainSource, /composition_preset_mixin\.js\?v=20260729_4/);
   assert.match(mainSource, /expression_runtime\.js\?v=20260729_3/);
   assert.match(mainSource, /vector_value_utils\.js\?v=20260720_1/);
-  assert.match(mainSource, /preview_runtime_mixin\.js\?v=20260815_3/);
+  assert.match(mainSource, /preview_runtime_mixin\.js\?v=20260824_14/);
   assert.match(mainSource, /kotlin_codegen_mixin\.js\?v=20260730_3/);
   assert.match(mainSource, /expression_editor_mixin\.js\?v=20260729_3/);
   assert.match(mainSource, /composition_vector_expression\.js\?v=20260729_3/);
   assert.match(modelSource, /alpha_helper_utils\.js\?v=20260729_1/);
   assert.match(modelSource, /vector_value_utils\.js\?v=20260720_1/);
-  assert.match(previewSource, /preview_render_cache_worker\.js\?v=20260815_2/);
+  assert.match(previewSource, /preview_render_cache_worker\.js\?v=20260824_14/);
   assert.match(workerSource, /expression_runtime\.js\?v=20260729_3/);
   assert.match(workerSource, /alpha_helper_utils\.js\?v=20260729_1/);
-  assert.match(workerSource, /preview_runtime_mixin\.js\?v=20260815_3/);
+  assert.match(workerSource, /preview_runtime_mixin\.js\?v=20260824_14/);
   assert.ok((previewSource.match(/src === "Vec3\.ZERO" \|\| src === "Vec3d\.ZERO"/g) || []).length >= 2);
   assert.ok((previewSource.match(/Vec3\|Vec3d\|RelativeLocation\|Vector3f/g) || []).length >= 2);
 });

@@ -1,4 +1,4 @@
-@import url("../../shared/css/workbench-theme.css?v=20260313_5");
+@import url("../../shared/css/workbench-theme.css?v=20260824_2");
 
 :root {
     --bg: #101317;
@@ -2811,101 +2811,104 @@ body.resizing-panels .panel.right {
 }
 
 .card {
-    background: color-mix(in srgb, var(--card) 76%, transparent);
-    border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+    background: var(--card);
+    border: 1px solid var(--line);
     border-radius: var(--radius2);
-    box-shadow: var(--shadow2), inset 0 1px 0 rgba(255, 255, 255, .06);
-    backdrop-filter: blur(12px) saturate(1.15);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .24);
     overflow: hidden;
-    transition: transform 0.16s ease;
+    transition: transform 0.16s ease, background .14s ease, border-color .14s ease, box-shadow .14s ease;
     will-change: transform;
+}
+
+.card:hover {
+    border-color: var(--line2);
 }
 
 /* ✅ 聚焦高亮：让用户一眼看出当前聚焦的卡片 */
 .card.focused {
-    border-color: rgba(95, 214, 255, .92);
-    background: color-mix(in srgb, rgba(78, 161, 255, .24) 78%, var(--card));
+    border-color: color-mix(in srgb, var(--accent) 76%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, var(--card));
     box-shadow:
-        inset 4px 0 0 rgba(95, 214, 255, .9),
-        0 0 0 2px rgba(78, 161, 255, .38),
-        0 12px 30px rgba(0, 0, 0, .32);
+        inset 2px 0 0 var(--accent),
+        0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent),
+        0 10px 24px rgba(0, 0, 0, .3);
 }
 
 .card.focused .card-head {
-    background: rgba(78, 161, 255, .12);
-    border-bottom-color: rgba(78, 161, 255, .22);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-bottom-color: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .card.focused .badge2 {
-    border-color: rgba(78, 161, 255, .28);
-    color: rgba(255, 255, 255, .92);
-    background: rgba(78, 161, 255, .08);
+    border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .card.dragging {
     opacity: .96;
-    border-color: rgba(78, 161, 255, .42);
-    box-shadow: 0 0 0 1px rgba(78, 161, 255, .22), var(--shadow2);
+    border-color: color-mix(in srgb, var(--accent) 44%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent), var(--shadow2);
 }
 
 .card.drag-over {
     outline: none;
-    border-color: rgba(95, 214, 255, .46);
+    border-color: color-mix(in srgb, var(--accent) 48%, transparent);
     background: color-mix(in srgb, var(--accent) 10%, transparent);
-    box-shadow: 0 0 0 1px rgba(95, 214, 255, .18), var(--shadow2);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent), var(--shadow2);
 }
 
 .card.drag-over-top {
     box-shadow:
-        0 -3px 0 rgba(95, 214, 255, .92),
-        0 -10px 18px rgba(95, 214, 255, .32),
-        0 0 0 1px rgba(95, 214, 255, .18),
+        0 -3px 0 var(--accent),
+        0 -10px 18px color-mix(in srgb, var(--accent) 32%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent),
         var(--shadow2);
 }
 
 .card.drag-over-bottom {
     box-shadow:
-        0 3px 0 rgba(95, 214, 255, .92),
-        0 10px 18px rgba(95, 214, 255, .32),
-        0 0 0 1px rgba(95, 214, 255, .18),
+        0 3px 0 var(--accent),
+        0 10px 18px color-mix(in srgb, var(--accent) 32%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent),
         var(--shadow2);
 }
 
 .card.drag-over-inside {
-    border-color: rgba(99, 245, 200, .68);
-    background: color-mix(in srgb, rgba(99, 245, 200, .16) 72%, var(--card));
+    border-color: color-mix(in srgb, var(--ok) 70%, transparent);
+    background: color-mix(in srgb, var(--ok) 14%, transparent);
     box-shadow:
-        inset 0 0 0 2px rgba(99, 245, 200, .46),
-        0 0 0 1px rgba(99, 245, 200, .24),
+        inset 0 0 0 2px color-mix(in srgb, var(--ok) 46%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--ok) 24%, transparent),
         var(--shadow2);
 }
 
 .card.drag-swap-highlight {
-    border-color: rgba(99, 245, 200, .68);
-    background: color-mix(in srgb, rgba(99, 245, 200, .22) 78%, var(--card));
-    box-shadow: 0 0 0 1px rgba(99, 245, 200, .24), 0 14px 28px rgba(0, 0, 0, .28);
+    border-color: color-mix(in srgb, var(--ok) 70%, transparent);
+    background: color-mix(in srgb, var(--ok) 18%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 24%, transparent), 0 14px 28px rgba(0, 0, 0, .28);
 }
 
 .dropzone-active {
-    outline: 1px dashed rgba(78, 161, 255, .45);
+    outline: 1px dashed color-mix(in srgb, var(--accent) 48%, transparent);
     outline-offset: -3px;
-    background: rgba(78, 161, 255, .08);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .sub-dropzone {
     margin-top: 8px;
     padding: 8px 10px;
     border: 1px dashed var(--line2);
-    border-radius: 10px;
+    border-radius: var(--radius2);
     color: var(--muted);
     text-align: center;
-    background: rgba(0, 0, 0, .12);
+    background: color-mix(in srgb, var(--panel2) 50%, transparent);
 }
 
 .sub-dropzone.active {
-    border-color: rgba(78, 161, 255, .55);
-    background: rgba(78, 161, 255, .12);
-    color: rgba(255, 255, 255, .9);
+    border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--text);
 }
 
 .card-head {
@@ -2914,7 +2917,7 @@ body.resizing-panels .panel.right {
     gap: 8px;
     padding: 10px 10px 8px;
     border-bottom: 1px solid var(--line);
-    background: rgba(0, 0, 0, .16);
+    background: color-mix(in srgb, var(--panel2) 60%, transparent);
     min-width: 0;
 /* ✅ 嵌套 addBuilder 宽度变窄时：允许换行，避免右侧按钮拥挤 */
     flex-wrap: wrap;
@@ -4065,7 +4068,7 @@ body.resizing-subblock-y * {
 }
 
 @media (max-width: 520px) {
-    body[data-mc-theme="deep-pink"] .topbar {
+    .topbar {
         height: auto;
         flex: 0 0 auto;
         max-height: 42vh;
@@ -4074,15 +4077,15 @@ body.resizing-subblock-y * {
         overflow-x: hidden;
         overflow-y: auto;
     }
-    body[data-mc-theme="deep-pink"] .topbar-left,
-    body[data-mc-theme="deep-pink"] .topbar-tools,
-    body[data-mc-theme="deep-pink"] .topbar-right {
+    .topbar-left,
+    .topbar-tools,
+    .topbar-right {
         width: 100%;
         flex: 1 1 100%;
         justify-content: flex-start;
         flex-wrap: wrap;
     }
-    body[data-mc-theme="deep-pink"] .layout {
+    .layout {
         height: auto;
         flex: 1 1 0;
     }

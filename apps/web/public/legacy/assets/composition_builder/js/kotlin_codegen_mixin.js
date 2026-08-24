@@ -98,10 +98,9 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         }
         if (this.stateUsesCParticle()) {
             imports.push("import cn.coostack.cooparticlesapi.cparticle.CParticleRenderLayer");
+            imports.push("import cn.coostack.cooparticlesapi.cparticle.CParticleCurve");
+            imports.push("import cn.coostack.cooparticlesapi.cparticle.CParticleColorCurve");
             imports.push("import java.util.UUID");
-            if (this.stateUsesCParticleAlphaTransitions()) {
-                imports.push("import cn.coostack.cooparticlesapi.cparticle.CParticleCurve");
-            }
         }
         const importList = Array.from(new Set(imports));
 
@@ -775,6 +774,9 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         if (["particlecolor", "particle.particlecolor", "color"].includes(lower)) return "color";
         if (["currentage", "age"].includes(lower)) return "age";
         if (["lifetime", "lifetime", "maxage"].includes(lower)) return "maxAge";
+        if (lower === "alphacurve") return "alphaCurve";
+        if (lower === "scalecurve") return "scaleCurve";
+        if (lower === "colorcurve") return "colorCurve";
         if (lower === "texturesheet") return "";
         return target;
     }
@@ -784,80 +786,6 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         if (!expr) return expr;
         if (isPlainNumericLiteralText(expr)) return normalizeKotlinFloatLiteralText(expr);
         return /\.toFloat\(\)\s*$/.test(expr) ? expr : `(${expr}).toFloat()`;
-    }
-
-    rewriteCParticleControllerScript(scriptRaw) {
-        let source = String(scriptRaw || "");
-        source = source.replace(
-            /\bparticle\.(?=(?:setAlpha|setColor|setSize|teleportTo|rotateToPoint|rotateToWithAngle|rotateAsAxis|remove|moveToWithPhysics|moveWithPhysics)\s*\()/g,
-            ""
-        );
-        source = source.replace(/\bparticle\.(?=(?:pos|velocity|valid)\b)/g, "");
-        source = source.replace(/(^|[^A-Za-z0-9_$.])(?:(?:this|particle)\.)?(particleAlpha|alpha|particleSize|size|particleColor|color)\s*=\s*(?!=)([^;\n]+)/gim, (full, prefix, targetRaw, exprRaw) => {
-            const target = String(targetRaw || "").toLowerCase();
-            const expr = String(exprRaw || "").trim();
-            if (target === "particlealpha" || target === "alpha") {
-                return `${prefix}setAlpha(${this.normalizeCParticleFloatExpression(expr)})`;
-            }
-            if (target === "particlesize" || target === "size") {
-                return `${prefix}setSize(${this.normalizeCParticleFloatExpression(expr)})`;
-            }
-            return `${prefix}setColor(${expr})`;
-        });
-        source = source.replace(/\bsetSize\(\s*([+\-]?\d+(?:\.\d+)?)\s*,\s*([+\-]?\d+(?:\.\d+)?)\s*\)/g, (full, width, height) => (
-            `setSize(${this.normalizeCParticleFloatExpression(width)}, ${this.normalizeCParticleFloatExpression(height)})`
-        ));
-        source = source.replace(/\bsetColor\(\s*([+\-]?\d+(?:\.\d+)?)\s*,\s*([+\-]?\d+(?:\.\d+)?)\s*,\s*([+\-]?\d+(?:\.\d+)?)\s*\)/g, (full, red, green, blue) => (
-            `setColor(${this.normalizeCParticleFloatExpression(red)}, ${this.normalizeCParticleFloatExpression(green)}, ${this.normalizeCParticleFloatExpression(blue)})`
-        ));
-        return source.replace(/\b(setAlpha|setSize)\(\s*([+\-]?\d+(?:\.\d+)?)\s*\)/g, (full, method, value) => (
-            `${method}(${this.normalizeCParticleFloatExpression(value)})`
-        ));
-    }
-
-    findUnsupportedCParticleControllerIdentifier(sourceRaw, card = null) {
-        const source = String(sourceRaw || "").replace(
-            /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
-            (match) => " ".repeat(match.length)
-        );
-        const defined = new Set();
-        for (const item of [
-            ...(this.state.globalVars || []),
-            ...(this.state.globalConsts || []),
-            ...(card?.controllerVars || [])
-        ]) {
-            const name = String(item?.name || "").trim();
-            if (name) defined.add(name);
-        }
-        for (const match of source.matchAll(/\b(?:var|val|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
-            defined.add(match[1]);
-        }
-        const unsupported = new Set([
-            "age",
-            "currentAge",
-            "lifetime",
-            "lifeTime",
-            "maxAge",
-            "textureSheet",
-            "tick",
-            "tickCount",
-            "index",
-            "particle"
-        ]);
-        for (const match of source.matchAll(/\b(?:age|currentAge|lifetime|lifeTime|maxAge|textureSheet|tick|tickCount|index|particle)\b/g)) {
-            const name = match[0];
-            if (defined.has(name)) continue;
-            if (match.index > 0 && source[match.index - 1] === ".") continue;
-            return name;
-        }
-        return "";
-    }
-
-    assertCParticleControllerCompatible(sourceRaw, card = null) {
-        const name = this.findUnsupportedCParticleControllerIdentifier(sourceRaw, card);
-        if (!name) return;
-        const owner = String(card?.name || card?.id || "CParticle").trim() || "CParticle";
-        throw new Error(`${owner} 的 CParticle 控制器不支持 ${name}；请把 age/maxAge 放到实例初始化，并仅在控制器中使用 CParticleControlable 句柄 API`);
     }
 
     rewritePreTickRuntimeRel(sourceRaw, depth = 1) {
@@ -957,11 +885,13 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
                 if (!normalizedTarget) continue;
                 const target = sanitizeKotlinIdentifier(normalizedTarget || "size", "size");
                 const isTextureSheetTarget = targetRaw.toLowerCase() === "texturesheet";
+                const isCParticleCurveTarget = isCParticle
+                    && (target === "alphaCurve" || target === "scaleCurve" || target === "colorCurve");
                 const exprRaw = isTextureSheetTarget
                     ? String(it?.codegenExpr || it?.codegenExprPreset || it?.expr || "").trim()
                     : String(it?.expr || "").trim();
                 let expr = this.rewriteCodeExpr(exprRaw, className);
-                if (!isTextureSheetTarget) {
+                if (!isTextureSheetTarget && !isCParticleCurveTarget) {
                     expr = normalizeParticleExpr(target, expr);
                 }
                 if (isCParticle && (target === "alpha" || target === "size")) {
@@ -979,8 +909,8 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             : ((raw) => Object.assign({ type: "tick_js", script: "" }, raw || {}));
         const hasTick = Array.isArray(card.controllerVars) && card.controllerVars.length;
         const actions = Array.isArray(card.controllerActions) ? card.controllerActions.map((it) => normalizeController(it)) : [];
-        if (hasTick || actions.length) {
-            lines.push(`${indentBase}.${isCParticle ? "addCParticleControlerInstanceInit" : "addParticleControlerInstanceInit"} {`);
+        if (!isCParticle && (hasTick || actions.length)) {
+            lines.push(`${indentBase}.addParticleControlerInstanceInit {`);
             for (const v of (card.controllerVars || [])) {
                 const vName = sanitizeKotlinIdentifier(v.name || "v", "v");
                 const storedType = sanitizeKotlinIdentifier(v.type || "Boolean", "Boolean");
@@ -988,7 +918,6 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
                 let expr = this.rewriteCodeExpr(String(v.expr || "").trim(), className);
                 expr = rewriteStatus(expr, className);
                 if (!expr) expr = this.rewriteCodeExpr(defaultLiteralForKotlinType(storedType), className);
-                if (isCParticle) this.assertCParticleControllerCompatible(expr, card);
                 if (/^float$/i.test(storedType)) {
                     if (isPlainNumericLiteralText(expr)) expr = normalizeKotlinFloatLiteralText(expr);
                     else if (!/\.toFloat\(\)\s*$/.test(expr)) expr = `(${expr}).toFloat()`;
@@ -1000,9 +929,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             for (const action of actions) {
                 const script = this.rewriteCodeExpr(String(action.script || "").trim(), className);
                 let patched = rewriteStatus(script, className);
-                if (isCParticle) patched = this.rewriteCParticleControllerScript(patched);
                 if (!patched) continue;
-                if (isCParticle) this.assertCParticleControllerCompatible(patched, card);
                 const runtimeRel = this.rewritePreTickRuntimeRel(patched, runtimeRelDepth);
                 lines.push(`${indentBase}    addPreTickAction {`);
                 if (runtimeRel.used) {

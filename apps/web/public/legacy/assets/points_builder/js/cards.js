@@ -20,7 +20,8 @@ function normalizeExpressionSuggestion(item) {
         return {
             value,
             type,
-            label: String(item.label || "").trim()
+            label: String(item.label || "").trim(),
+            numeric: item.numeric === true
         };
     }
     const value = String(item || "").trim();
@@ -36,7 +37,9 @@ export function filterExpressionSuggestionsByType(items, valueType = "Double") {
     for (const item of Array.isArray(items) ? items : []) {
         const normalized = normalizeExpressionSuggestion(item);
         if (!normalized) continue;
-        const compatible = normalized.type === expectedType
+        const compatible = normalized.numeric
+            ? (expectedType !== "Long" || normalized.long === true)
+            : normalized.type === expectedType
             || normalized.type === "Int" && expectedType === "Double";
         if (!compatible || seen.has(normalized.value)) continue;
         seen.add(normalized.value);

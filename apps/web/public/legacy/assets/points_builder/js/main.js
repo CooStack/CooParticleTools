@@ -4,6 +4,7 @@ import { createCardInputs, initCardSystem } from "./cards.js?v=20260820_2";
 import { initFilterSystem } from "./filters.js?v=20260429_7";
 import { initHotkeysSystem } from "./hotkeys.js?v=20260505_1";
 import { createKindDefs } from "./kinds.js?v=20260820_2";
+import { APP_THEME_KEY, watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
 import { createBuilderTools } from "./builder.js?v=20260429_9";
 import { initLayoutSystem } from "./layout.js?v=20260429_1";
 import { createNodeHelpers } from "./nodes.js?v=20260316_1";
@@ -11,11 +12,13 @@ import {
     collectPointsBuilderIds,
     createPointsBuilderNode,
     createPointsBuilderState,
+    buildPointsBuilderVariableCompletions,
     ensureUniquePointsBuilderIds,
     normalizePointsBuilderNodeTree,
     normalizePointsBuilderState,
+    normalizePointsBuilderVariables,
     reassignPointsBuilderIds
-} from "./model.js?v=20260820_2";
+} from "./model.js?v=20260824_2";
 import { toggleFullscreen } from "./viewer.js";
 import { createPickerModule } from "./main-picker.js?v=20260502_4";
 import { initGlobalShortcuts } from "./main-shortcuts.js?v=20260505_1";
@@ -42,7 +45,7 @@ import {
     loadPresetGroups,
     savePresetGroups,
     downloadText
-} from "./io.js?v=20260801_1";
+} from "./io.js?v=20260824_2";
 
 const JSZIP_URL = new URL("../../shader_builder/js/jszip.min.js", import.meta.url).href;
 const NATIVE_SUGGESTION_SKIP_INPUT_TYPES = new Set([
@@ -1081,10 +1084,19 @@ function initPointsBuilderMain() {
         { id: "dark-3", label: "焰砂" },
         { id: "light-1", label: "雾蓝" },
         { id: "light-2", label: "杏露" },
-        { id: "light-3", label: "薄荷" }
+        { id: "light-3", label: "薄荷" },
+        { id: "glass-dark-blue", label: "玻璃·深蓝" },
+        { id: "glass-dark-green", label: "玻璃·深绿" },
+        { id: "glass-dark-violet", label: "玻璃·深紫" },
+        { id: "glass-dark-neutral", label: "玻璃·黑" },
+        { id: "glass-light-blue", label: "玻璃·浅蓝" },
+        { id: "glass-light-green", label: "玻璃·浅绿" },
+        { id: "glass-light-violet", label: "玻璃·浅紫" },
+        { id: "glass-light-neutral", label: "玻璃·白" }
     ];
     const THEME_ORDER = THEMES.map(t => t.id);
-    const THEME_KEY = "pb_theme_v2";
+    // Shared with every other tool so the theme is global, not per-builder.
+    const THEME_KEY = APP_THEME_KEY;
     const GRID_HELPER_SIZE = 256;
     const GRID_HELPER_DIVISIONS = 256;
     const MIRROR_HINT_GRID_DURATION_MS = 800;
@@ -1142,13 +1154,25 @@ function initPointsBuilderMain() {
         updateMirrorPlaneHintTheme();
         refreshPointBaseColors();
     };
+    const broadcastThemeToShell = (theme) => {
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: "coo-legacy-theme", theme: String(theme || "") }, window.location.origin);
+            }
+        } catch {
+            // Cross-origin parents simply do not get the hint.
+        }
+    };
     const applyTheme = (id) => {
         const finalId = normalizeTheme(id);
         document.body.setAttribute("data-theme", finalId);
         if (themeSelect && themeSelect.value !== finalId) themeSelect.value = finalId;
         applySceneTheme();
+        broadcastThemeToShell(finalId);
     };
     const initTheme = () => {
+        // Another tool (or the shell) changing the theme applies here live.
+        watchAppTheme((next) => applyTheme(next));
         const saved = localStorage.getItem(THEME_KEY) || "";
         const initial = normalizeTheme(saved || "dark-1");
         applyTheme(initial);
@@ -1524,23 +1548,7 @@ function initPointsBuilderMain() {
     }
 
     function normalizeVariableState(raw) {
-        const src = raw && typeof raw === "object" ? raw : {};
-        const scalar = {};
-        const vector = {};
-        const scalarSrc = src.scalar && typeof src.scalar === "object" ? src.scalar : {};
-        for (const [key, value] of Object.entries(scalarSrc)) {
-            const name = normalizeContextIdentifier(key);
-            if (!name) continue;
-            const n = Number(value);
-            if (Number.isFinite(n)) scalar[name] = n;
-        }
-        const vectorSrc = src.vector && typeof src.vector === "object" ? src.vector : {};
-        for (const [key, value] of Object.entries(vectorSrc)) {
-            const name = normalizeContextIdentifier(key);
-            if (!name || !value || typeof value !== "object") continue;
-            vector[name] = normalizePointValue(value);
-        }
-        return { scalar, vector };
+        return normalizePointsBuilderVariables(raw);
     }
 
     function getLocalVariableState() {
@@ -1558,30 +1566,11 @@ function initPointsBuilderMain() {
     }
 
     function getLocalNumericSuggestions() {
-        const vars = getLocalVariableState();
-        const out = Object.keys(vars.scalar || {}).map((name) => ({
-            value: name,
-            type: "Double",
-            label: `${name}（本地 Double）`
-        }));
-        for (const name of Object.keys(vars.vector || {})) {
-            out.push(
-                { value: `${name}.x`, type: "Double", label: `${name}.x（本地 Double）` },
-                { value: `${name}.y`, type: "Double", label: `${name}.y（本地 Double）` },
-                { value: `${name}.z`, type: "Double", label: `${name}.z（本地 Double）` }
-            );
-        }
-        return out;
+        return buildPointsBuilderVariableCompletions(getLocalVariableState()).numeric;
     }
 
     function getLocalVec3VariableOptions() {
-        const vars = getLocalVariableState();
-        return Object.keys(vars.vector || {}).map((name) => ({
-            name,
-            ref: name,
-            type: "Vec3",
-            label: `${name}（本地 Vec3）`
-        }));
+        return buildPointsBuilderVariableCompletions(getLocalVariableState()).vectors;
     }
 
     function getLocalVariableCacheKey() {
@@ -2760,6 +2749,7 @@ function initPointsBuilderMain() {
     function persistPresetGroups() {
         presetGroups = dedupePresetGroups(presetGroups);
         savePresetGroups(presetGroups);
+        savePresetList(presetList, presetGroups);
         updatePresetGroupList();
         schedulePresetLibraryRender();
     }
@@ -2768,7 +2758,7 @@ function initPointsBuilderMain() {
         presetList = normalizePresetList(presetList);
         presetGroups = dedupePresetGroups(presetGroups.concat(presetList.map((it) => it.group)));
         savePresetGroups(presetGroups);
-        savePresetList(presetList);
+        savePresetList(presetList, presetGroups);
         schedulePresetLibraryRender();
     }
 
@@ -6321,11 +6311,11 @@ function initPointsBuilderMain() {
     state.variables = normalizeVariableState(state.variables);
     const hasSharedPresetList = hasPresetList();
     presetList = dedupePresetList(hasSharedPresetList ? loadPresetList() : legacyStatePresets);
+    presetGroups = dedupePresetGroups(loadPresetGroups().concat(presetList.map((it) => it.group)));
     let legacyPresetMigrationComplete = hasSharedPresetList || legacyStatePresets.length === 0;
     if (!hasSharedPresetList && presetList.length) {
-        legacyPresetMigrationComplete = savePresetList(presetList);
+        legacyPresetMigrationComplete = savePresetList(presetList, presetGroups);
     }
-    presetGroups = dedupePresetGroups(loadPresetGroups().concat(presetList.map((it) => it.group)));
 
     let autoSaveTimer = 0;
     let lastSavedStateJson = "";

@@ -100,6 +100,14 @@ test('legacy PointsBuilder completion allows Int values in Double fields', () =>
   );
 });
 
+test('legacy PointsBuilder completion accepts local numeric values in every numeric field', () => {
+  const local = { value: 'segments', type: 'Double', numeric: true, label: 'segments（本地数值）' };
+  assert.deepEqual(filterExpressionSuggestionsByType([local], 'Int').map((item) => item.value), ['segments']);
+  assert.deepEqual(filterExpressionSuggestionsByType([local], 'Long').map((item) => item.value), []);
+  assert.deepEqual(filterExpressionSuggestionsByType([local], 'Float').map((item) => item.value), ['segments']);
+  assert.deepEqual(filterExpressionSuggestionsByType([local], 'Double').map((item) => item.value), ['segments']);
+});
+
 test('legacy PointsBuilder fields map to their exact scalar types', () => {
   assert.equal(expressionValueTypeForRow('count'), 'Int');
   assert.equal(expressionValueTypeForRow('countPow'), 'Int');

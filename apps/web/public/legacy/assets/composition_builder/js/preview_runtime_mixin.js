@@ -71,7 +71,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     const PREVIEW_RENDER_CACHE_WORKER_DEFAULT_MAX_WORKERS = 2;
     const PREVIEW_RENDER_CACHE_WORKER_USER_MAX_WORKERS = 16;
     const PREVIEW_RENDER_CACHE_WORKER_MAX_QUEUE = 8;
-    const PREVIEW_RENDER_CACHE_WORKER_URL = "./preview_render_cache_worker.js?v=20260815_2";
+    const PREVIEW_RENDER_CACHE_WORKER_URL = "./preview_render_cache_worker.js?v=20260824_14";
     const hashPreviewUint32 = (value) => {
         let x = Number(value) >>> 0;
         x = Math.imul((x ^ (x >>> 16)) >>> 0, 0x7feb352d) >>> 0;
@@ -88,7 +88,45 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     };
 
     class PreviewRuntimeMixin {
-    rebuildPreview() {
+    rebuildPreview(options = {}) {
+        const immediate = options?.immediate === true || typeof window === "undefined";
+        if (immediate) return this.buildPreviewNow();
+
+        this.previewBuildRequestId = int(this.previewBuildRequestId || 0) + 1;
+        this.previewBuildQueued = true;
+        if (this.previewBuildInProgress) return false;
+
+        this.previewBuildInProgress = true;
+        this.previewBuildQueued = false;
+        this.clearPreviewRenderCache?.("rebuild-queued");
+        this.previewBuildStartedAt = performance.now();
+        if (this.dom?.statusPoints) this.dom.statusPoints.textContent = "构建预览中...";
+        const requestId = this.previewBuildRequestId;
+        const run = () => {
+            if (requestId !== this.previewBuildRequestId) {
+                this.previewBuildInProgress = false;
+                this.rebuildPreview();
+                return;
+            }
+            try {
+                this.buildPreviewNow();
+            } finally {
+                this.previewBuildInProgress = false;
+                this.previewBuildHandle = 0;
+                this.previewAnimStart = performance.now();
+                this.previewPerfLastTs = 0;
+                this.previewRuntimeGlobals = null;
+                this.previewRuntimeAppliedTick = -1;
+                if (this.previewBuildQueued) this.rebuildPreview();
+            }
+        };
+        this.previewBuildHandle = typeof requestIdleCallback === "function"
+            ? requestIdleCallback(run, { timeout: 50 })
+            : setTimeout(run, 0);
+        return false;
+    }
+
+    buildPreviewNow() {
         this.clearPreviewRenderCache("rebuildPreview");
         this.previewCycleCache = null;
         this.previewExprCountCache.clear();
@@ -128,18 +166,10 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             const cfg = this.resolvePreviewCardAngleOffsetConfig(card);
             return cfg ? Math.max(1, int(cfg.count || 1)) : 1;
         };
-        const rootVirtualStarts = new Map();
         let rootVirtualTotal = 0;
-        for (const card of (Array.isArray(this.state.cards) ? this.state.cards : [])) {
-            const repeatCount = getRootRepeatCount(card);
-            rootVirtualStarts.set(card.id, rootVirtualTotal);
-            rootVirtualTotal += repeatCount;
-        }
-        if (rootVirtualTotal <= 0) rootVirtualTotal = Math.max(1, this.state.cards.length || 1);
-        const appendFlatPoints = (card, pointList) => {
+        const appendFlatPoints = (card, pointList, rootStart) => {
             const src = Array.isArray(pointList) ? pointList : [];
             const len = Math.max(1, src.length);
-            const rootStart = int(rootVirtualStarts.get(card?.id) || 0);
             const cardTextureCfg = this.resolvePreviewTextureConfigForCard(card);
             const cardVisualSource = this.resolvePreviewVisualSource(card) || card;
             for (let idx = 0; idx < src.length; idx++) {
@@ -160,18 +190,17 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 levelMetas.push([]);
                 useLocalOpsList.push(false);
                 rootOffsetIndexList.push(0);
-                rootVirtualIndexList.push(rootStart);
+                rootVirtualIndexList.push(rootStart + idx);
                 leafTextureConfigs.push(cardTextureCfg);
                 leafVisualSources.push(cardVisualSource);
             }
         };
-        const appendShapePoints = (card, anchors, locals) => {
+        const appendShapePoints = (card, anchors, locals, rootStart) => {
             const anchorList = Array.isArray(anchors) ? anchors : [];
             const localList = Array.isArray(locals) ? locals : [];
             if (!anchorList.length || !localList.length) return;
             const rootOffsetCfg = this.resolvePreviewCardAngleOffsetConfig(card);
             const repeatCount = rootOffsetCfg ? Math.max(1, int(rootOffsetCfg.count || 1)) : 1;
-            const rootStart = int(rootVirtualStarts.get(card?.id) || 0);
             const clonePointCount = Math.max(1, anchorList.length * localList.length);
             for (let ai = 0; ai < anchorList.length; ai++) {
                 const a = U.v(num(anchorList[ai]?.x), num(anchorList[ai]?.y), num(anchorList[ai]?.z));
@@ -204,7 +233,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                         })));
                         useLocalOpsList.push(true);
                         rootOffsetIndexList.push(repeatIndex);
-                        rootVirtualIndexList.push(rootStart + repeatIndex);
+                        rootVirtualIndexList.push(rootStart + repeatIndex * anchorList.length + ai);
                         leafTextureConfigs.push(tupleTextureCfg);
                         leafVisualSources.push(tupleVisualSource);
                     }
@@ -222,18 +251,24 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 }
             }
 
-            if (!isLeafParticleType(card.dataType) && basePoints.length) {
+            if (!basePoints.length) continue;
+            const rootStart = rootVirtualTotal;
+            const repeatCount = getRootRepeatCount(card);
+            const rootEntryCount = basePoints.length * repeatCount;
+
+            if (!isLeafParticleType(card.dataType)) {
                 const locals = this.buildShapeLocalTuplesForPreview(card);
                 if (locals.length) {
-                    appendShapePoints(card, basePoints, locals);
+                    appendShapePoints(card, basePoints, locals, rootStart);
+                    rootVirtualTotal += rootEntryCount;
                 }
                 continue;
             }
 
-            if (basePoints.length) {
-                appendFlatPoints(card, basePoints);
-            }
+            appendFlatPoints(card, basePoints, rootStart);
+            rootVirtualTotal += rootEntryCount;
         }
+        if (rootVirtualTotal <= 0) rootVirtualTotal = Math.max(1, this.state.cards.length || 1);
         const sourcePointTotal = points.length;
         if (sourcePointTotal > PREVIEW_GEOMETRY_POINT_LIMIT) {
             const sampleIndices = [];
@@ -623,42 +658,135 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         this.previewRuntimeStateBirthOffsets = Array.isArray(this.previewBirthOffsets) ? this.previewBirthOffsets.slice() : [];
     }
 
-    isPreviewGpuStaticActionExpression(sourceRaw) {
+    isPreviewGpuCompositionActionExpression(sourceRaw) {
         const source = String(sourceRaw || "");
-        return !/\b(?:age|currentAge|lifetime|maxAge|tick|tickCount|index|order|rel|shapeRel\d*|shapeOrder\d*|thisAt|particle|status|scaleHelper|alphaHelper)\b/.test(source);
+        // Composition 显示动作按项目执行；只有逐粒子或局部形状状态才需要 CPU。
+        return !/\b(?:currentAge|lifetime|maxAge|particle)\b/.test(source);
     }
 
-    resolvePreviewGpuRootRotation(card, elapsedTick = 0) {
+    getPreviewGpuRootActionDependencies(card) {
+        const source = JSON.stringify(Array.isArray(card?.shapeDisplayActions) ? card.shapeDisplayActions : []);
+        return {
+            rel: /\brel\b/.test(source),
+            order: /\border\b/.test(source),
+            index: /\bindex\b/.test(source),
+            shapeScope: /\b(?:shapeRel\d*|shapeOrder\d*)\b/.test(source),
+            point: /\b(?:point|pos|position)\b/.test(source)
+        };
+    }
+
+    isPreviewGpuRootRotationAnchorDependent(card) {
+        return this.getPreviewGpuRootActionDependencies(card).rel;
+    }
+
+    hasPreviewGpuNestedTransformOps(card) {
+        const visit = (nodes) => {
+            for (const node of (Array.isArray(nodes) ? nodes : [])) {
+                if (!node || isLeafParticleType(String(node.type || "single"))) continue;
+                const scale = normalizeScaleHelperConfig(node.scale, { type: "none" });
+                if (String(scale?.type || "none") !== "none") return true;
+                if (this.resolvePreviewAngleOffsetConfig(node)) return true;
+                if (Array.isArray(node.displayActions) && node.displayActions.length > 0) return true;
+                if (visit(node.children)) return true;
+            }
+            return false;
+        };
+        return visit(card?.shapeChildren);
+    }
+
+    hasPreviewGpuPointDependentGlobalTransform() {
+        for (const rawAction of (Array.isArray(this.state?.displayActions) ? this.state.displayActions : [])) {
+            const action = normalizeDisplayAction(rawAction);
+            if (action.type === "expression" && this.isPreviewExpressionPointDependent(action.expression)) return true;
+            if (action.angleMode === "expr" && this.isPreviewExpressionPointDependent(action.angleExpr)) return true;
+        }
+        return false;
+    }
+
+    requiresPreviewGpuPerPointTransform(card) {
+        const dependencies = this.getPreviewGpuRootActionDependencies(card);
+        return this.hasPreviewGpuPointDependentGlobalTransform()
+            || dependencies.shapeScope
+            || dependencies.point
+            || this.hasPreviewGpuNestedTransformOps(card);
+    }
+
+    buildPreviewGpuTransformGroupKey(pointIndex, card) {
+        const owner = String(this.previewOwners?.[pointIndex] || card?.id || "");
+        const dependencies = this.getPreviewGpuRootActionDependencies(card);
+        const birthTick = num(this.previewGpuTransformStartTicks?.[pointIndex] || 0);
+        const parts = [owner, int(this.previewRootOffsetIndex?.[pointIndex] || 0), `b:${birthTick}`];
+        if (dependencies.rel) parts.push(`a:${int(this.previewAnchorRef?.[pointIndex] || 0)}`);
+        if (dependencies.order) parts.push(`o:${int(this.previewOwnerLocalIndex?.[pointIndex] || 0)}`);
+        if (dependencies.index) parts.push(`i:${int(this.previewLocalRef?.[pointIndex] || 0)}`);
+        return parts.join("|");
+    }
+
+    resolvePreviewGpuPointTransformAge(pointIndex, elapsedTick) {
+        const startTick = Math.max(0, num(this.previewGpuTransformStartTicks?.[pointIndex] || 0));
+        return Math.max(0, num(elapsedTick) - startTick);
+    }
+
+    resolvePreviewGpuRootRotation(card, elapsedTick = 0, compositionRel = null, rootOffsetIndex = 0, pointIndex = 0) {
         if (!card || isLeafParticleType(String(card.dataType || "single"))) return null;
         const rawActions = Array.isArray(card.shapeDisplayActions) ? card.shapeDisplayActions : [];
-        if (!rawActions.length) return null;
+        const angleOffset = this.resolvePreviewCardAngleOffsetConfig(card);
+        if (!rawActions.length && !angleOffset) return null;
         for (const rawAction of rawActions) {
             const action = normalizeDisplayAction(rawAction);
             if (!["rotateToPoint", "rotateAsAxis", "rotateToWithAngle", "expression"].includes(action.type)) return null;
-            if (action.type === "expression" && !this.isPreviewGpuStaticActionExpression(action.expression)) return null;
-            if (action.angleMode === "expr" && !this.isPreviewGpuStaticActionExpression(action.angleExpr)) return null;
         }
-        const actions = this.buildPreviewRuntimeActions(0, rawActions, {
+        const actions = this.buildPreviewRuntimeActions(elapsedTick, rawActions, {
             scope: "shape_display",
             cardId: card.id,
             scopeLevel: 0
         });
-        if (!Array.isArray(actions) || !actions.length) return null;
+        if (!Array.isArray(actions)) return null;
         const axis = this.resolveRelativeDirection(
             card.shapeAxisExpr || card.shapeAxisPreset || "RelativeLocation.yAxis()"
         );
         if (!axis || !Number.isFinite(Number(axis.x)) || !Number.isFinite(Number(axis.y)) || !Number.isFinite(Number(axis.z))) {
             return null;
         }
-        const runtimeVars = {};
-        const apply = (point) => this.applyRuntimeActionsToPoint(
-            point,
-            actions,
+        const runtimeVars = (this.previewRuntimeGlobals && typeof this.previewRuntimeGlobals === "object")
+            ? this.previewRuntimeGlobals
+            : this.buildPreviewRuntimeGlobals(elapsedTick, elapsedTick, 0);
+        const localOrder = int(this.previewOwnerLocalIndex?.[pointIndex] ?? pointIndex);
+        const localRef = int(this.previewLocalRef?.[pointIndex] ?? localOrder);
+        const levelBases = Array.isArray(this.previewLevelBases?.[pointIndex])
+            ? this.previewLevelBases[pointIndex]
+            : [];
+        const levelRefs = Array.isArray(this.previewLevelRefs?.[pointIndex])
+            ? this.previewLevelRefs[pointIndex]
+            : [];
+        const shapeScope = {
+            order: localOrder,
+            shapeRels: levelBases,
+            shapeOrders: levelRefs
+        };
+        if (compositionRel
+            && Number.isFinite(Number(compositionRel.x))
+            && Number.isFinite(Number(compositionRel.y))
+            && Number.isFinite(Number(compositionRel.z))) {
+            shapeScope.rel = compositionRel;
+        }
+        const offsetAngle = this.resolvePreviewAngleOffsetRotation(
+            angleOffset,
+            rootOffsetIndex,
             elapsedTick,
             elapsedTick,
             0,
+            runtimeVars,
+            elapsedTick
+        );
+        const apply = (point) => this.applyRuntimeActionsToPoint(
+            Math.abs(offsetAngle) > 1e-9 ? U.rotateAroundAxis(point, axis, offsetAngle) : point,
+            actions,
+            elapsedTick,
+            elapsedTick,
+            localRef,
             axis,
-            { runtimeVars, persistExpressionVars: false }
+            { runtimeVars, persistExpressionVars: false, shapeScope }
         );
         const origin = apply(U.v(0, 0, 0));
         const x = apply(U.v(1, 0, 0));
@@ -733,6 +861,222 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         return this.resolveScaleFactor(scaleConfig, elapsedTick, cycleCfg, { fadeAgeTick: elapsedTick });
     }
 
+    resolvePreviewGpuAnchorPoint(anchorBase, elapsedTick, cycleCfg, pointIndex = 0) {
+        const projectScale = this.resolveScaleFactor(this.state?.projectScale, elapsedTick, cycleCfg, {
+            scope: "project",
+            fadeAgeTick: elapsedTick
+        });
+        const actions = this.buildPreviewRuntimeActions(elapsedTick, this.state?.displayActions || [], {
+            scope: "display"
+        });
+        const runtimeVars = (this.previewRuntimeGlobals && typeof this.previewRuntimeGlobals === "object")
+            ? this.previewRuntimeGlobals
+            : this.buildPreviewRuntimeGlobals(elapsedTick, elapsedTick, 0);
+        const scaled = this.applyScaleFactorToPoint(anchorBase || U.v(0, 0, 0), projectScale);
+        return this.applyRuntimeActionsToPoint(
+            scaled,
+            actions,
+            elapsedTick,
+            elapsedTick,
+            pointIndex,
+            this.resolveCompositionAxisDirection(),
+            { runtimeVars, persistExpressionVars: false }
+        );
+    }
+
+    resolvePreviewGpuPerPointPosition(pointIndex, elapsedTick, cycleCfg, runtimeCache = new Map()) {
+        const owner = String(this.previewOwners?.[pointIndex] || "");
+        const card = this.previewCardById?.get(owner) || this.getCardById(owner);
+        const base = this.previewBasePoints?.[pointIndex] || U.v(0, 0, 0);
+        const anchorBase = this.previewAnchorBase?.[pointIndex] || base;
+        const anchorRef = int(this.previewAnchorRef?.[pointIndex] || 0);
+        const localBase = this.previewLocalBase?.[pointIndex] || U.v(0, 0, 0);
+        const localRef = int(this.previewLocalRef?.[pointIndex] || 0);
+        const localIndex = int(this.previewOwnerLocalIndex?.[pointIndex] || 0);
+        const rootOffsetIndex = int(this.previewRootOffsetIndex?.[pointIndex] || 0);
+        const anchor = this.resolvePreviewGpuAnchorPoint(anchorBase, elapsedTick, cycleCfg, anchorRef);
+        if (!card || isLeafParticleType(String(card.dataType || "single"))) return anchor;
+
+        const runtimeCacheKey = `${owner}|${int(Math.round(num(elapsedTick) * 1000))}`;
+        let cached = runtimeCache.get(runtimeCacheKey);
+        if (!cached) {
+            const runtimeVars = (this.previewRuntimeGlobals && typeof this.previewRuntimeGlobals === "object")
+                ? this.previewRuntimeGlobals
+                : this.buildPreviewRuntimeGlobals(elapsedTick, elapsedTick, 0);
+            const globalAxis = this.resolveCompositionAxisDirection();
+            const shapeRuntimeLevels = this.getShapeRuntimeLevelsForPreview(card, elapsedTick, false);
+            for (const level of shapeRuntimeLevels) {
+                this.applyExpressionGlobalsOnce(
+                    level.actions,
+                    elapsedTick,
+                    elapsedTick,
+                    runtimeVars,
+                    level.axis || globalAxis
+                );
+            }
+            cached = {
+                elapsedTick,
+                age: elapsedTick,
+                statusAge: elapsedTick,
+                runtimeVars,
+                globalAxis,
+                shapeRuntimeLevels,
+                __tupleLevelRuntimeCache: new Map()
+            };
+            runtimeCache.set(runtimeCacheKey, cached);
+        }
+
+        const levelBaseList = Array.isArray(this.previewLevelBases?.[pointIndex])
+            && this.previewLevelBases[pointIndex].length
+            ? this.previewLevelBases[pointIndex]
+            : [localBase];
+        const levelRefList = Array.isArray(this.previewLevelRefs?.[pointIndex])
+            && this.previewLevelRefs[pointIndex].length
+            ? this.previewLevelRefs[pointIndex]
+            : [localRef];
+        const levelOffsetRefList = Array.isArray(this.previewLevelOffsetRefs?.[pointIndex])
+            && this.previewLevelOffsetRefs[pointIndex].length
+            ? this.previewLevelOffsetRefs[pointIndex]
+            : [];
+        const levelMetaList = Array.isArray(this.previewLevelMetas?.[pointIndex])
+            && this.previewLevelMetas[pointIndex].length
+            ? this.previewLevelMetas[pointIndex]
+            : [];
+        const runtimeLevels = cached.shapeRuntimeLevels;
+        const transformedLevelRels = [];
+        const transformedLevelOrders = [];
+        let cascadeLevelRuntimes = [];
+        const localSum = U.v(0, 0, 0);
+        for (let levelIndex = 0; levelIndex < levelBaseList.length; levelIndex++) {
+            const activeCascadeLevelRuntimes = cascadeLevelRuntimes;
+            cascadeLevelRuntimes = [];
+            const levelBase = levelBaseList[levelIndex] || U.v(0, 0, 0);
+            const levelPointRef = int(levelRefList[levelIndex] ?? localRef);
+            const currentOffsetRef = int(levelOffsetRefList[levelIndex] ?? levelPointRef);
+            const levelMeta = levelMetaList[levelIndex] || null;
+            const sharedNode = levelMeta?.sharedNode || null;
+            const sharedMode = String(levelMeta?.sharedMode || "").trim();
+            const sharedOffsetRef = levelMeta && Number.isFinite(Number(levelMeta.sharedOffsetIndex))
+                ? int(levelMeta.sharedOffsetIndex)
+                : rootOffsetIndex;
+            const cardRootRuntime = levelIndex === 0 ? (runtimeLevels[0] || null) : null;
+            const sharedRuntime = sharedNode
+                ? this.resolvePreviewTupleLevelRuntime(
+                    card,
+                    cached,
+                    { node: sharedNode, depth: int(levelMeta?.depth || 0) },
+                    elapsedTick,
+                    elapsedTick,
+                    false,
+                    cached.runtimeVars,
+                    cached.globalAxis
+                )
+                : null;
+            const currentRuntime = levelMeta?.node
+                ? this.resolvePreviewTupleLevelRuntime(
+                    card,
+                    cached,
+                    levelMeta,
+                    elapsedTick,
+                    elapsedTick,
+                    false,
+                    cached.runtimeVars,
+                    cached.globalAxis
+                )
+                : null;
+            const sharedNodeType = String(sharedNode?.type || "single");
+            const currentNodeType = String(levelMeta?.node?.type || "single");
+            let levelPoint = U.clone(levelBase);
+            const applyLevelRuntime = (runtime, offsetRef, options = {}, actionPointRef = levelPointRef) => {
+                if (!runtime) return;
+                const mode = options.mode === "angleOnly" ? "angleOnly" : "full";
+                const skipAngleOffset = options.skipAngleOffset === true;
+                const runtimePointRef = Number.isFinite(Number(actionPointRef)) ? int(actionPointRef) : levelPointRef;
+                if (mode !== "angleOnly") {
+                    const cardScale = this.resolveScaleFactor(runtime.scale, elapsedTick, cycleCfg, {
+                        fadeAgeTick: elapsedTick
+                    });
+                    levelPoint = this.applyScaleFactorToPoint(levelPoint, cardScale);
+                }
+                if (!skipAngleOffset && runtime.angleOffset) {
+                    const offsetAngle = this.resolvePreviewAngleOffsetRotation(
+                        runtime.angleOffset,
+                        offsetRef,
+                        elapsedTick,
+                        elapsedTick,
+                        runtimePointRef,
+                        cached.runtimeVars,
+                        elapsedTick
+                    );
+                    if (Math.abs(offsetAngle) > 1e-9) {
+                        levelPoint = U.rotateAroundAxis(levelPoint, runtime.axis || cached.globalAxis, offsetAngle);
+                    }
+                }
+                if (mode !== "angleOnly" && runtime.actions && runtime.actions.length) {
+                    levelPoint = this.applyRuntimeActionsToPoint(
+                        levelPoint,
+                        runtime.actions,
+                        elapsedTick,
+                        elapsedTick,
+                        runtimePointRef,
+                        runtime.axis || cached.globalAxis,
+                        {
+                            runtimeVars: cached.runtimeVars,
+                            persistExpressionVars: false,
+                            shapeScope: {
+                                rel: U.v(-num(anchor.x), -num(anchor.y), -num(anchor.z)),
+                                order: localIndex,
+                                shapeRels: transformedLevelRels,
+                                shapeOrders: transformedLevelOrders
+                            }
+                        }
+                    );
+                }
+            };
+            for (const descriptor of activeCascadeLevelRuntimes) {
+                applyLevelRuntime(descriptor.runtime, descriptor.offsetRef, {
+                    mode: descriptor.mode,
+                    skipAngleOffset: descriptor.skipAngleOffset
+                }, descriptor.pointRef);
+            }
+            if (cardRootRuntime) applyLevelRuntime(cardRootRuntime, rootOffsetIndex, { mode: "full" });
+            if (sharedRuntime) applyLevelRuntime(sharedRuntime, sharedOffsetRef, { mode: sharedMode || "full" });
+            const sharedTargetsCurrentNode = !!(sharedNode && levelMeta?.node && sharedNode === levelMeta.node);
+            const needCurrentRuntime = !!currentRuntime
+                && !(sharedTargetsCurrentNode && (sharedMode || "full") === "full");
+            if (needCurrentRuntime) {
+                applyLevelRuntime(currentRuntime, currentOffsetRef, {
+                    mode: "full",
+                    skipAngleOffset: sharedTargetsCurrentNode && sharedMode === "angleOnly"
+                });
+            }
+            if (sharedRuntime && !isLeafParticleType(sharedNodeType)) {
+                cascadeLevelRuntimes.push({
+                    runtime: sharedRuntime,
+                    offsetRef: sharedOffsetRef,
+                    mode: sharedMode || "full",
+                    skipAngleOffset: false,
+                    pointRef: levelPointRef
+                });
+            }
+            if (needCurrentRuntime && !isLeafParticleType(currentNodeType)) {
+                cascadeLevelRuntimes.push({
+                    runtime: currentRuntime,
+                    offsetRef: currentOffsetRef,
+                    mode: "full",
+                    skipAngleOffset: sharedTargetsCurrentNode && sharedMode === "angleOnly",
+                    pointRef: levelPointRef
+                });
+            }
+            transformedLevelRels[levelIndex] = levelPoint;
+            transformedLevelOrders[levelIndex] = levelPointRef;
+            localSum.x += num(levelPoint.x);
+            localSum.y += num(levelPoint.y);
+            localSum.z += num(levelPoint.z);
+        }
+        return U.v(anchor.x + localSum.x, anchor.y + localSum.y, anchor.z + localSum.z);
+    }
+
     createPreviewGpuMatrix4() {
         if (typeof THREE?.Matrix4 === "function") return new THREE.Matrix4();
         const matrix = {
@@ -750,26 +1094,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     }
 
     resolvePreviewGpuGlobalTransform(elapsedTick, cycleCfg) {
-        const projectScale = this.resolveScaleFactor(this.state?.projectScale, elapsedTick, cycleCfg, {
-            scope: "project",
-            fadeAgeTick: elapsedTick
-        });
-        const rawActions = Array.isArray(this.state?.displayActions) ? this.state.displayActions : [];
-        const actions = this.buildPreviewRuntimeActions(elapsedTick, rawActions, { scope: "display" });
-        const axis = this.resolveCompositionAxisDirection();
-        const runtimeVars = {};
-        const apply = (point) => {
-            const scaled = this.applyScaleFactorToPoint(point, projectScale);
-            return this.applyRuntimeActionsToPoint(
-                scaled,
-                actions,
-                elapsedTick,
-                elapsedTick,
-                0,
-                axis,
-                { runtimeVars, persistExpressionVars: false }
-            );
-        };
+        const apply = (point) => this.resolvePreviewGpuAnchorPoint(point, elapsedTick, cycleCfg);
         const origin = apply(U.v(0, 0, 0));
         const x = apply(U.v(1, 0, 0));
         const y = apply(U.v(0, 1, 0));
@@ -784,27 +1109,160 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         return matrix;
     }
 
-    updatePreviewGpuParticleTransforms(elapsedTick, cycleCfg) {
+    hasPreviewGpuDynamicTransforms() {
+        const projectScale = normalizeScaleHelperConfig(this.state?.projectScale, { type: "none" });
+        if (String(projectScale?.type || "none") !== "none") return true;
+        if (Array.isArray(this.state?.displayActions) && this.state.displayActions.length > 0) return true;
+        const visibleCardIds = this.getPreviewVisibleCardIdSet();
+        for (const card of (Array.isArray(this.state?.cards) ? this.state.cards : [])) {
+            if (!card || (visibleCardIds && !visibleCardIds.has(String(card.id || "")))) continue;
+            const scaleConfig = isLeafParticleType(String(card.dataType || "single"))
+                ? card.scale
+                : card.shapeScale;
+            if (String(normalizeScaleHelperConfig(scaleConfig, { type: "none" })?.type || "none") !== "none") {
+                return true;
+            }
+            if (this.resolvePreviewCardAngleOffsetConfig(card)) return true;
+            if (Array.isArray(card.shapeDisplayActions) && card.shapeDisplayActions.length > 0) return true;
+            if (this.hasPreviewGpuNestedTransformOps(card)) return true;
+        }
+        return false;
+    }
+
+    updatePreviewGpuParticleTransforms(elapsedTick, cycleCfg, options = {}) {
         if (this.previewGpuParticlePathEnabled !== true || !this.pointsGeom) return;
+        const force = options?.force === true;
+        const tickValue = Math.max(0, num(elapsedTick));
+        if (!force && this.previewGpuTransformsDynamic !== true) return false;
+        if (!force && Math.abs(num(this.previewGpuTransformAppliedTick) - tickValue) < 0.0001) return false;
+        if (Math.max(0, int(this.previewGpuConfiguredPointCount || 0)) === 0) {
+            this.previewGpuTransformAppliedTick = tickValue;
+            return false;
+        }
         const transformAttr = this.pointsGeom.getAttribute("aGpuTransform");
         const transformVectorAttr = this.pointsGeom.getAttribute("aGpuTransformVector");
         const scaleAttr = this.pointsGeom.getAttribute("aGpuScale");
-        if (!transformAttr || !transformVectorAttr || !scaleAttr) return;
+        if (!transformVectorAttr) return false;
+        const owners = Array.isArray(this.previewOwners) ? this.previewOwners : [];
+        const anchorBases = Array.isArray(this.previewAnchorBase) ? this.previewAnchorBase : [];
+        const anchorRefs = Array.isArray(this.previewAnchorRef) ? this.previewAnchorRef : [];
+        const rootOffsetIndices = Array.isArray(this.previewRootOffsetIndex) ? this.previewRootOffsetIndex : [];
+        if (this.previewGpuSharedTransformEnabled === true
+            && int(this.previewGpuSharedTransformPointIndex) >= 0) {
+            const pointIndex = int(this.previewGpuSharedTransformPointIndex);
+            const owner = String(owners[pointIndex] || "");
+            const card = this.previewCardById?.get(owner) || this.getCardById(owner);
+            const rootOffsetIndex = int(rootOffsetIndices[pointIndex] || 0);
+            const pointElapsedTick = this.resolvePreviewGpuPointTransformAge(pointIndex, tickValue);
+            const transformedAnchor = this.resolvePreviewGpuAnchorPoint(
+                anchorBases[pointIndex] || U.v(0, 0, 0),
+                tickValue,
+                cycleCfg,
+                int(anchorRefs[pointIndex] || 0)
+            );
+            const rotation = this.resolvePreviewGpuRootRotation(card, pointElapsedTick, U.v(
+                -num(transformedAnchor.x),
+                -num(transformedAnchor.y),
+                -num(transformedAnchor.z)
+            ), rootOffsetIndex, pointIndex);
+            const sharedTransform = this.previewGpuSharedTransform || (this.previewGpuSharedTransform = {});
+            sharedTransform.x = num(rotation?.axis?.x || 0);
+            sharedTransform.y = num(rotation?.axis?.y || 0);
+            sharedTransform.z = num(rotation?.axis?.z || 0);
+            sharedTransform.w = num(rotation?.angle || 0);
+            this.previewGpuSharedScale = Math.max(0.0001, num(
+                this.resolvePreviewGpuCardScale(card, pointElapsedTick, cycleCfg) || 1
+            ));
+            this.previewGpuGlobalTransform = this.resolvePreviewGpuGlobalTransform(tickValue, cycleCfg);
+            this.previewGpuTransformAppliedTick = tickValue;
+            return true;
+        }
+        const transformGroups = Array.isArray(this.previewGpuTransformGroups)
+            ? this.previewGpuTransformGroups
+            : [];
+        const groupIndices = this.previewGpuTransformGroupIndex;
+        if (transformGroups.length || this.previewGpuPerPointTransformEnabled === true) {
+            for (const group of transformGroups) {
+                const pointIndex = Math.max(0, int(group?.pointIndex || 0));
+                const owner = String(owners[pointIndex] || "");
+                const card = this.previewCardById?.get(owner) || this.getCardById(owner);
+                const rootOffsetIndex = int(rootOffsetIndices[pointIndex] || 0);
+                const pointElapsedTick = this.resolvePreviewGpuPointTransformAge(pointIndex, tickValue);
+                const transformedAnchor = this.resolvePreviewGpuAnchorPoint(
+                    anchorBases[pointIndex] || U.v(0, 0, 0),
+                    tickValue,
+                    cycleCfg,
+                    int(anchorRefs[pointIndex] || 0)
+                );
+                const rotation = this.resolvePreviewGpuRootRotation(card, pointElapsedTick, U.v(
+                    -num(transformedAnchor.x),
+                    -num(transformedAnchor.y),
+                    -num(transformedAnchor.z)
+                ), rootOffsetIndex, pointIndex);
+                const target = group.transform || (group.transform = { x: 0, y: 0, z: 0, w: 0 });
+                target.x = num(rotation?.axis?.x || 0);
+                target.y = num(rotation?.axis?.y || 0);
+                target.z = num(rotation?.axis?.z || 0);
+                target.w = num(rotation?.angle || 0);
+                group.scale = Math.max(0.0001, num(this.resolvePreviewGpuCardScale(card, pointElapsedTick, cycleCfg) || 1));
+            }
+            if (this.previewGpuPerPointTransformEnabled === true) {
+                const runtimeCache = new Map();
+                const transformVectors = transformVectorAttr.array;
+                let updated = false;
+                for (let i = 0; i < this.previewBasePoints.length; i++) {
+                    if (groupIndices && int(groupIndices[i]) !== -1) continue;
+                    const resolved = this.resolvePreviewGpuPerPointPosition(
+                        i,
+                        this.resolvePreviewGpuPointTransformAge(i, tickValue),
+                        cycleCfg,
+                        runtimeCache
+                    );
+                    const offset = i * 3;
+                    transformVectors[offset] = num(resolved.x);
+                    transformVectors[offset + 1] = num(resolved.y);
+                    transformVectors[offset + 2] = num(resolved.z);
+                    updated = true;
+                }
+                if (updated) transformVectorAttr.needsUpdate = true;
+            }
+            this.previewGpuGlobalTransform = this.resolvePreviewGpuGlobalTransform(tickValue, cycleCfg);
+            this.previewGpuTransformAppliedTick = tickValue;
+            return true;
+        }
         const transforms = transformAttr.array;
         const scales = scaleAttr.array;
-        const owners = Array.isArray(this.previewOwners) ? this.previewOwners : [];
         const rotationCache = new Map();
+        const anchorCache = new Map();
         const scaleCache = new Map();
         for (let i = 0; i < this.previewBasePoints.length; i += 1) {
             const owner = String(owners[i] || "");
             const card = this.previewCardById?.get(owner) || this.getCardById(owner);
-            if (!rotationCache.has(owner)) {
-                rotationCache.set(owner, this.resolvePreviewGpuRootRotation(card, elapsedTick));
+            const pointElapsedTick = this.resolvePreviewGpuPointTransformAge(i, tickValue);
+            const anchorRef = int(anchorRefs[i] || 0);
+            const rootOffsetIndex = int(rootOffsetIndices[i] || 0);
+            const anchorKey = this.buildPreviewGpuTransformGroupKey(i, card);
+            let transformedAnchor = anchorCache.get(anchorKey);
+            if (!transformedAnchor) {
+                transformedAnchor = this.resolvePreviewGpuAnchorPoint(
+                    anchorBases[i] || U.v(0, 0, 0),
+                    tickValue,
+                    cycleCfg,
+                    anchorRef
+                );
+                anchorCache.set(anchorKey, transformedAnchor);
+            }
+            if (!rotationCache.has(anchorKey)) {
+                rotationCache.set(anchorKey, this.resolvePreviewGpuRootRotation(card, pointElapsedTick, U.v(
+                    -num(transformedAnchor.x),
+                    -num(transformedAnchor.y),
+                    -num(transformedAnchor.z)
+                ), rootOffsetIndex, i));
             }
             if (!scaleCache.has(owner)) {
-                scaleCache.set(owner, this.resolvePreviewGpuCardScale(card, elapsedTick, cycleCfg));
+                scaleCache.set(owner, this.resolvePreviewGpuCardScale(card, pointElapsedTick, cycleCfg));
             }
-            const rotation = rotationCache.get(owner);
+            const rotation = rotationCache.get(anchorKey);
             const offset = i * 4;
             transforms[offset] = num(rotation?.axis?.x || 0);
             transforms[offset + 1] = num(rotation?.axis?.y || 0);
@@ -814,7 +1272,62 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         }
         transformAttr.needsUpdate = true;
         scaleAttr.needsUpdate = true;
-        this.previewGpuGlobalTransform = this.resolvePreviewGpuGlobalTransform(elapsedTick, cycleCfg);
+        this.previewGpuGlobalTransform = this.resolvePreviewGpuGlobalTransform(tickValue, cycleCfg);
+        this.previewGpuTransformAppliedTick = tickValue;
+        return true;
+    }
+
+    updatePreviewGpuParticleVisibility(cycleAge, options = {}) {
+        if (this.previewGpuParticlePathEnabled !== true || !this.pointsGeom) return false;
+        const force = options?.force === true;
+        const tickStep = Math.max(0, Math.floor(num(cycleAge)));
+        if (!force && this.previewGpuVisibilityDynamic !== true) return false;
+        if (!force && this.previewGpuVisibilityAppliedTick === tickStep) return false;
+        const count = Math.max(0, int(this.previewBasePoints?.length || 0));
+        const unlockTicks = Array.isArray(this.previewGpuUnlockTicks)
+            ? this.previewGpuUnlockTicks
+            : [];
+        let low = 0;
+        let high = unlockTicks.length;
+        const age = num(cycleAge);
+        while (low < high) {
+            const middle = (low + high) >> 1;
+            if (unlockTicks[middle] <= age) low = middle + 1;
+            else high = middle;
+        }
+        const activePointCount = low;
+        this.previewGpuVisibilityTick = age;
+        let visibleMask = this.previewGpuVisibilityMaskProxy;
+        if (!visibleMask || visibleMask.length !== count) {
+            visibleMask = this.createPreviewGpuVisibilityMask(count);
+            this.previewGpuVisibilityMaskProxy = visibleMask;
+        }
+        const interactionMask = visibleMask;
+        const visibilityChanged = activePointCount !== this.previewGpuActivePointCount;
+        this.previewVisibleMask = visibleMask;
+        this.previewInteractionVisibleMask = interactionMask;
+        this.previewGpuActivePointCount = activePointCount;
+        this.previewGpuVisibilityAppliedTick = tickStep;
+        if (this.pointsMesh) this.pointsMesh.visible = activePointCount > 0;
+        if (visibilityChanged) this.previewSceneDirty = true;
+        return true;
+    }
+
+    createPreviewGpuVisibilityMask(count) {
+        const target = new Array(Math.max(0, int(count))).fill(false);
+        return new Proxy(target, {
+            get: (source, property, receiver) => {
+                if (typeof property === "string" && /^\d+$/.test(property)) {
+                    const index = int(property);
+                    const meta = this.pointsGeom?.getAttribute("aGpuMeta")?.array;
+                    if (!meta || index < 0 || index * 4 + 1 >= meta.length) return false;
+                    return num(meta[index * 4]) > 0.5
+                        && this.previewGpuVisibilityTick >= num(meta[index * 4 + 1]);
+                }
+                return Reflect.get(source, property, receiver);
+            },
+            set: (source, property, value, receiver) => Reflect.set(source, property, !!value, receiver)
+        });
     }
 
     isPreviewGpuParticleCardCompatible(card) {
@@ -825,10 +1338,9 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         this.previewGpuParticleCardFallbackReason = "";
         if (!card || !isCParticleCard(card)) return reject("不是 GPU 粒子卡片");
         const hasEntries = (value) => Array.isArray(value) && value.length > 0;
-        const hasAnimatedScale = (value) => normalizeScaleHelperConfig(value, { type: "none" }).type !== "none";
         const sourceCompatible = (source) => {
             if (!source || typeof source !== "object") return reject("粒子节点无效");
-            if (hasEntries(source.controllerVars) || hasEntries(source.controllerActions)) {
+            if (hasEntries(source.controllerActions)) {
                 return reject("存在每帧控制器");
             }
             return true;
@@ -840,18 +1352,20 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             }
             return sourceCompatible(card);
         }
-        if (String(card.dataType || "") !== "particle_shape") return reject("序列形状暂不支持 GPU 快路径");
-        const gpuRootRotation = this.resolvePreviewGpuRootRotation(card);
-        if (hasEntries(card.shapeDisplayActions) && !gpuRootRotation) return reject("根显示动作不支持 GPU 快路径");
-        if (hasEntries(card.growthAnimates)) return reject("存在形状生成动画");
-        if (this.resolvePreviewCardAngleOffsetConfig(card)) return reject("存在相对角度偏移");
+        const compositionType = String(card.dataType || "");
+        if (compositionType !== "particle_shape" && compositionType !== "sequenced_shape") {
+            return reject("形状类型不支持 GPU 快路径");
+        }
         const children = Array.isArray(card.shapeChildren) ? card.shapeChildren : [];
         if (!children.length) return reject("没有粒子子节点");
         const validateNode = (node) => {
             if (!sourceCompatible(node)) return false;
-            if (isLeafParticleType(String(node?.type || "single"))) return true;
-            if (hasEntries(node?.displayActions) || hasEntries(node?.growthAnimates) || hasAnimatedScale(node?.scale)) {
-                return reject("嵌套 Composition 存在动态变换");
+            if (isLeafParticleType(String(node?.type || "single"))) {
+                if (hasEntries(node?.displayActions) || hasEntries(node?.growthAnimates)
+                    || this.resolvePreviewAngleOffsetConfig(node)) {
+                    return reject("存在直接改单粒子变换");
+                }
+                return true;
             }
             const nested = Array.isArray(node?.children) ? node.children : [];
             if (!nested.length) return reject("嵌套 Composition 没有粒子子节点");
@@ -869,27 +1383,19 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         this.previewGpuParticleFallbackReason = "";
         const count = Math.max(0, int(this.previewBasePoints?.length || 0));
         if (!count || !this.pointsGeom) return reject("没有可渲染点");
-        if (String(this.state?.compositionType || "normal") === "sequenced") return reject("项目使用序列模式");
         const globalActions = Array.isArray(this.state?.displayActions) ? this.state.displayActions : [];
         for (const rawAction of globalActions) {
             const action = normalizeDisplayAction(rawAction);
-            if (action.type === "expression" && !this.isPreviewGpuStaticActionExpression(action.expression)) {
+            if (action.type === "expression" && !this.isPreviewGpuCompositionActionExpression(action.expression)) {
                 return reject("全局显示表达式依赖逐粒子运行时");
             }
-            if (action.angleMode === "expr" && !this.isPreviewGpuStaticActionExpression(action.angleExpr)) {
+            if (action.angleMode === "expr" && !this.isPreviewGpuCompositionActionExpression(action.angleExpr)) {
                 return reject("全局旋转表达式依赖逐粒子运行时");
             }
         }
-        const projectScale = normalizeScaleHelperConfig(this.state?.projectScale, { type: "none" });
-        if (projectScale.type !== "none" && String(projectScale.runMode || "auto") === "manual") {
-            return reject("全局缩放助手依赖手动控制器");
-        }
-        if (Array.isArray(this.state?.compositionAnimates) && this.state.compositionAnimates.length) return reject("存在全局生成动画");
-
         const visibleCardIds = this.getPreviewVisibleCardIdSet();
         const owners = Array.isArray(this.previewOwners) ? this.previewOwners : [];
         const textureConfigs = Array.isArray(this.previewLeafTextureConfigs) ? this.previewLeafTextureConfigs : [];
-        const birthOffsets = Array.isArray(this.previewBirthOffsets) ? this.previewBirthOffsets : [];
         const compatibleOwners = new Set();
         let visibleCount = 0;
         for (let i = 0; i < count; i++) {
@@ -900,7 +1406,6 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             const textureConfig = textureConfigs[i] || this.resolvePreviewLeafTextureConfig(card);
             const cardLabel = String(card?.name || owner || "未命名卡片");
             if (textureConfig?.useCParticle !== true) return reject(`${cardLabel}: 不是 GPU 粒子`);
-            if (Math.abs(num(birthOffsets[i] || 0)) > 1e-9) return reject(`${cardLabel}: 存在延迟生成`);
             if (!compatibleOwners.has(owner)) {
                 if (!this.isPreviewGpuParticleCardCompatible(card)) {
                     return reject(`${cardLabel}: ${this.previewGpuParticleCardFallbackReason || "行为不兼容"}`);
@@ -939,6 +1444,20 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             this.disposePreviewRenderCacheWorkerPool?.("gpu-preview", { disable: false });
         }
         this.previewGpuActivePointCount = 0;
+        this.previewGpuConfiguredPointCount = 0;
+        this.previewGpuTransformsDynamic = false;
+        this.previewGpuTransformAppliedTick = -1;
+        this.previewGpuSharedTransformEnabled = false;
+        this.previewGpuSharedTransformPointIndex = -1;
+        this.previewGpuSharedTransform = { x: 0, y: 0, z: 0, w: 0 };
+        this.previewGpuSharedScale = 1;
+        this.previewGpuTransformGroups = [];
+        this.previewGpuTransformGroupIndex = null;
+        this.previewGpuPerPointTransformEnabled = false;
+        this.previewGpuVisibilityDynamic = false;
+        this.previewGpuVisibilityAppliedTick = -1;
+        this.previewGpuVisibilityTick = 0;
+        this.previewGpuVisibilityMaskProxy = null;
         const count = Math.max(0, int(this.previewBasePoints?.length || 0));
         const ensureVec4 = (name) => {
             const current = this.pointsGeom.getAttribute(name);
@@ -973,13 +1492,26 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             return false;
         }
         if (!enabled) {
-            this.pointsGeom.deleteAttribute?.("aGpuMeta");
+            if (this.pointsMesh) this.pointsMesh.visible = true;
             this.pointsGeom.deleteAttribute?.("aGpuFadeIn");
             this.pointsGeom.deleteAttribute?.("aGpuFadeOut");
             this.pointsGeom.deleteAttribute?.("aGpuTransform");
             this.pointsGeom.deleteAttribute?.("aGpuTransformVector");
             this.pointsGeom.deleteAttribute?.("aGpuScale");
             this.pointsGeom.deleteAttribute?.("aGpuLifecycle");
+            this.pointsGeom.deleteAttribute?.("aGpuAlphaCurve");
+            this.pointsGeom.deleteAttribute?.("aGpuScaleCurve");
+            this.pointsGeom.deleteAttribute?.("aGpuColorCurve");
+            const metaAttr = this.pointsGeom.getAttribute("aGpuMeta");
+            if (metaAttr?.array) {
+                for (let i = 0; i < count; i++) {
+                    const offset = i * 4;
+                    metaAttr.array[offset] = 0;
+                    metaAttr.array[offset + 1] = 0;
+                    metaAttr.array[offset + 3] = 0;
+                }
+                metaAttr.needsUpdate = true;
+            }
             this.previewGpuGlobalTransform = this.createPreviewGpuMatrix4();
             this.syncPreviewGpuParticleUniforms();
             return false;
@@ -991,6 +1523,9 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const transformVectorAttr = ensureVec3("aGpuTransformVector");
         const scaleAttr = ensureFloat("aGpuScale");
         const lifecycleAttr = ensureVec2("aGpuLifecycle");
+        const alphaCurveAttr = ensureVec4("aGpuAlphaCurve");
+        const scaleCurveAttr = ensureVec4("aGpuScaleCurve");
+        const colorCurveAttr = ensureVec2("aGpuColorCurve");
         const meta = metaAttr.array;
         const fadeInValues = fadeInAttr.array;
         const fadeOutValues = fadeOutAttr.array;
@@ -998,6 +1533,13 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const transformVectors = transformVectorAttr.array;
         const scales = scaleAttr.array;
         const lifecycleValues = lifecycleAttr.array;
+        const alphaCurveValues = alphaCurveAttr.array;
+        const scaleCurveValues = scaleCurveAttr.array;
+        const colorCurveValues = colorCurveAttr.array;
+        const lifecycleFlags = this.previewGpuLifecycleFlags instanceof Float32Array
+            && this.previewGpuLifecycleFlags.length === count
+            ? this.previewGpuLifecycleFlags
+            : null;
         const initialLifecycle = this.previewGpuInitialLifecycle instanceof Float32Array
             && this.previewGpuInitialLifecycle.length === count * 2
             ? this.previewGpuInitialLifecycle
@@ -1006,14 +1548,70 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const frameIndices = frameAttr?.array;
         const visibleCardIds = this.getPreviewVisibleCardIdSet();
         const owners = Array.isArray(this.previewOwners) ? this.previewOwners : [];
+        const ownerLocalIndices = Array.isArray(this.previewOwnerLocalIndex) ? this.previewOwnerLocalIndex : [];
+        const ownerPointCounts = Array.isArray(this.previewOwnerPointCount) ? this.previewOwnerPointCount : [];
+        const rootOffsetIndices = Array.isArray(this.previewRootOffsetIndex) ? this.previewRootOffsetIndex : [];
         const textureConfigs = Array.isArray(this.previewLeafTextureConfigs) ? this.previewLeafTextureConfigs : [];
         const birthOffsets = Array.isArray(this.previewBirthOffsets) ? this.previewBirthOffsets : [];
+        const rootVirtualIndices = Array.isArray(this.previewRootVirtualIndex) ? this.previewRootVirtualIndex : [];
+        this.previewGpuTransformStartTicks = new Float32Array(count);
+        const sequencedRoot = String(this.state?.compositionType || "normal") === "sequenced";
+        const cycleCfg = this.previewCycleCache
+            || (this.previewCycleCache = this.getPreviewCycleConfig());
+        const rootVirtualTotal = Math.max(1, int(this.previewRootVirtualTotal || this.state?.cards?.length || 1));
+        const rootGrowthPlan = sequencedRoot && typeof this.buildSequencedRootGrowthPlan === "function"
+            ? this.buildSequencedRootGrowthPlan(
+                this.buildPreviewRuntimeActions(0, this.state?.displayActions || [], { scope: "display" }),
+                rootVirtualTotal,
+                Math.max(0, int(cycleCfg.total || 1) - 1),
+                0,
+                {
+                    runtimeVars: this.previewRuntimeGlobals || this.buildPreviewRuntimeGlobals(0, 0, 0),
+                    axis: this.resolveCompositionAxisDirection()
+                }
+            )
+            : null;
+        const sequencedGrowthEnabled = !sequencedRoot || rootGrowthPlan?.hasSource === true;
+        const alphaCurves = Array.isArray(this.previewGpuAlphaCurves) ? this.previewGpuAlphaCurves : [];
+        const scaleCurves = Array.isArray(this.previewGpuScaleCurves) ? this.previewGpuScaleCurves : [];
+        const colorCurves = Array.isArray(this.previewGpuColorCurves) ? this.previewGpuColorCurves : [];
+        let hasTextureFrames = false;
         const cardAlphaCache = new Map();
+        const localGrowthPlanCache = new Map();
         const textureDataCache = new Map();
-        const cardRotationCache = new Map();
         const { getParticleDataByName } = this._particleDataFns || {};
         const mergedOffsets = this._mergedAtlasOffsets;
         const visibleMask = new Array(count).fill(false);
+        let hasInitialLifecycleData = false;
+        const transformGroupLimit = 24;
+        const transformGroupByKey = new Map();
+        const transformGroupIndex = new Int32Array(count);
+        transformGroupIndex.fill(-2);
+        const perPointTransformOwnerCache = new Map();
+        const writeScalarCurve = (target, targetOffset, curve) => {
+            target[targetOffset] = 1;
+            target[targetOffset + 1] = 1;
+            target[targetOffset + 2] = -2;
+            target[targetOffset + 3] = -2;
+            if (curve?.type === "linear") {
+                target[targetOffset] = num(curve.from);
+                target[targetOffset + 1] = num(curve.to);
+                target[targetOffset + 2] = -1;
+                return;
+            }
+            if (curve?.type === "fade_in_out") {
+                target[targetOffset] = num(curve.peak);
+                target[targetOffset + 1] = 0;
+                target[targetOffset + 2] = clamp(num(curve.fadeIn), 0, 1);
+                target[targetOffset + 3] = clamp(num(curve.fadeOut), target[targetOffset + 2], 1);
+            }
+        };
+        const encodeColor = (value) => {
+            const red = Math.round(clamp(num(value?.x), 0, 1) * 255);
+            const green = Math.round(clamp(num(value?.y), 0, 1) * 255);
+            const blue = Math.round(clamp(num(value?.z), 0, 1) * 255);
+            return (red * 65536 + green * 256 + blue) / 16777215;
+        };
 
         for (let i = 0; i < count; i++) {
             const offset = i * 4;
@@ -1041,40 +1639,113 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 ? Math.max(0, int(mergedOffsets.get(textureConfig.effectClass) || 0))
                 : 0;
             const textureFrameCount = textureData ? Math.max(1, int(textureData.frames || 1)) : 0;
+            if (textureFrameCount > 0) hasTextureFrames = true;
             const randomFrameSeed = textureData && textureConfig?.randomAgePreTick === true
                 ? 1 + (hashPreviewUint32(hashPreviewString(owner) ^ Math.imul(i + 1, 0x9e3779b9)) % 65534)
                 : 0;
-            let rotation = cardRotationCache.get(owner);
-            if (rotation === undefined) {
-                rotation = this.resolvePreviewGpuRootRotation(card);
-                cardRotationCache.set(owner, rotation || null);
-            }
-            const rotationAxis = rotation?.axis || U.v(0, 0, 0);
-            const rotationVector = rotation
-                ? (Array.isArray(this.previewLevelBases?.[i]) && this.previewLevelBases[i].length
-                    ? this.previewLevelBases[i][0]
-                    : U.v(0, 0, 0))
-                : U.v(0, 0, 0);
+            const rotationVector = this.previewLocalBase?.[i] || U.v(0, 0, 0);
             const transformOffset = i * 4;
             const transformVectorOffset = i * 3;
-            transforms[transformOffset] = num(rotationAxis.x);
-            transforms[transformOffset + 1] = num(rotationAxis.y);
-            transforms[transformOffset + 2] = num(rotationAxis.z);
-            transforms[transformOffset + 3] = num(rotation?.angle || 0);
+            transforms[transformOffset] = 0;
+            transforms[transformOffset + 1] = 0;
+            transforms[transformOffset + 2] = 0;
+            transforms[transformOffset + 3] = 0;
             transformVectors[transformVectorOffset] = num(rotationVector.x);
             transformVectors[transformVectorOffset + 1] = num(rotationVector.y);
             transformVectors[transformVectorOffset + 2] = num(rotationVector.z);
             scales[i] = 1;
             const lifecycleOffset = i * 2;
+            const hasPointLifecycle = lifecycleFlags ? lifecycleFlags[i] > 0.5 : false;
             lifecycleValues[lifecycleOffset] = initialLifecycle
                 ? Math.max(0, num(initialLifecycle[lifecycleOffset]))
                 : 0;
-            lifecycleValues[lifecycleOffset + 1] = initialLifecycle
+            const lifecycleLifetime = initialLifecycle
                 ? Math.max(1, num(initialLifecycle[lifecycleOffset + 1]))
                 : 100;
+            lifecycleValues[lifecycleOffset + 1] = hasPointLifecycle ? lifecycleLifetime : -lifecycleLifetime;
+            if (hasPointLifecycle && (lifecycleValues[lifecycleOffset] > 0.000001
+                || Math.abs(lifecycleValues[lifecycleOffset + 1] - 100) > 0.000001)) {
+                hasInitialLifecycleData = true;
+            }
+            writeScalarCurve(alphaCurveValues, offset, alphaCurves[i]);
+            writeScalarCurve(scaleCurveValues, offset, scaleCurves[i]);
+            const colorCurve = colorCurves[i];
+            const colorFrom = colorCurve?.type === "linear" ? this.parseColorVec(colorCurve.from) : U.v(1, 1, 1);
+            const colorTo = colorCurve?.type === "linear" ? this.parseColorVec(colorCurve.to) : U.v(1, 1, 1);
+            const colorOffset = i * 2;
+            colorCurveValues[colorOffset] = encodeColor(colorFrom);
+            colorCurveValues[colorOffset + 1] = encodeColor(colorTo);
 
-            meta[offset] = active ? 1 : -1;
-            meta[offset + 1] = num(birthOffsets[i] || 0);
+            let localDelayTick = 0;
+            let localGrowthEnabled = true;
+            if (active && sequencedGrowthEnabled && card && !isLeafParticleType(String(card.dataType || "single"))) {
+                const ownerCount = Math.max(1, int(ownerPointCounts[i] || 1));
+                const localGrowthKey = `${owner}|${ownerCount}`;
+                let localGrowthPlan = localGrowthPlanCache.get(localGrowthKey);
+                if (!localGrowthPlan) {
+                    const shapeRuntimeLevels = this.getShapeRuntimeLevelsForPreview(card, 0, false);
+                    const maxLocalGrowthTick = Math.max(0, int(cycleCfg.total || 1) - 1);
+                    localGrowthPlan = this.buildLocalGrowthPlan(
+                        card,
+                        ownerCount,
+                        shapeRuntimeLevels,
+                        maxLocalGrowthTick,
+                        maxLocalGrowthTick,
+                        this.previewRuntimeGlobals || this.buildPreviewRuntimeGlobals(0, 0, 0),
+                        {
+                            allowImplicitRootSequencedGrowth: rootGrowthPlan?.hasSource === true
+                                && String(card.dataType || "") === "sequenced_shape"
+                        }
+                    );
+                    localGrowthPlanCache.set(localGrowthKey, localGrowthPlan);
+                }
+                const localIndex = Math.max(0, int(ownerLocalIndices[i] || 0));
+                const localUnlockTick = Number(localGrowthPlan.unlockTickByIndex?.[localIndex]);
+                localGrowthEnabled = Number.isFinite(localUnlockTick);
+                if (localGrowthEnabled) localDelayTick = Math.max(0, num(localUnlockTick));
+            }
+            const rootVirtualIndex = Math.max(0, int(rootVirtualIndices[i] || 0));
+            let rootDelayTick = 0;
+            if (rootGrowthPlan?.hasSource) {
+                const unlockTick = Number(rootGrowthPlan.unlockTickByIndex?.[rootVirtualIndex]);
+                rootDelayTick = Number.isFinite(unlockTick)
+                    ? Math.max(0, num(unlockTick))
+                    : Math.max(0, num(cycleCfg.total || 1) + 1);
+            }
+            const unlockTick = num(birthOffsets[i] || 0) + rootDelayTick + localDelayTick;
+            this.previewGpuTransformStartTicks[i] = Math.max(0, unlockTick);
+            const configured = active && sequencedGrowthEnabled && localGrowthEnabled;
+            if (configured) this.previewGpuConfiguredPointCount++;
+            if (configured) {
+                if (!perPointTransformOwnerCache.has(owner)) {
+                    perPointTransformOwnerCache.set(owner, this.requiresPreviewGpuPerPointTransform(card));
+                }
+                if (perPointTransformOwnerCache.get(owner) === true) {
+                    transformGroupIndex[i] = -1;
+                    this.previewGpuPerPointTransformEnabled = true;
+                } else {
+                    const transformGroupKey = this.buildPreviewGpuTransformGroupKey(i, card);
+                    let transformGroup = transformGroupByKey.get(transformGroupKey);
+                    if (!transformGroup) {
+                        if (transformGroupByKey.size >= transformGroupLimit) {
+                            transformGroupIndex[i] = -1;
+                            this.previewGpuPerPointTransformEnabled = true;
+                        } else {
+                            transformGroup = {
+                                key: transformGroupKey,
+                                index: transformGroupByKey.size,
+                                pointIndex: i,
+                                transform: { x: 0, y: 0, z: 0, w: 0 },
+                                scale: 1
+                            };
+                            transformGroupByKey.set(transformGroupKey, transformGroup);
+                        }
+                    }
+                    if (transformGroup) transformGroupIndex[i] = int(transformGroup.index || 0);
+                }
+            }
+            meta[offset] = configured ? 1 : -1;
+            meta[offset + 1] = unlockTick;
             meta[offset + 2] = textureOffset;
             meta[offset + 3] = textureFrameCount;
             fadeInValues[offset] = alphaConfig.fadeIn.enabled ? Math.max(1, num(alphaConfig.fadeIn.durationTicks)) : 0;
@@ -1086,20 +1757,82 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             fadeOutValues[offset + 2] = clamp(num(alphaConfig.fadeOut.toAlpha), 0, 1);
             fadeOutValues[offset + 3] = 0;
             if (frameIndices) frameIndices[i] = textureOffset;
-            visibleMask[i] = active;
-            if (active) this.previewGpuActivePointCount++;
+            const visible = configured && unlockTick <= 0;
+            visibleMask[i] = visible;
+            if (visible) this.previewGpuActivePointCount++;
+            if (configured && unlockTick > 0) this.previewGpuVisibilityDynamic = true;
+        }
+        let transformGroups = Array.from(transformGroupByKey.values());
+        this.previewGpuUnlockTicks = [];
+        for (let i = 0; i < count; i++) {
+            const offset = i * 4;
+            if (num(meta[offset]) > 0.5) this.previewGpuUnlockTicks.push(Math.max(0, num(meta[offset + 1])));
+        }
+        this.previewGpuUnlockTicks.sort((left, right) => left - right);
+        if (!this.previewGpuPerPointTransformEnabled && transformGroups.length === 1) {
+            this.previewGpuSharedTransformEnabled = true;
+            this.previewGpuSharedTransformPointIndex = int(transformGroups[0].pointIndex || 0);
+            transformGroups = [];
+            transformGroupIndex.fill(-2);
+        }
+        this.previewGpuTransformGroups = transformGroups;
+        this.previewGpuTransformGroupIndex = transformGroupIndex;
+        const usesPerPointTransform = this.previewGpuPerPointTransformEnabled === true;
+        const usesGroupedTransform = transformGroups.length > 0;
+        const hasAlphaCurve = alphaCurves.some((curve) => !!curve);
+        const hasScaleCurve = scaleCurves.some((curve) => !!curve);
+        const hasColorCurve = colorCurves.some((curve) => !!curve);
+        const hasExplicitLifecycleData = this.previewGpuHasLifecycleData === true
+            || hasInitialLifecycleData
+            || hasAlphaCurve
+            || hasScaleCurve
+            || hasColorCurve
+        const hasLifecycleAttribute = hasExplicitLifecycleData || hasTextureFrames;
+        this.previewGpuAttributeUsage = {
+            transform: !this.previewGpuSharedTransformEnabled && !usesGroupedTransform && !usesPerPointTransform,
+            transformVector: true,
+            scale: !this.previewGpuSharedTransformEnabled && !usesGroupedTransform && !usesPerPointTransform,
+            lifecycle: hasLifecycleAttribute,
+            alphaCurve: hasAlphaCurve,
+            scaleCurve: hasScaleCurve,
+            colorCurve: hasColorCurve
+        };
+        if (!this.previewGpuAttributeUsage.transform) this.pointsGeom.deleteAttribute?.("aGpuTransform");
+        if (!this.previewGpuAttributeUsage.scale) this.pointsGeom.deleteAttribute?.("aGpuScale");
+        if (!this.previewGpuAttributeUsage.lifecycle) this.pointsGeom.deleteAttribute?.("aGpuLifecycle");
+        if (!this.previewGpuAttributeUsage.alphaCurve) this.pointsGeom.deleteAttribute?.("aGpuAlphaCurve");
+        if (!this.previewGpuAttributeUsage.scaleCurve) this.pointsGeom.deleteAttribute?.("aGpuScaleCurve");
+        if (!this.previewGpuAttributeUsage.colorCurve) {
+            this.pointsGeom.deleteAttribute?.("aGpuColorCurve");
+        }
+        for (let i = 0; i < count; i++) {
+            const groupIndex = int(transformGroupIndex[i]);
+            fadeOutValues[i * 4 + 3] = groupIndex === -1
+                ? -1
+                : (groupIndex >= 0 ? groupIndex + 1 : 0);
         }
         metaAttr.needsUpdate = true;
         fadeInAttr.needsUpdate = true;
         fadeOutAttr.needsUpdate = true;
-        transformAttr.needsUpdate = true;
+        if (this.previewGpuAttributeUsage.transform) transformAttr.needsUpdate = true;
         transformVectorAttr.needsUpdate = true;
-        scaleAttr.needsUpdate = true;
-        lifecycleAttr.needsUpdate = true;
+        if (this.previewGpuAttributeUsage.scale) scaleAttr.needsUpdate = true;
+        if (this.previewGpuAttributeUsage.lifecycle) lifecycleAttr.needsUpdate = true;
+        if (this.previewGpuAttributeUsage.alphaCurve) alphaCurveAttr.needsUpdate = true;
+        if (this.previewGpuAttributeUsage.scaleCurve) scaleCurveAttr.needsUpdate = true;
+        if (this.previewGpuAttributeUsage.colorCurve) {
+            colorCurveAttr.needsUpdate = true;
+        }
         if (frameAttr) frameAttr.needsUpdate = true;
         this.previewVisibleMask = visibleMask;
-        this.previewInteractionVisibleMask = visibleMask;
-        this.updatePreviewGpuParticleTransforms(0, this.previewCycleCache || (this.previewCycleCache = this.getPreviewCycleConfig()));
+        this.previewInteractionVisibleMask = visibleMask.slice();
+        this.previewGpuTransformsDynamic = this.hasPreviewGpuDynamicTransforms();
+        this.updatePreviewGpuParticleTransforms(
+            0,
+            this.previewCycleCache || (this.previewCycleCache = this.getPreviewCycleConfig()),
+            { force: true }
+        );
+        this.updatePreviewGpuParticleVisibility(0, { force: true });
         this.syncPreviewGpuParticleUniforms();
         return true;
     }
@@ -1122,10 +1855,80 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         if (shader.uniforms.uGpuPreviewCycleTicks) {
             shader.uniforms.uGpuPreviewCycleTicks.value = Math.max(1, num(cycleCfg.total || 1));
         }
+        if (shader.uniforms.uGpuPreviewGlobalAlpha) {
+            shader.uniforms.uGpuPreviewGlobalAlpha.value = clamp(
+                this.getProjectAlphaPreviewValue?.(
+                    this.previewRuntimeGlobals || this.buildPreviewRuntimeGlobals(0, 0, 0),
+                    this.state?.projectAlpha
+                ) ?? 1,
+                0,
+                1
+            );
+        }
+        if (shader.uniforms.uGpuPreviewHasLifecycle) {
+            shader.uniforms.uGpuPreviewHasLifecycle.value = this.previewGpuParticlePathEnabled === true
+                && this.previewGpuHasLifecycleData === true
+                ? 1
+                : 0;
+        }
+        if (shader.uniforms.uGpuPreviewHasColorCurve) {
+            shader.uniforms.uGpuPreviewHasColorCurve.value = this.previewGpuParticlePathEnabled === true
+                && this.previewGpuAttributeUsage?.colorCurve === true
+                ? 1
+                : 0;
+        }
         if (shader.uniforms.uGpuPreviewGlobalTransform) {
             shader.uniforms.uGpuPreviewGlobalTransform.value.copy(
                 this.previewGpuGlobalTransform || this.createPreviewGpuMatrix4()
             );
+        }
+        if (shader.uniforms.uGpuPreviewUseSharedTransform) {
+            shader.uniforms.uGpuPreviewUseSharedTransform.value = this.previewGpuSharedTransformEnabled === true ? 1 : 0;
+        }
+        if (shader.uniforms.uGpuPreviewSharedTransform) {
+            const target = shader.uniforms.uGpuPreviewSharedTransform.value;
+            const value = this.previewGpuSharedTransform || { x: 0, y: 0, z: 0, w: 0 };
+            if (target && typeof target.set === "function") target.set(num(value.x), num(value.y), num(value.z), num(value.w));
+            else if (target) {
+                target.x = num(value.x);
+                target.y = num(value.y);
+                target.z = num(value.z);
+                target.w = num(value.w);
+            } else {
+                shader.uniforms.uGpuPreviewSharedTransform.value = {
+                    x: num(value.x), y: num(value.y), z: num(value.z), w: num(value.w)
+                };
+            }
+        }
+        if (shader.uniforms.uGpuPreviewSharedScale) {
+            shader.uniforms.uGpuPreviewSharedScale.value = Math.max(0.0001, num(this.previewGpuSharedScale || 1));
+        }
+        const transformGroups = Array.isArray(this.previewGpuTransformGroups)
+            ? this.previewGpuTransformGroups
+            : [];
+        if (shader.uniforms.uGpuPreviewGroupCount) {
+            shader.uniforms.uGpuPreviewGroupCount.value = transformGroups.length;
+        }
+        const groupTransformTargets = shader.uniforms.uGpuPreviewGroupTransforms?.value;
+        if (Array.isArray(groupTransformTargets)) {
+            for (let i = 0; i < groupTransformTargets.length; i++) {
+                const target = groupTransformTargets[i];
+                const value = transformGroups[i]?.transform || { x: 0, y: 0, z: 0, w: 0 };
+                if (target && typeof target.set === "function") {
+                    target.set(num(value.x), num(value.y), num(value.z), num(value.w));
+                } else if (target) {
+                    target.x = num(value.x);
+                    target.y = num(value.y);
+                    target.z = num(value.z);
+                    target.w = num(value.w);
+                }
+            }
+        }
+        const groupScaleTargets = shader.uniforms.uGpuPreviewGroupScales?.value;
+        if (groupScaleTargets && typeof groupScaleTargets.length === "number") {
+            for (let i = 0; i < groupScaleTargets.length; i++) {
+                groupScaleTargets[i] = Math.max(0.0001, num(transformGroups[i]?.scale || 1));
+            }
         }
     }
 
@@ -1133,8 +1936,42 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         if (this.previewGpuParticlePathEnabled !== true) return false;
         const elapsedTick = (num(now) - this.previewAnimStart) / 50;
         const cycleCfg = this.previewCycleCache || (this.previewCycleCache = this.getPreviewCycleConfig());
+        const cycleTotal = Math.max(1, num(cycleCfg.total || 1));
+        const cycleAge = ((elapsedTick % cycleTotal) + cycleTotal) % cycleTotal;
         this.previewGpuElapsedTick = elapsedTick;
-        this.updatePreviewGpuParticleTransforms(elapsedTick, cycleCfg);
+        const runtimeActions = this.buildPreviewRuntimeActions(cycleAge, this.state?.displayActions || [], {
+            scope: "display"
+        });
+        const globalAxis = this.resolveCompositionAxisDirection();
+        const tickStep = Math.max(0, Math.floor(cycleAge));
+        const cycleIndex = cycleCfg.total > 1e-6
+            ? Math.floor(elapsedTick / cycleCfg.total)
+            : 0;
+        const projectAlphaCfg = normalizeAlphaHelperConfig(this.state?.projectAlpha, { type: "none" });
+        const projectAlphaAuto = projectAlphaCfg.type !== "none"
+            && String(projectAlphaCfg.runMode || "auto").trim() !== "manual";
+        const shouldResetRuntime = !this.previewRuntimeGlobals
+            || tickStep < this.previewRuntimeAppliedTick
+            || this.previewRuntimeCycleIndex !== cycleIndex;
+        if (shouldResetRuntime) {
+            this.previewRuntimeGlobals = this.buildPreviewRuntimeGlobals(0, 0, 0);
+            this.previewRuntimeAppliedTick = -1;
+            this.previewRuntimeCycleIndex = cycleIndex;
+        }
+        const frameRuntimeGlobals = this.previewRuntimeGlobals;
+        for (let t = this.previewRuntimeAppliedTick + 1; t <= tickStep; t++) {
+            const tickStatus = this.syncPreviewStatusWithCycle(frameRuntimeGlobals, cycleCfg, t, t);
+            if (projectAlphaAuto) {
+                const shouldDecrease = projectAlphaCfg.decreaseOnDisable === true
+                    && !!(tickStatus && typeof tickStatus.isDisable === "function" && tickStatus.isDisable());
+                this.advanceProjectAlphaPreviewState(frameRuntimeGlobals, projectAlphaCfg, shouldDecrease ? -1 : 1);
+            }
+            this.applyExpressionGlobalsOnce(runtimeActions, t, t, frameRuntimeGlobals, globalAxis);
+        }
+        if (tickStep > this.previewRuntimeAppliedTick) this.previewRuntimeAppliedTick = tickStep;
+        this.syncPreviewStatusWithCycle(frameRuntimeGlobals, cycleCfg, cycleAge, cycleAge);
+        this.updatePreviewGpuParticleTransforms(cycleAge, cycleCfg);
+        this.updatePreviewGpuParticleVisibility(cycleAge);
         this.syncPreviewGpuParticleUniforms({ elapsedTick, cycleCfg });
         const statusText = `点数: ${this.previewGpuActivePointCount}/${this.previewBasePoints.length}`;
         if (this.lastPointsStatusText !== statusText) {
@@ -1178,9 +2015,17 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         this.previewAlphaFactors = new Array(count).fill(1);
         const visualCache = new Map();
         const linearColorCache = new Map();
+        const initialRuntimeGlobals = this.previewRuntimeGlobals
+            || this.buildPreviewRuntimeGlobals?.(0, 0, 0)
+            || null;
         const pointVisualSources = Array.isArray(this.previewLeafVisualSources) ? this.previewLeafVisualSources : [];
         const ownerLocalIndex = Array.isArray(this.previewOwnerLocalIndex) ? this.previewOwnerLocalIndex : [];
         const gpuInitialLifecycle = new Float32Array(count * 2);
+        const gpuLifecycleFlags = new Float32Array(count);
+        const gpuAlphaCurves = new Array(count).fill(null);
+        const gpuScaleCurves = new Array(count).fill(null);
+        const gpuColorCurves = new Array(count).fill(null);
+        let hasGpuLifecycleData = false;
         for (let i = 0; i < count; i++) {
             const p = points[i];
             positions[i * 3 + 0] = p.x;
@@ -1210,7 +2055,11 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 visual = this.resolveCardPreviewVisual(owner, {
                     visualSource: pointVisualSource,
                     pointIndex: localIndex,
-                    position: p
+                    position: p,
+                    runtimeVars: initialRuntimeGlobals,
+                    elapsedTick: 0,
+                    ageTick: 0,
+                    skipLifecycleCurves: isGpuParticle
                 });
                 visualCache.set(visualKey, visual);
             }
@@ -1221,6 +2070,19 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             gpuInitialLifecycle[lifecycleOffset + 1] = Number.isFinite(Number(visual.__resolvedLifetime))
                 ? Math.max(1, num(visual.__resolvedLifetime))
                 : 100;
+            if (isGpuParticle) {
+                gpuAlphaCurves[i] = visual.__alphaCurve || null;
+                gpuScaleCurves[i] = visual.__scaleCurve || null;
+                gpuColorCurves[i] = visual.__colorCurve || null;
+                const hasPointLifecycle = (visual.__manualCurrentAge === true
+                    && visual.__randomizedCurrentAge !== true)
+                    || visual.__particleLifetimeInitialized === true
+                    || !!visual.__alphaCurve
+                    || !!visual.__scaleCurve
+                    || !!visual.__colorCurve;
+                gpuLifecycleFlags[i] = hasPointLifecycle ? 1 : 0;
+                hasGpuLifecycleData = hasGpuLifecycleData || hasPointLifecycle;
+            }
             let rgb = linearColorCache.get(visualKey);
             if (!rgb) {
                 rgb = srgbRgbToLinearArray(visual.color);
@@ -1236,6 +2098,11 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             this.previewAlphaFactors[i] = alphas[i];
         }
         this.previewGpuInitialLifecycle = gpuInitialLifecycle;
+        this.previewGpuLifecycleFlags = gpuLifecycleFlags;
+        this.previewGpuAlphaCurves = gpuAlphaCurves;
+        this.previewGpuScaleCurves = gpuScaleCurves;
+        this.previewGpuColorCurves = gpuColorCurves;
+        this.previewGpuHasLifecycleData = hasGpuLifecycleData;
         this.pointsGeom.attributes.position.needsUpdate = true;
         this.pointsGeom.attributes.color.needsUpdate = true;
         this.pointsGeom.attributes.aSize.needsUpdate = true;
@@ -1245,6 +2112,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             frameIndices.fill(0);
             this.pointsGeom.attributes.aFrameIndex.needsUpdate = true;
         }
+        this.ensurePreviewGpuFrameMeta?.();
         const nextRuntimeStateSignature = this.makePreviewStructuralStateSignature();
         const canReuseRuntimeState = this.previewRuntimeStateSignature === nextRuntimeStateSignature
             && this.canReusePreviewRuntimeState(count, owners);
@@ -1294,6 +2162,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             this.dom.statusPoints.textContent = statusText;
         }
         this.updateSelectionStatus();
+        this.previewSceneDirty = true;
     }
 
     makePreviewStructuralStateSignature() {
@@ -1771,6 +2640,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 });
                 worker.onmessage = (event) => this.handlePreviewRenderCacheWorkerMessage(event);
                 worker.onerror = () => {
+                    if (this.previewRenderCacheWorkerPool !== pool) return;
                     pool.errors += 1;
                     this.disposePreviewRenderCacheWorkerPool("worker-error");
                     this.updatePreviewCacheStatus();
@@ -1791,6 +2661,8 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         if (Array.isArray(pool.workers)) {
             for (const worker of pool.workers) {
                 try {
+                    worker.onerror = null;
+                    worker.onmessage = null;
                     worker.terminate();
                 } catch {
                 }
@@ -1813,12 +2685,31 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         this.previewRenderWorkerGeneration = int(this.previewRenderWorkerGeneration || 0) + 1;
         const pool = this.previewRenderCacheWorkerPool;
         if (!pool) return;
-        pool.queue = [];
-        if (pool.pending instanceof Map) pool.pending.clear();
-        if (pool.buildKeys instanceof Set) pool.buildKeys.clear();
-        pool.active = 0;
-        pool.snapshotSignature = "";
-        pool.lastClearReason = String(reason || "");
+        // postMessage 无法取消正在执行的任务，重建或空场景时直接终止旧池。
+        this.disposePreviewRenderCacheWorkerPool(reason || "clear-queue", { disable: false });
+    }
+
+    ensurePreviewGpuFrameMeta() {
+        if (!this.pointsGeom || !this.previewBasePoints?.length) return;
+        if (typeof this.pointsGeom.getAttribute !== "function") return null;
+        const count = this.previewBasePoints.length;
+        const current = this.pointsGeom.getAttribute("aGpuMeta");
+        if (current?.array instanceof Float32Array && current.array.length === count * 4) return current;
+        if (typeof this.pointsGeom.setAttribute !== "function") return null;
+        const next = new THREE.BufferAttribute(new Float32Array(count * 4), 4);
+        this.pointsGeom.setAttribute("aGpuMeta", next);
+        return next;
+    }
+
+    syncPreviewFrameIndicesToGpuMeta(frameIndices = null) {
+        if (this.previewGpuParticlePathEnabled === true || !this.pointsGeom) return;
+        const getAttribute = this.pointsGeom.getAttribute;
+        const source = frameIndices
+            || (typeof getAttribute === "function" ? getAttribute.call(this.pointsGeom, "aFrameIndex")?.array : null);
+        const metaAttr = this.ensurePreviewGpuFrameMeta?.();
+        if (!source || !metaAttr?.array || source.length !== this.previewBasePoints.length) return;
+        for (let i = 0; i < source.length; i++) metaAttr.array[i * 4 + 2] = num(source[i]);
+        metaAttr.needsUpdate = true;
     }
 
     makePreviewRenderWorkerPlainClone(value) {
@@ -2728,6 +3619,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 frameAttr.array.set(frame.frameIndices);
             }
             frameAttr.needsUpdate = true;
+            this.syncPreviewFrameIndicesToGpuMeta?.(frameAttr.array);
         }
         const restoreRuntimeState = context.restoreRuntimeState !== false;
         if (restoreRuntimeState) {
@@ -2792,6 +3684,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     }
 
     updatePreviewAnimation() {
+        if (this.previewBuildInProgress) return;
         if (!this.pointsGeom || !this.previewBasePoints.length) return;
         const now = performance.now();
         if (this.updatePreviewGpuParticleAnimation(now)) return;
@@ -2832,12 +3725,6 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             restoreRuntimeState: true,
             attributesAlreadyWritten: false
         };
-        this.queuePreviewRenderCacheBuilds({
-            totalCount,
-            cycleCfg,
-            frameTime,
-            skipKey: frameKey
-        });
         if (cachedFrame && this.applyPreviewFrame(cachedFrame, {
             cycleIndex: frameTime.cycleIndex,
             runtimeAppliedTick: frameTime.tickStep,
@@ -2858,15 +3745,20 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         if (!frame) return;
         frameApplyContext.attributesAlreadyWritten = frame.attributesWrittenToGeometry === true;
         const applied = this.applyPreviewFrame(frame, frameApplyContext);
+        if (frame.visible <= 0) {
+            this.clearPreviewRenderCacheWorkerQueue("no-visible-points");
+        }
         if (frameKey && applied) {
             this.previewLastAppliedFrameKey = frameKey;
             this.storePreviewCachedFrame(frameKey, frame, { cycleCfg });
-            this.queuePreviewRenderCacheBuilds({
-                totalCount,
-                cycleCfg,
-                frameTime,
-                skipKey: frameKey
-            });
+            if (frame.visible > 0) {
+                this.queuePreviewRenderCacheBuilds({
+                    totalCount,
+                    cycleCfg,
+                    frameTime,
+                    skipKey: frameKey
+                });
+            }
         }
     }
 
@@ -3084,6 +3976,38 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             })
             : null;
 
+        if (rootGrowthPlan?.hasSource === true && int(rootGrowthPlan.visibleCards || 0) <= 0) {
+            positions.fill(0);
+            colors.fill(0);
+            sizes.fill(0);
+            alphas.fill(0);
+            frameIndices.fill(0);
+            this.previewVisibleMask.fill(false);
+            return {
+                pointCount: totalCount,
+                visible: 0,
+                statusText: `点数: 0/${this.previewBasePoints.length}`,
+                elapsedTick,
+                globalCycleAge,
+                cycleTick: Math.max(0, Math.floor(globalCycleAge)),
+                cycleIndex,
+                runtimeAppliedTick: this.previewRuntimeAppliedTick,
+                runtimeGlobals: frameRuntimeGlobals,
+                attributesWrittenToGeometry,
+                positions,
+                colors,
+                sizes,
+                alphas,
+                frameIndices,
+                visibleMask: this.previewVisibleMask,
+                resolvedCurrentAges,
+                resolvedLifetimes,
+                manualAgeFlags,
+                initializedLifetimeFlags,
+                persistentControllerStates
+            };
+        }
+
         let visible = 0;
         const preserveFrameLifetimeAt = (index) => {
             const persistedLifetimeRaw = persistentLifetimes[index];
@@ -3139,8 +4063,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             let cached = groupId >= 0 ? groupRuntimeCache[groupId] : null;
             if (!cached) {
                 const ageBase = ((elapsedTick - birthOffset) % cycleTotal + cycleTotal) % cycleTotal;
-                // Dissolve start tick is tracked in cycle-local time; mixing in
-                // absolute elapsedTick makes second-cycle fade jump to the end.
+                // 消散起始 tick 使用周期内时间，混入绝对 elapsedTick 会让第二轮淡出直接跳到末尾。
                 let globalAge = this.resolvePreviewAgeWithStatus(ageBase, globalCycleAge, cycleCfg, frameRuntimeGlobals);
                 const runtimeElapsedTick = Math.max(0, num(globalAge) - rootDelayTick);                const runtimeAgeTick = runtimeElapsedTick;
                 const card = groupId >= 0
@@ -3438,7 +4361,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                             }
                             if (mode !== "angleOnly" && runtime.actions && runtime.actions.length) {
                                 const shapeScope = {
-                                    rel: anchor,
+                                    rel: U.v(-num(anchor.x), -num(anchor.y), -num(anchor.z)),
                                     order: int(localIndex),
                                     shapeRels: transformedLevelRels,
                                     shapeOrders: transformedLevelOrders
@@ -3942,6 +4865,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             frameIndices[i] = baseFrame + atlasOffset;
         }
         if (frameAttr) frameAttr.needsUpdate = true;
+        this.syncPreviewFrameIndicesToGpuMeta?.(frameIndices);
     }
 
     syncTextureUniforms() {
@@ -3959,8 +4883,10 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const pointTextureCfgs = Array.isArray(this.previewLeafTextureConfigs) ? this.previewLeafTextureConfigs : [];
         const pushTextureCfg = (cfg) => {
             if (!cfg?.useTexture || !cfg?.effectClass) return;
-            if (!this.isTextureEffectAllowed(cfg.effectClass)) return;
             const pData = getParticleDataByName(cfg.effectClass);
+            // 白名单只用于编辑器选项；运行时只要粒子数据实际提供 atlas，就应启用纹理。
+            // 这样自定义 CParticle 效果不会因为未出现在内置选项列表而退化成纯色点。
+            if (!pData && !this.isTextureEffectAllowed(cfg.effectClass)) return;
             if (!this.isParticleTextureRenderable(pData)) {
                 if (pData && !pData.atlasReady && typeof ensureParticleAtlas === "function") {
                     if (!(this._particleAtlasLoads instanceof Map)) this._particleAtlasLoads = new Map();
@@ -4005,6 +4931,8 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 pData._threeTexture.minFilter = THREE.NearestFilter;
                 pData._threeTexture.magFilter = THREE.NearestFilter;
                 pData._threeTexture.generateMipmaps = false;
+                if ("colorSpace" in pData._threeTexture) pData._threeTexture.colorSpace = THREE.SRGBColorSpace;
+                pData._threeTexture.needsUpdate = true;
             }
             shader.uniforms.uAtlas.value = pData._threeTexture;
             shader.uniforms.uFrameCount.value = pData.frames;
@@ -4048,6 +4976,8 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         tex.minFilter = THREE.NearestFilter;
         tex.magFilter = THREE.NearestFilter;
         tex.generateMipmaps = false;
+        if ("colorSpace" in tex) tex.colorSpace = THREE.SRGBColorSpace;
+        tex.needsUpdate = true;
         this._mergedAtlasKey = cacheKey;
         this._mergedAtlasTexture = tex;
         this._mergedAtlasTotalFrames = totalFrames;
@@ -4181,22 +5111,28 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             if (virtualIndex >= cardLimit) return 0;
         }
         const card = rootInfo.ownerCard || this.getCardById(ownerCardId);
+        const allowImplicitRootSequencedGrowth = sequencedRoot
+            && rootPlan?.hasSource === true
+            && String(card?.dataType || "") === "sequenced_shape";
         const localLimit = this.evaluateLocalGrowthVisibleLimit(
             card,
             ownerCount,
             growthAge,
             elapsedTick,
             shapeRuntimeLevels,
-            runtimeScope
+            runtimeScope,
+            { allowImplicitRootSequencedGrowth }
         );
         if (!Number.isFinite(localLimit)) return Math.max(1, ownerCount);
         return clamp(int(localLimit), 0, Math.max(1, ownerCount));
     }
 
-    evaluateLocalGrowthVisibleLimit(card, ownerCount, growthAge, elapsedTick, shapeRuntimeLevels = [], runtimeVars = null) {
+    evaluateLocalGrowthVisibleLimit(card, ownerCount, growthAge, elapsedTick, shapeRuntimeLevels = [], runtimeVars = null, opts = null) {
         if (!card) return Math.max(1, ownerCount);
         let visibleLimit = Math.max(1, ownerCount);
         let hasLocalGrowthSource = false;
+        const options = (opts && typeof opts === "object") ? opts : {};
+        const allowImplicitRootSequencedGrowth = options.allowImplicitRootSequencedGrowth === true;
         const runtimeLevels = Array.isArray(shapeRuntimeLevels) ? shapeRuntimeLevels : [];
         const sequencedLevels = runtimeLevels.filter((lv) => !!lv?.sequenced);
 
@@ -4218,7 +5154,10 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                     levelLimit = Math.min(levelLimit, exprCount);
                     hasLevelGrowthSource = true;
                 }
-                if (!hasLevelGrowthSource) return 0;
+                if (!hasLevelGrowthSource) {
+                    if (allowImplicitRootSequencedGrowth && lv === runtimeLevels[0]) continue;
+                    return 0;
+                }
                 visibleLimit = Math.min(visibleLimit, levelLimit);
                 hasLocalGrowthSource = true;
             }
@@ -4232,21 +5171,37 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 visibleLimit = Math.min(visibleLimit, cardExprCount);
                 hasLocalGrowthSource = true;
             }
-            if (card.dataType === "sequenced_shape" && !hasLocalGrowthSource) return 0;
+            if (card.dataType === "sequenced_shape" && !hasLocalGrowthSource && !allowImplicitRootSequencedGrowth) return 0;
         }
 
         if (!Number.isFinite(visibleLimit)) return Math.max(1, ownerCount);
         return clamp(int(visibleLimit), 0, Math.max(1, ownerCount));
     }
 
-    buildLocalGrowthPlan(card, ownerCount, shapeRuntimeLevels = [], ageTick = 0, elapsedTick = 0, runtimeVars = null) {
+    buildLocalGrowthPlan(card, ownerCount, shapeRuntimeLevels = [], ageTick = 0, elapsedTick = 0, runtimeVars = null, opts = null) {
         const maxCount = Math.max(1, int(ownerCount || 1));
         const steps = Math.max(0, Math.floor(num(ageTick)));
         const unlockTickByIndex = new Array(maxCount).fill(Number.POSITIVE_INFINITY);
         let previousVisible = 0;
+        const globalRuntimeActions = this.buildPreviewRuntimeActions(0, this.state?.displayActions || [], {
+            scope: "display"
+        });
+        const baseRuntimeScope = (runtimeVars && typeof runtimeVars === "object")
+            ? runtimeVars
+            : ((this.previewRuntimeGlobals && typeof this.previewRuntimeGlobals === "object")
+                ? this.previewRuntimeGlobals
+                : null);
+        const replayGlobalVars = baseRuntimeScope ? this.buildPreviewRuntimeGlobals(0, 0, 0) : null;
+        const replayStartAxis = this.resolveCompositionAxisDirection();
+        const hasReplayExpressions = !!(replayGlobalVars && globalRuntimeActions.some((action) => action?.type === "expression"));
 
         for (let t = 0; t <= steps; t++) {
-            let limit = this.evaluateLocalGrowthVisibleLimit(card, maxCount, t, t, shapeRuntimeLevels, runtimeVars);
+            let tickRuntimeScope = baseRuntimeScope;
+            if (hasReplayExpressions) {
+                this.applyExpressionGlobalsOnce(globalRuntimeActions, t, t, replayGlobalVars, replayStartAxis);
+                tickRuntimeScope = replayGlobalVars;
+            }
+            let limit = this.evaluateLocalGrowthVisibleLimit(card, maxCount, t, t, shapeRuntimeLevels, tickRuntimeScope, opts);
             if (!Number.isFinite(limit)) limit = maxCount;
             let visible = clamp(int(limit), 0, maxCount);
             if (visible < previousVisible) visible = previousVisible;
@@ -5606,6 +6561,52 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         return String(rawTarget || "").trim().toLowerCase();
     }
 
+    installPreviewCParticleCurveScope(scope) {
+        if (!scope || typeof scope !== "object") return scope;
+        scope.CParticleCurve = {
+            linear: (from, to) => ({ type: "linear", from: num(from), to: num(to) }),
+            fadeInOut: (peak = 1, fadeIn = 0.15, fadeOut = 0.75) => ({
+                type: "fade_in_out",
+                peak: num(peak),
+                fadeIn: clamp(num(fadeIn), 0, 1),
+                fadeOut: clamp(num(fadeOut), 0, 1)
+            })
+        };
+        scope.CParticleColorCurve = {
+            linear: (from, to) => ({
+                type: "linear",
+                from: this.parseColorVec(from),
+                to: this.parseColorVec(to)
+            })
+        };
+        return scope;
+    }
+
+    samplePreviewCParticleScalarCurve(curve, progress) {
+        const t = clamp(num(progress), 0, 1);
+        if (!curve || typeof curve !== "object") return 1;
+        if (curve.type === "linear") return num(curve.from) + (num(curve.to) - num(curve.from)) * t;
+        if (curve.type !== "fade_in_out") return 1;
+        const peak = num(curve.peak);
+        const fadeIn = clamp(num(curve.fadeIn), 0, 1);
+        const fadeOut = clamp(num(curve.fadeOut), fadeIn, 1);
+        if (t <= fadeIn) return fadeIn > 1e-9 ? peak * t / fadeIn : peak;
+        if (t <= fadeOut) return peak;
+        return fadeOut < 1 - 1e-9 ? peak * (1 - (t - fadeOut) / (1 - fadeOut)) : peak;
+    }
+
+    samplePreviewCParticleColorCurve(curve, progress) {
+        const t = clamp(num(progress), 0, 1);
+        if (!curve || curve.type !== "linear") return [1, 1, 1];
+        const from = this.parseColorVec(curve.from);
+        const to = this.parseColorVec(curve.to);
+        return [
+            num(from.x) + (num(to.x) - num(from.x)) * t,
+            num(from.y) + (num(to.y) - num(from.y)) * t,
+            num(from.z) + (num(to.z) - num(from.z)) * t
+        ];
+    }
+
     isPreviewVisualTimeDependent(scriptRaw = "") {
         const src = stripJsForLint(transpileKotlinThisQualifierToJs(scriptRaw));
         if (!src) return false;
@@ -5639,6 +6640,9 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             const exprPointDependent = this.isPreviewExpressionPointDependent(exprRaw);
             const exprReadsVisualState = this.doesPreviewExpressionReadVisualState(exprRaw);
             particleInit.push({ target, exprRaw, expr });
+            if (target === "alphacurve" || target === "scalecurve" || target === "colorcurve") {
+                ageDependent = true;
+            }
             if (target === "currentage" || target === "age" || target === "particle.currentage") {
                 ageDependent = true;
                 initPointDependentCurrentAge = true;
@@ -5751,6 +6755,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const pointIndex = int(opts.pointIndex || 0);
         const keepInitializedCurrentAge = opts.keepInitializedCurrentAge === true;
         const keepInitializedLifetime = opts.keepInitializedLifetime === true;
+        const skipLifecycleCurves = opts.skipLifecycleCurves === true;
         const fallback = { color: [1, 1, 1], size: 0.2, alpha: 1 };
         const card = this.getCardById(cardId);
         if (!card) return fallback;
@@ -5763,6 +6768,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             ? Math.max(0, num(opts.currentAge))
             : 0;
         let manualCurrentAge = false;
+        let randomizedCurrentAge = false;
         let particleLifetimeInitialized = false;
         const evalRuntimeVars = runtimeVars ? Object.create(runtimeVars) : {};
         evalRuntimeVars.currentAge = resolvedCurrentAge;
@@ -5779,6 +6785,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const evalThisAtVars = (runtimeVars && typeof runtimeVars === "object") ? runtimeVars : evalRuntimeVars;
         const evalScope = this.createRuntimeExpressionScope(elapsedTick, ageTick, pointIndex, evalRuntimeVars, true);
         evalScope.thisAt = evalThisAtVars;
+        this.installPreviewCParticleCurveScope(evalScope);
         const particleInitEntries = Array.isArray(visualPlan?.particleInit) ? visualPlan.particleInit : [];
         for (const it of particleInitEntries) {
             const target = it.target;
@@ -5794,6 +6801,18 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             if (target === "alpha" || target === "particlealpha" || target === "particle.particlealpha") {
                 visual.alpha = clamp(num(this.evaluateNumericExpressionWithRuntime(expr, evalRuntimeVars, { elapsedTick, ageTick, pointIndex, thisAtVars: evalThisAtVars, runtimeScope: evalScope })), 0, 1);
             }
+            if (target === "alphacurve" || target === "scalecurve" || target === "colorcurve") {
+                const curve = this.evaluateExpressionWithRuntime(expr, evalRuntimeVars, {
+                    elapsedTick,
+                    ageTick,
+                    pointIndex,
+                    thisAtVars: evalThisAtVars,
+                    runtimeScope: evalScope
+                });
+                if (target === "alphacurve") visual.__alphaCurve = curve;
+                if (target === "scalecurve") visual.__scaleCurve = curve;
+                if (target === "colorcurve") visual.__colorCurve = curve;
+            }
             if (target === "lifetime" || target === "particle.lifetime" || target === "maxage" || target === "particle.maxage") {
                 particleLifetimeInitialized = true;
                 const nextLifetime = keepInitializedLifetime
@@ -5805,6 +6824,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 evalRuntimeVars.maxAge = nextLifetime;
             }
             if (target === "currentage" || target === "age" || target === "particle.currentage") {
+                randomizedCurrentAge = randomizedCurrentAge || /\bRandom\s*\.\s*nextInt\s*\(/i.test(expr);
                 if (keepInitializedCurrentAge) {
                     resolvedCurrentAge = Math.max(0, num(resolvedCurrentAge));
                     manualCurrentAge = true;
@@ -5861,9 +6881,32 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         visual.__controllerState = controllerState;
         visual.__resolvedCurrentAge = resolvedCurrentAge;
         visual.__manualCurrentAge = manualCurrentAge;
+        visual.__randomizedCurrentAge = randomizedCurrentAge;
         visual.__particleLifetimeInitialized = particleLifetimeInitialized;
         if (!visual.hasOwnProperty("__resolvedLifetime")) {
             visual.__resolvedLifetime = Math.max(1, num(evalRuntimeVars.lifetime));
+        }
+        if (!skipLifecycleCurves) {
+            const lifeProgress = clamp(
+                num(visual.__resolvedCurrentAge) / Math.max(1, num(visual.__resolvedLifetime)),
+                0,
+                1
+            );
+            visual.alpha = clamp(
+                num(visual.alpha) * this.samplePreviewCParticleScalarCurve(visual.__alphaCurve, lifeProgress),
+                0,
+                1
+            );
+            visual.size = Math.max(
+                0.05,
+                num(visual.size) * this.samplePreviewCParticleScalarCurve(visual.__scaleCurve, lifeProgress)
+            );
+            const colorScale = this.samplePreviewCParticleColorCurve(visual.__colorCurve, lifeProgress);
+            visual.color = [
+                clamp(num(visual.color?.[0]) * num(colorScale[0]), 0, 1),
+                clamp(num(visual.color?.[1]) * num(colorScale[1]), 0, 1),
+                clamp(num(visual.color?.[2]) * num(colorScale[2]), 0, 1)
+            ];
         }
         return visual;
     }
@@ -6137,7 +7180,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         if (!m) return null;
         const condExpr = String(m[1] || "").trim();
         if (!condExpr) return null;
-        // Keep this fold only for condition expressions independent from per-point context.
+        // 仅折叠不依赖逐点上下文的条件表达式。
         const pointDependentCondRe = /\b(?:age|index|rel|axis|shapeRel\d*|order|shapeOrder\d*|particle)\b/;
         if (pointDependentCondRe.test(condExpr)) return null;
         const thenActions = this.foldStaticActionStatements(m[2], elapsedTick);
@@ -6798,8 +7841,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 {
                     runtimeVars,
                     persistExpressionVars: true,
-                    // Global pass is used to update state variables only; do not advance
-                    // geometry rotation accumulators here, or replay can stutter/jitter.
+                    // 全局阶段只更新状态变量，不推进几何旋转累计量，避免重播卡顿或抖动。
                     accumulateRotation: false
                 }
             );
@@ -7113,6 +8155,30 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             return U.v(x * inv, y * inv, z * inv);
         }
         return this.resolveRelativeDirection(String(v));
+    }
+
+    parseColorVec(v) {
+        if (v && typeof v === "object"
+            && Number.isFinite(Number(v.x))
+            && Number.isFinite(Number(v.y))
+            && Number.isFinite(Number(v.z))) {
+            return U.v(
+                clamp(num(v.x), 0, 1),
+                clamp(num(v.y), 0, 1),
+                clamp(num(v.z), 0, 1)
+            );
+        }
+        const parsed = this.parseVecLikeValue?.(String(v || ""));
+        if (parsed && Number.isFinite(Number(parsed.x))
+            && Number.isFinite(Number(parsed.y))
+            && Number.isFinite(Number(parsed.z))) {
+            return U.v(
+                clamp(num(parsed.x), 0, 1),
+                clamp(num(parsed.y), 0, 1),
+                clamp(num(parsed.z), 0, 1)
+            );
+        }
+        return U.v(1, 1, 1);
     }
 
     evaluateNumericExpression(exprRaw, opts = {}) {

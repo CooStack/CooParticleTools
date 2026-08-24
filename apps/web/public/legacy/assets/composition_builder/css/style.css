@@ -1,4 +1,4 @@
-@import url("../../shared/css/workbench-theme.css?v=20260313_5");
+@import url("../../shared/css/workbench-theme.css?v=20260824_2");
 
 :root {
     --bg: #101317;
@@ -36,19 +36,19 @@ body[data-theme="dark-1"] {
     --danger: #c96f62;
 }
 
-body[data-theme="light-pink"] {
-    --bg: #f7dbe1;
-    --panel: #ffecf2;
-    --panel2: #f8dce5;
-    --card: #fff7fa;
-    --line: rgba(86, 49, 62, .16);
-    --line2: rgba(86, 49, 62, .28);
-    --text: #372630;
-    --muted: #765161;
-    --muted2: rgba(118, 81, 97, .66);
-    --accent: #d86f9d;
-    --ok: #a94f72;
-    --danger: #b84f61;
+body[data-theme="light-1"] {
+    --bg: #edf1f4;
+    --panel: #f7f8fa;
+    --panel2: #eef1f4;
+    --card: #fbfcfd;
+    --line: rgba(79, 93, 109, .12);
+    --line2: rgba(79, 93, 109, .18);
+    --text: rgba(34, 42, 52, .92);
+    --muted: rgba(92, 103, 118, .64);
+    --muted2: rgba(92, 103, 118, .44);
+    --accent: #70879b;
+    --ok: #a07f52;
+    --danger: #b36358;
 }
 
 * {
@@ -314,8 +314,8 @@ body {
 
 .section-block {
     border: 1px solid var(--line);
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--panel2) 76%, transparent);
+    border-radius: var(--radius2);
+    background: color-mix(in srgb, var(--panel2) 72%, transparent);
     padding: 10px;
     margin-bottom: 10px;
 }
@@ -440,9 +440,9 @@ body[data-theme^="light"] select.input option {
 
 .kv-row {
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: 8px;
     padding: 8px;
-    background: rgba(0, 0, 0, .12);
+    background: color-mix(in srgb, var(--panel2) 55%, transparent);
     display: grid;
     gap: 8px;
 }
@@ -975,16 +975,24 @@ body[data-theme^="light"] select.input option {
 
 .card {
     border: 1px solid var(--line);
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--card) 86%, transparent);
+    border-radius: var(--radius2);
+    background: var(--card);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .24);
     overflow: hidden;
     flex: 0 0 auto;
     container-type: inline-size;
+    transition: background .14s ease, border-color .14s ease, box-shadow .14s ease;
+}
+
+.card:hover {
+    border-color: var(--line2);
 }
 
 .card.selected {
     border-color: color-mix(in srgb, var(--accent) 70%, transparent);
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+    box-shadow:
+        inset 2px 0 0 var(--accent),
+        0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .card-head {
@@ -994,6 +1002,7 @@ body[data-theme^="light"] select.input option {
     gap: 8px;
     padding: 8px 10px;
     border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--panel2) 60%, transparent);
     cursor: pointer;
 }
 
@@ -1153,9 +1162,9 @@ body[data-theme^="light"] select.input option {
 }
 
 .subgroup {
-    border: 1px dashed color-mix(in srgb, var(--text) 20%, transparent);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--panel2) 80%, transparent);
+    border: 1px solid var(--line);
+    border-radius: var(--radius2);
+    background: color-mix(in srgb, var(--panel2) 72%, transparent);
     padding: 8px;
     display: flex;
     flex-direction: column;

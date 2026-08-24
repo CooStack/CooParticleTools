@@ -1,11 +1,132 @@
+/*
+ * Single source of truth for the app's design tokens.
+ *
+ * These values intentionally mirror the token set already used by every legacy
+ * builder (points_builder / composition_builder / shader_builder /
+ * emitter_generator style.css) and by shared/css/workbench-theme.css, so the Vue
+ * shell and the builder iframes render as one product.
+ */
 :root {
-  --bg-panel: rgba(15, 23, 42, 0.84);
-  --bg-panel-strong: rgba(15, 23, 42, 0.96);
-  --bg-soft: rgba(148, 163, 184, 0.08);
-  --border: rgba(148, 163, 184, 0.18);
-  --text-soft: #94a3b8;
-  --brand: #38bdf8;
-  --brand-2: #818cf8;
-  --success: #22c55e;
-  --warning: #f59e0b;
+  /* Surfaces, dark (default) */
+  --bg: #101317;
+  --panel: #171d23;
+  --panel2: #12171d;
+  --card: #1d242b;
+  --card2: #181f26;
+
+  /* Hairlines */
+  --line: rgba(255, 255, 255, 0.08);
+  --line2: rgba(255, 255, 255, 0.14);
+
+  /* Type */
+  --text: rgba(236, 240, 245, 0.94);
+  /* Solid, not alpha: measured 4.91 against --panel. The previous
+   * rgba(152,166,181,.68) composited to 3.89 and failed WCAG AA. */
+  --muted: #808b99;
+  --muted2: rgba(152, 166, 181, 0.44);
+
+  /* Accents */
+  --accent: #8fa7b8;
+  --ok: #b49363;
+  --danger: #c96f62;
+
+  /*
+   * Ink for text/icons sitting on an --accent fill. Must be flipped per mode:
+   * dark themes have a light accent (dark ink reads), light themes have a
+   * darker accent (light ink reads). Hardcoding one value fails WCAG AA on the
+   * other mode.
+   */
+  --accent-ink: #171513;
+
+  /* Modal/overlay scrim. Lighter in light modes so dialogs do not go murky. */
+  --scrim: rgba(8, 10, 13, 0.62);
+
+  /* Fields */
+  --input-bg: rgba(14, 18, 23, 0.72);
+  --input-bg-focus: rgba(17, 22, 28, 0.84);
+
+  /* Geometry */
+  --radius: 14px;
+  --radius2: 10px;
+  --radius3: 8px;
+
+  /* Elevation */
+  --shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  --shadow2: 0 8px 18px rgba(0, 0, 0, 0.28);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --elev-2: 0 10px 24px rgba(0, 0, 0, 0.3);
+
+  /* Interaction */
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  --hover-veil: rgba(255, 255, 255, 0.04);
+  --speed: 140ms;
+
+  /*
+   * Height of the app-drawn window chrome. 0 in the browser; the Electron shell
+   * sets it on <html> when AppTitleBar mounts. Full-height surfaces use --app-vh
+   * so they shrink by exactly that much instead of overflowing.
+   */
+  --app-chrome-h: 0px;
+  --app-vh: calc(100vh - var(--app-chrome-h));
+
+  /* Typography */
+  --font-sans: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, SFMono-Regular,
+    Menlo, Consolas, monospace;
+
+  /*
+   * Backwards-compatible aliases. layout.css and a number of component styles
+   * were written against these names; keep them mapped onto the tokens above so
+   * the rename does not have to ripple through every file.
+   */
+  --bg-panel: var(--panel);
+  --bg-panel-strong: var(--panel2);
+  --bg-soft: var(--card2);
+  --border: var(--line);
+  --text-soft: var(--muted);
+  --brand: var(--accent);
+  --brand-2: var(--ok);
+  --success: var(--ok);
+  --warning: var(--ok);
+}
+
+/* Neutral light variant. Values match the legacy builders' `light-1` theme. */
+:root:has(body[data-theme='light-1']),
+body[data-theme='light-1'] {
+  --bg: #edf1f4;
+  --panel: #f7f8fa;
+  --panel2: #eef1f4;
+  --card: #fbfcfd;
+  --card2: #eef2f5;
+
+  --line: rgba(79, 93, 109, 0.12);
+  --line2: rgba(79, 93, 109, 0.18);
+
+  --text: rgba(34, 42, 52, 0.92);
+  /* 4.87 against this theme's --panel; the old value measured 2.63. */
+  --muted: #656e79;
+  --muted2: rgba(92, 103, 118, 0.44);
+
+  --accent: #70879b;
+  --ok: #a07f52;
+  --danger: #b36358;
+
+  /*
+   * --accent-ink stays the inherited dark value: this accent is a desaturated
+   * slate, so dark ink measures 4.88 against it while white only reaches 3.73.
+   * (The glass light themes use a saturated accent and do flip to white.)
+   */
+  --scrim: rgba(38, 50, 66, 0.38);
+
+  --input-bg: rgba(255, 255, 255, 0.85);
+  --input-bg-focus: rgba(255, 255, 255, 0.92);
+
+  --shadow: 0 12px 30px rgba(38, 50, 66, 0.14);
+  --shadow2: 0 8px 18px rgba(38, 50, 66, 0.1);
+  --elev-1: 0 1px 2px rgba(38, 50, 66, 0.1);
+  --elev-2: 0 10px 24px rgba(38, 50, 66, 0.12);
+  --hover-veil: rgba(38, 50, 66, 0.04);
+
+  color-scheme: light;
 }

@@ -1,4 +1,4 @@
-import { DEFAULT_HOTKEYS, HOTKEY_ACTIONS, STORAGE_KEYS } from "./constants.js";
+import { DEFAULT_HOTKEYS, HOTKEY_ACTIONS, STORAGE_KEYS } from "./constants.js?v=20260824_1";
 import {
     eventToHotkey,
     hotkeyMatchEvent,

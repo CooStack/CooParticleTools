@@ -244,7 +244,7 @@ function collectShapeNodePoints({ card, node, parentPoints, runtime, time, age, 
 function computeVisibleCardCount(project, runtime, tick) {
   if (project.compositionType !== 'sequenced') return project.cards.length;
   const animates = Array.isArray(project.compositionAnimates) ? project.compositionAnimates : [];
-  if (!animates.length) return project.cards.length;
+  if (!animates.length) return 0;
   const total = animates.reduce((sum, item, index) => {
     const visible = runtime.evaluateBoolean(item.condition || 'true', {
       age: tick,
@@ -254,7 +254,7 @@ function computeVisibleCardCount(project, runtime, tick) {
     }, true);
     return visible ? sum + Math.max(1, Number(item.count || 1)) : sum;
   }, 0);
-  return Math.max(1, Math.min(project.cards.length, total || project.cards.length));
+  return Math.max(0, Math.min(project.cards.length, total));
 }
 
 function resolveCompositionAxis(project, runtime, tick = 0) {

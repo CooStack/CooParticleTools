@@ -1,6 +1,6 @@
 import { createKindDefs } from "../../points_builder/js/kinds.js?v=20260820_2";
 import { createBuilderTools } from "../../points_builder/js/builder.js";
-import { normalizePointsBuilderState } from "../../points_builder/js/model.js?v=20260820_2";
+import { normalizePointsBuilderState } from "../../points_builder/js/model.js?v=20260824_2";
 
 const U = globalThis.Utils;
 if (!U) {

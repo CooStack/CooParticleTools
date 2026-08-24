@@ -16,6 +16,10 @@ test('generator settings are a standalone modal opened from the settings tab', a
     new URL('../src/components/GeneratorSettingsModal.vue', import.meta.url),
     'utf8'
   );
+  const hotkeysModalSource = await readFile(
+    new URL('../src/components/GeneratorHotkeysModal.vue', import.meta.url),
+    'utf8'
+  );
 
   assert.match(pageSource, /selectGeneratorTab\(tab\.id\)/);
   assert.match(pageSource, /@lifecycle-change="restartPreviewAfterRootLifecycleChange"/);
@@ -24,9 +28,37 @@ test('generator settings are a standalone modal opened from the settings tab', a
   assert.doesNotMatch(pageSource, /settings-submenu|generator-workspace--settings/);
   assert.match(modalSource, /role="dialog" aria-modal="true"/);
   assert.match(modalSource, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
-  assert.match(modalSource, /@keydown="captureHotkey\(item\.key, \$event\)"/);
   assert.match(modalSource, /lifecycle-change/);
   assert.doesNotMatch(modalSource, /H 打开或关闭此窗口/);
+
+  // Hotkeys moved out of the settings modal into their own dialog, matching the
+  // Composition builder: the settings panel only links to it.
+  assert.match(modalSource, /@click="\$emit\('open-hotkeys'\)"/);
+  assert.doesNotMatch(modalSource, /captureHotkey/);
+  assert.match(pageSource, /<GeneratorHotkeysModal/);
+  assert.match(pageSource, /@start-capture="startHotkeyCapture"/);
+  assert.match(hotkeysModalSource, /role="dialog"\s+aria-modal="true"/);
+  assert.match(hotkeysModalSource, /placeholder="搜索快捷键"/);
+  assert.match(hotkeysModalSource, /\$emit\('start-capture', item\.key\)/);
+  assert.match(hotkeysModalSource, /\$emit\('clear-hotkey', item\.key\)/);
+  assert.match(hotkeysModalSource, /\$emit\('reset-hotkeys'\)/);
+});
+
+test('generator settings modal exposes export and import like composition', async () => {
+  const modalSource = await readFile(
+    new URL('../src/components/GeneratorSettingsModal.vue', import.meta.url),
+    'utf8'
+  );
+  const pageSource = await readFile(
+    new URL('../src/pages/GeneratorPage.vue', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(modalSource, /导出设置/);
+  assert.match(modalSource, /导入设置/);
+  assert.match(modalSource, /accept="application\/json,\.json"/);
+  assert.match(pageSource, /function exportGeneratorSettings/);
+  assert.match(pageSource, /async function importGeneratorSettings/);
 });
 
 test('settings migration and configurable H hotkey are normalized', () => {

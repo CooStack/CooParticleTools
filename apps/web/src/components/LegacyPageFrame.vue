@@ -11,6 +11,7 @@ import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vu
 import { deploymentProfile } from '../config/deployment.js';
 import {
   classifyProjectData,
+  getProjectDefinition,
   getLegacyProjectDefinition,
   parseProjectText
 } from '../modules/projects/project-types.js';
@@ -19,6 +20,7 @@ import {
   persistLegacyPreferences
 } from '../modules/projects/legacy-preferences.js';
 import { getProjectRepository } from '../services/repositories/project-repository.js';
+import { restoreAppTheme } from '../modules/theme/app-theme.js';
 import {
   consumePendingProject,
   getElectronShell,
@@ -57,6 +59,13 @@ const router = useRouter();
 const projectRepository = getProjectRepository();
 const AUTO_SAVE_DELAY_MS = 350;
 const AUTO_SAVE_POLL_MS = 250;
+const POINTS_BUILDER_SHARED_PAGES = new Set([
+  'pointsbuilder.html',
+  'composition_pointsbuilder.html',
+  'composition_builder.html',
+  'generator.html'
+]);
+const POINTS_BUILDER_PREFERENCES_ADAPTER = getProjectDefinition('pointsbuilder')?.legacy || null;
 const frameNonce = ref(0);
 const frameRef = ref(null);
 const activeProjectId = ref('');
@@ -87,6 +96,20 @@ const hostClasses = computed(() => ({
 
 function getLegacyProjectTarget() {
   return props.manageProject ? getLegacyProjectDefinition(props.page) : null;
+}
+
+function getLegacyPreferenceAdapters() {
+  const adapters = [];
+  const projectAdapter = getLegacyProjectTarget()?.legacy;
+  if (projectAdapter) adapters.push(projectAdapter);
+  if (
+    POINTS_BUILDER_SHARED_PAGES.has(props.page)
+    && POINTS_BUILDER_PREFERENCES_ADAPTER
+    && projectAdapter !== POINTS_BUILDER_PREFERENCES_ADAPTER
+  ) {
+    adapters.push(POINTS_BUILDER_PREFERENCES_ADAPTER);
+  }
+  return adapters;
 }
 
 function applyPendingProject() {
@@ -156,6 +179,10 @@ function mergeLegacyPreferences(...sources) {
   for (const source of sources) {
     if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
     for (const [key, value] of Object.entries(source)) {
+      if (Array.isArray(value)) {
+        merged[key] = value.slice();
+        continue;
+      }
       if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
       const previous = merged[key] || {};
       merged[key] = { ...previous, ...value };
@@ -171,9 +198,10 @@ function mergeLegacyPreferences(...sources) {
 }
 
 async function restoreDurableLegacyPreferences() {
-  const adapter = getLegacyProjectTarget()?.legacy;
   try {
-    await hydrateLegacyPreferences(adapter, window.localStorage, getElectronShell());
+    for (const adapter of getLegacyPreferenceAdapters()) {
+      await hydrateLegacyPreferences(adapter, window.localStorage, getElectronShell());
+    }
   } catch (error) {
     console.warn('restore legacy preferences failed:', error);
   } finally {
@@ -182,8 +210,11 @@ async function restoreDurableLegacyPreferences() {
 }
 
 async function saveDurableLegacyPreferences() {
-  const adapter = getLegacyProjectTarget()?.legacy;
-  return persistLegacyPreferences(adapter, window.localStorage, getElectronShell());
+  let result = null;
+  for (const adapter of getLegacyPreferenceAdapters()) {
+    result = await persistLegacyPreferences(adapter, window.localStorage, getElectronShell());
+  }
+  return result;
 }
 
 async function restoreIndexedProject(projectId, token) {
@@ -287,10 +318,9 @@ function legacyFileSnapshot() {
 
 function legacyObservedSnapshot() {
   const target = getLegacyProjectTarget();
-  const preferencesKey = target?.legacy?.preferencesStorageKey;
-  const preferences = preferencesKey
-    ? String(window.localStorage.getItem(preferencesKey) || '')
-    : '';
+  const preferences = getLegacyPreferenceAdapters()
+    .map((adapter) => String(window.localStorage.getItem(adapter.preferencesStorageKey) || ''))
+    .join('\n');
   return `${legacyFileSnapshot()}\n${preferences}`;
 }
 
@@ -486,6 +516,12 @@ async function navigateFromLegacy(targetName) {
 function handleLegacyMessage(event) {
   if (event.origin && event.origin !== window.location.origin) return;
   const type = String(event?.data?.type || '').trim();
+  if (type === 'coo-legacy-theme') {
+    // Mirror the builder's theme onto the host document so the app-drawn title
+    // bar and the frame surround follow the page instead of sitting apart from it.
+    applyHostTheme(String(event?.data?.theme || ''));
+    return;
+  }
   if (type === 'coo-request-project-context') {
     if (event.source !== frameRef.value?.contentWindow) return;
     sendProjectContextToFrame(event.source, event?.data?.requestId);
@@ -523,6 +559,15 @@ function sendProjectContextToFrame(targetWindow = frameRef.value?.contentWindow,
     projectName: activeProjectName.value
   }, window.location.origin);
   return true;
+}
+
+function applyHostTheme(theme) {
+  if (typeof document === 'undefined') return;
+  const next = String(theme || '').trim();
+  // Empty means "leaving the builder": hand the shell its own theme back rather
+  // than dropping the attribute, which would reset the workbench to the default.
+  if (next) document.body.dataset.theme = next;
+  else restoreAppTheme();
 }
 
 function handleFrameLoad() {
@@ -628,6 +673,8 @@ onBeforeUnmount(() => {
   projectLoadToken += 1;
   window.clearTimeout(autoSaveTimer);
   window.clearInterval(autoSavePollTimer);
+  // Otherwise the workbench would keep whichever theme the builder was using.
+  applyHostTheme('');
   if (window.__cooLegacyNavigate === navigateFromLegacy) {
     delete window.__cooLegacyNavigate;
   }
@@ -673,35 +720,17 @@ onBeforeRouteUpdate(async () => {
 
 <style scoped>
 .legacy-page-host {
-  --mc-frame-line: #56313e;
-  --mc-frame-shadow: #3a2330;
   position: relative;
   box-sizing: border-box;
   width: 100%;
-  min-height: 100vh;
-  height: 100vh;
+  min-height: var(--app-vh);
+  height: var(--app-vh);
   overflow: hidden;
   padding: clamp(8px, 1.1vw, 16px);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 34%),
-    url('../assets/textures/skybox.svg'),
-    linear-gradient(180deg, #83c8f2 0%, #bfe6fb 54%, #f7dbe1 100%);
-  background-repeat: no-repeat;
-  background-size: auto, cover, auto;
-  image-rendering: pixelated;
+    radial-gradient(1100px 760px at 6% -6%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 56%),
+    var(--bg);
   isolation: isolate;
-}
-
-.legacy-page-host::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(180deg, transparent 0 68%, rgba(239, 158, 190, 0.16) 68% 100%),
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0 8px, transparent 8px 16px);
-  opacity: 0.34;
 }
 
 .legacy-page-frame {
@@ -710,29 +739,22 @@ onBeforeRouteUpdate(async () => {
   display: block;
   width: 100%;
   height: 100%;
-  border: 4px solid var(--mc-frame-line);
-  border-radius: 0;
-  background:
-    url('../assets/textures/sakura-planks.svg'),
-    #8d5361;
-  background-size: 48px 48px, auto;
-  box-shadow: 0 6px 0 var(--mc-frame-shadow), 0 16px 28px rgba(69, 38, 49, 0.34);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel2);
+  box-shadow: var(--shadow);
 }
 
 .legacy-page-host--seamless {
   padding: 0;
-  background: #170812;
-  image-rendering: auto;
-}
-
-.legacy-page-host--seamless::before {
-  display: none;
+  background: var(--bg);
 }
 
 .legacy-page-host--seamless .legacy-page-frame {
-  border: 0 !important;
-  background: #170812;
-  box-shadow: none !important;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+  box-shadow: none;
 }
 
 .legacy-page-loading {
@@ -744,27 +766,30 @@ onBeforeRouteUpdate(async () => {
   place-items: center;
   align-content: center;
   gap: 14px;
-  color: #dec0cf;
+  color: var(--muted);
   background:
-    linear-gradient(180deg, rgba(255, 116, 176, 0.08), transparent 34%),
-    linear-gradient(180deg, #1b0a15 0%, #12070e 60%, #080408 100%);
+    radial-gradient(1100px 760px at 6% -6%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 56%),
+    var(--bg);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .legacy-page-loading::before {
   content: "";
-  width: 10px;
-  height: 10px;
-  background: #f06aa7;
-  box-shadow: -18px 0 0 rgba(240, 106, 167, 0.28), 18px 0 0 rgba(240, 106, 167, 0.28);
-  animation: legacy-loading-pulse 900ms steps(2, end) infinite;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow:
+    -18px 0 0 color-mix(in srgb, var(--accent) 28%, transparent),
+    18px 0 0 color-mix(in srgb, var(--accent) 28%, transparent);
+  animation: legacy-loading-pulse 900ms ease-in-out infinite;
 }
 
 @keyframes legacy-loading-pulse {
   50% {
-    background: rgba(240, 106, 167, 0.28);
-    box-shadow: -18px 0 0 #f06aa7, 18px 0 0 #f06aa7;
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+    box-shadow: -18px 0 0 var(--accent), 18px 0 0 var(--accent);
   }
 }
 

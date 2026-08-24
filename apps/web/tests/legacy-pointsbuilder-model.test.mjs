@@ -3,6 +3,8 @@ import test from 'node:test';
 import {
   createPointsBuilderNode,
   createPointsBuilderState,
+  buildPointsBuilderVariableCompletions,
+  normalizePointsBuilderVariables,
   normalizePointsBuilderNodeTree,
   normalizePointsBuilderState
 } from '../public/legacy/assets/points_builder/js/model.js';
@@ -102,6 +104,38 @@ test('PointsBuilder state normalization delegates optional preset and variable p
   assert.deepEqual(normalized.presets, [{ id: 'preset-a' }]);
   assert.deepEqual(normalized.variables, { scalar: { radius: 3 } });
   assert.deepEqual(normalized.settings, { keep: true });
+});
+
+test('PointsBuilder variable normalization keeps array and legacy scoped definitions for completion', () => {
+  const variables = [
+      { name: 'radius', type: 'Double', value: 2.5 },
+      { name: 'segments', type: 'Int', value: 32 },
+      { name: 'origin', type: 'Vec3', value: { x: 1, y: 2, z: 3 } }
+  ];
+  assert.deepEqual(
+    normalizePointsBuilderVariables(variables),
+    {
+      scalar: { radius: 2.5, segments: 32 },
+      vector: { origin: { x: 1, y: 2, z: 3 } }
+    }
+  );
+  assert.deepEqual(
+    normalizePointsBuilderVariables({ globals: [{ name: 'legacyRadius', type: 'Double', value: '4.5' }] }),
+    { scalar: { legacyRadius: 4.5 }, vector: {} }
+  );
+  assert.deepEqual(
+    normalizePointsBuilderVariables({ globals: { legacySegments: 8 } }),
+    { scalar: { legacySegments: 8 }, vector: {} }
+  );
+  const completions = buildPointsBuilderVariableCompletions(variables);
+  assert.deepEqual(completions.numeric.map((item) => item.value), ['radius', 'segments', 'origin.x', 'origin.y', 'origin.z']);
+  assert.deepEqual(completions.vectors.map((item) => item.ref), ['origin']);
+  assert.deepEqual(buildPointsBuilderVariableCompletions([
+    { name: 'color', type: 'Vector3f', value: { x: 1, y: 0, z: 0 } }
+  ]).vectors, []);
+  assert.deepEqual(normalizePointsBuilderVariables([
+    { name: 'metadata', type: 'String', value: { x: 1, y: 2, z: 3 } }
+  ]), { scalar: {}, vector: {} });
 });
 
 test('PointsBuilder node normalization migrates legacy data without changing execution order', () => {

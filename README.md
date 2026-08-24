@@ -56,6 +56,7 @@ Optional Electron shell environment:
 
 ```powershell
 $env:COO_PARTICLES_REBUILD = "1"
+$env:COO_PARTICLES_SKIP_BUILD = "1"
 $env:COO_PARTICLES_WEB_ROOT = "D:\CodeSources\web\CooParticlesAPITools\apps\web"
 $env:COO_PARTICLES_NODE = "C:\Path\To\node.exe"
 $env:COO_PARTICLES_PORT = "39920"
@@ -66,6 +67,10 @@ If Node is installed but not on `PATH`, pass it to the launcher:
 ```powershell
 py scripts\run_electron.py --node "C:\Path\To\node.exe"
 ```
+
+Electron now rebuilds the frontend when the source signature changes. Set
+`COO_PARTICLES_SKIP_BUILD=1` only when an existing frontend build should be
+used unchanged.
 
 If Electron binary download is slow or blocked, configure an Electron mirror
 before running the launcher:

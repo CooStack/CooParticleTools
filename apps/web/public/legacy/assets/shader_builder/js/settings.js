@@ -1,5 +1,21 @@
-import { DEFAULT_SETTINGS, THEMES, STORAGE_KEYS } from "./constants.js";
+import { DEFAULT_SETTINGS, THEMES, STORAGE_KEYS } from "./constants.js?v=20260824_1";
 import { clamp, loadJson, saveJson } from "./utils.js";
+import { watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
+
+/*
+ * Tell the desktop shell which theme this builder is wearing so the app-drawn
+ * title bar matches the page instead of looking bolted on.
+ */
+function broadcastThemeToShell(theme) {
+    try {
+        if (window.parent && window.parent !== window) {
+            window.parent.postMessage({ type: "coo-legacy-theme", theme: String(theme || "") }, window.location.origin);
+        }
+    } catch {
+        // Cross-origin parents simply do not get the hint.
+    }
+}
+
 
 function normalizeTheme(theme) {
     const valid = THEMES.some((t) => t.id === theme);
@@ -67,11 +83,15 @@ export function initSettingsSystem(ctx) {
         });
     }
 
+    // Another tool (or the shell) changing the theme applies here live.
+    watchAppTheme((next) => applyTheme(next));
+
     function applyTheme(themeId) {
         const finalTheme = normalizeTheme(themeId);
         document.body.setAttribute("data-theme", finalTheme);
         if (themeSelect && themeSelect.value !== finalTheme) themeSelect.value = finalTheme;
         localStorage.setItem(STORAGE_KEYS.theme, finalTheme);
+        broadcastThemeToShell(finalTheme);
     }
 
     function applyToForm(settings) {
@@ -116,9 +136,17 @@ export function initSettingsSystem(ctx) {
     }
 
     function loadInitialSettings() {
-        const themeSaved = localStorage.getItem(STORAGE_KEYS.theme) || DEFAULT_SETTINGS.theme;
+        /*
+         * The shared theme store wins over the copy inside this tool's settings
+         * blob. The other way round (saved?.theme first) meant the blob shadowed
+         * the global choice, so this builder kept its own look no matter what was
+         * picked elsewhere. The blob is only a fallback for installs that predate
+         * the shared store.
+         */
+        const themeSaved = localStorage.getItem(STORAGE_KEYS.theme) || "";
         const saved = loadJson(STORAGE_KEYS.settings, null);
-        const merged = normalizeSettings(Object.assign({}, DEFAULT_SETTINGS, saved || {}, { theme: saved?.theme || themeSaved }));
+        const theme = themeSaved || saved?.theme || DEFAULT_SETTINGS.theme;
+        const merged = normalizeSettings(Object.assign({}, DEFAULT_SETTINGS, saved || {}, { theme }));
         patchSettings(merged, { silent: true, skipHistory: true });
     }
 

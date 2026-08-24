@@ -34,11 +34,13 @@ class FrontendManager:
         signature = self._source_signature()
 
         if not rebuild and self._target_index().exists() and self._cache_matches(signature):
+            self._sync_public_assets()
             return FrontendResult(self.target_dist, built=False, source="cache")
 
         if not skip_build and self.web_root:
             try:
                 self._build_with_vite()
+                self._sync_public_assets()
                 self._write_cache(signature, source="vite")
                 return FrontendResult(self.target_dist, built=True, source="vite")
             except Exception as exc:
@@ -48,6 +50,7 @@ class FrontendManager:
             source_dist = self.web_root / "dist"
             if (source_dist / "index.html").exists():
                 self._copy_dist(source_dist, self.target_dist)
+                self._sync_public_assets()
                 self._write_cache(signature, source="source-dist")
                 return FrontendResult(
                     self.target_dist,
@@ -57,6 +60,7 @@ class FrontendManager:
                 )
 
         if self._target_index().exists():
+            self._sync_public_assets()
             return FrontendResult(
                 self.target_dist,
                 built=False,
@@ -67,6 +71,37 @@ class FrontendManager:
         raise FileNotFoundError(
             "No frontend dist is available. Ensure apps/web exists and run without --skip-build, or build apps/web first."
         )
+
+    def _sync_public_assets(self) -> None:
+        if not self.web_root or not self.target_dist.exists():
+            return
+        source = self.web_root / "public"
+        if not source.exists():
+            return
+        for entry in source.iterdir():
+            self._sync_public_entry(entry, self.target_dist / entry.name, prune=True)
+
+    @staticmethod
+    def _sync_public_entry(source: Path, target: Path, *, prune: bool) -> None:
+        if source.is_dir():
+            if target.exists() and not target.is_dir():
+                target.unlink()
+            target.mkdir(parents=True, exist_ok=True)
+            for entry in source.iterdir():
+                FrontendManager._sync_public_entry(entry, target / entry.name, prune=prune)
+            if prune:
+                for entry in target.iterdir():
+                    if not (source / entry.name).exists():
+                        if entry.is_dir():
+                            shutil.rmtree(entry)
+                        else:
+                            entry.unlink()
+            return
+
+        if target.exists() and target.is_dir():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
 
     def _target_index(self) -> Path:
         return self.target_dist / "index.html"

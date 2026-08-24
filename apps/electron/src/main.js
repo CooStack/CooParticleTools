@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, shell } = require('electron');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const http = require('node:http');
@@ -10,6 +10,11 @@ const { createProjectPresetFileStore } = require('./project-preset-files');
 const { createPreferencesStore } = require('./preferences-store');
 const { writeProjectAutoSave } = require('./project-auto-save');
 const { writeTextFileAtomic } = require('./atomic-text-file');
+const {
+  buildMenuModel,
+  isRecentProjectId,
+  recentProjectPath,
+} = require('./app-menu');
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const defaultWebRoot = path.join(repoRoot, 'apps', 'web');
@@ -79,7 +84,7 @@ function buildBackendArgs(port) {
 
   if (isTruthy(process.env.COO_PARTICLES_REBUILD)) {
     args.push('--rebuild');
-  } else {
+  } else if (isTruthy(process.env.COO_PARTICLES_SKIP_BUILD)) {
     args.push('--skip-build');
   }
 
@@ -517,58 +522,108 @@ function shouldOpenExternally(rawUrl) {
   }
 }
 
-function installMenu() {
-  const recentProjects = readRecentProjects();
-  const recentSubmenu = recentProjects.length
-    ? [
-        ...recentProjects.map((item) => ({
-          label: item.name,
-          sublabel: item.filePath,
-          click: () => sendShellCommand({ type: 'open-recent-project', filePath: item.filePath }),
-        })),
-        { type: 'separator' },
-        { label: '清空最近项目', click: clearRecentProjects },
-      ]
-    : [{ label: '暂无最近项目', enabled: false }];
+/*
+ * Maps a menu-model id to behaviour. Shared by the native menu (accelerators)
+ * and by the in-page title bar, so both always do exactly the same thing.
+ * `role` items are handled here rather than by Electron because the in-page menu
+ * cannot invoke a native role.
+ */
+function runMenuCommand(rawId) {
+  const id = String(rawId || '');
+  if (!id) return { ok: false };
 
-  const template = [
-    {
-      label: '文件',
-      submenu: [
-        { label: '新建项目', accelerator: 'CommandOrControl+N', click: () => sendShellCommand({ type: 'new-project' }) },
-        { label: '打开项目...', accelerator: 'CommandOrControl+O', click: () => sendShellCommand({ type: 'open-project' }) },
-        { label: '最近项目', submenu: recentSubmenu },
-        { type: 'separator' },
-        { label: '保存', accelerator: 'CommandOrControl+S', click: () => sendShellCommand({ type: 'save-project' }) },
-        { label: '另存为...', accelerator: 'CommandOrControl+Shift+S', click: () => sendShellCommand({ type: 'save-as-project' }) },
-        { label: '导出 Kotlin...', accelerator: 'CommandOrControl+E', click: () => sendShellCommand({ type: 'export-kotlin' }) },
-        { type: 'separator' },
-        { label: '项目', click: () => sendShellCommand({ type: 'navigate', routeName: 'workbench' }) },
-        { type: 'separator' },
-        { role: 'quit', label: '退出' },
-      ],
-    },
-    {
-      label: '扩展',
-      submenu: [
-        { label: '插件', click: () => sendShellCommand({ type: 'navigate', routeName: 'plugins' }) },
-      ],
-    },
-    {
-      label: '视图',
-      submenu: [
-        { role: 'reload', label: '重新加载' },
-        { role: 'toggleDevTools', label: '切换开发者工具' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: '重置缩放' },
-        { role: 'zoomIn', label: '放大' },
-        { role: 'zoomOut', label: '缩小' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: '切换全屏' },
-      ],
-    },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  if (isRecentProjectId(id)) {
+    sendShellCommand({ type: 'open-recent-project', filePath: recentProjectPath(id) });
+    return { ok: true };
+  }
+
+  switch (id) {
+    case 'new-project':
+    case 'open-project':
+    case 'save-project':
+    case 'save-as-project':
+    case 'export-kotlin':
+      sendShellCommand({ type: id });
+      return { ok: true };
+    case 'goto-workbench':
+      sendShellCommand({ type: 'navigate', routeName: 'workbench' });
+      return { ok: true };
+    case 'goto-plugins':
+      sendShellCommand({ type: 'navigate', routeName: 'plugins' });
+      return { ok: true };
+    case 'clear-recent-projects':
+      clearRecentProjects();
+      return { ok: true };
+    case 'quit':
+      app.quit();
+      return { ok: true };
+    default:
+      break;
+  }
+
+  const contents = mainWindow?.webContents;
+  if (!contents) return { ok: false };
+
+  switch (id) {
+    case 'reload':
+      contents.reload();
+      return { ok: true };
+    case 'toggle-devtools':
+      if (contents.isDevToolsOpened()) contents.closeDevTools();
+      else contents.openDevTools();
+      return { ok: true };
+    case 'zoom-reset':
+      contents.setZoomLevel(0);
+      return { ok: true };
+    case 'zoom-in':
+      contents.setZoomLevel(Math.min(contents.getZoomLevel() + 0.5, 5));
+      return { ok: true };
+    case 'zoom-out':
+      contents.setZoomLevel(Math.max(contents.getZoomLevel() - 0.5, -5));
+      return { ok: true };
+    case 'toggle-fullscreen':
+      mainWindow.setFullScreen(!mainWindow.isFullScreen());
+      return { ok: true };
+    default:
+      return { ok: false };
+  }
+}
+
+function toNativeMenuTemplate(items) {
+  return items.map((item) => {
+    if (!item || item.type === 'separator') return { type: 'separator' };
+    const entry = { label: item.label };
+    if (item.sublabel) entry.sublabel = item.sublabel;
+    if (item.enabled === false) entry.enabled = false;
+    if (Array.isArray(item.items)) {
+      entry.submenu = toNativeMenuTemplate(item.items);
+      return entry;
+    }
+    if (item.accelerator) entry.accelerator = item.accelerator;
+    // Roles are executed through runMenuCommand so the in-page menu matches.
+    if (item.enabled !== false) {
+      const id = item.id;
+      entry.click = () => runMenuCommand(id);
+    }
+    return entry;
+  });
+}
+
+function currentMenuModel() {
+  return buildMenuModel({ recentProjects: readRecentProjects() });
+}
+
+function installMenu() {
+  const model = currentMenuModel();
+  Menu.setApplicationMenu(Menu.buildFromTemplate(toNativeMenuTemplate(model)));
+  // The bar itself stays hidden: the renderer draws a themed one. Keeping the
+  // Menu installed is what preserves the keyboard accelerators.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setMenuBarVisibility(false);
+    // The recent-projects submenu is dynamic, so the in-page menu has to be told
+    // when it changes rather than only reading the model once at startup.
+    mainWindow.webContents.send('shell:menu-model', model);
+  }
 }
 
 function launchUrl(baseUrl) {
@@ -580,9 +635,48 @@ function launchUrl(baseUrl) {
   }
 }
 
+const TITLE_BAR_HEIGHT = 34;
+// Matches the neutral dark theme's --panel / --text so the very first paint is
+// already on-theme; the renderer pushes the live theme colours after mount.
+const defaultTitleBarTheme = Object.freeze({ color: '#171d23', symbolColor: '#ecf0f5' });
+let titleBarTheme = { ...defaultTitleBarTheme };
+
+function normalizeHexColor(raw, fallback) {
+  const text = String(raw || '').trim();
+  return /^#[0-9a-f]{6}$/i.test(text) ? text : fallback;
+}
+
+function applyTitleBarTheme(theme = {}) {
+  titleBarTheme = {
+    color: normalizeHexColor(theme.color, defaultTitleBarTheme.color),
+    symbolColor: normalizeHexColor(theme.symbolColor, defaultTitleBarTheme.symbolColor),
+  };
+  if (!mainWindow || mainWindow.isDestroyed()) return titleBarTheme;
+  // Keep the OS's own surfaces (native menus, dialogs, scrollbars) on the same
+  // side of light/dark as the page.
+  nativeTheme.themeSource = isLightColor(titleBarTheme.color) ? 'light' : 'dark';
+  if (typeof mainWindow.setTitleBarOverlay === 'function') {
+    try {
+      mainWindow.setTitleBarOverlay({ ...titleBarTheme, height: TITLE_BAR_HEIGHT });
+    } catch {
+      // setTitleBarOverlay is Windows-only; ignore elsewhere.
+    }
+  }
+  return titleBarTheme;
+}
+
+function isLightColor(hex) {
+  const value = String(hex || '').replace('#', '');
+  if (value.length !== 6) return false;
+  const r = parseInt(value.slice(0, 2), 16);
+  const g = parseInt(value.slice(2, 4), 16);
+  const b = parseInt(value.slice(4, 6), 16);
+  // Rec. 601 luma — good enough to pick a light/dark OS theme.
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 140;
+}
+
 async function createWindow() {
   const info = await startBackend();
-  installMenu();
 
   mainWindow = new BrowserWindow({
     title: appName,
@@ -590,8 +684,17 @@ async function createWindow() {
     height: 940,
     minWidth: 1120,
     minHeight: 720,
-    backgroundColor: '#101418',
+    backgroundColor: defaultTitleBarTheme.color,
     show: false,
+    // The renderer draws the title bar so it can follow the active theme; the
+    // native window controls are overlaid on top of it.
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: defaultTitleBarTheme.color,
+      symbolColor: defaultTitleBarTheme.symbolColor,
+      height: TITLE_BAR_HEIGHT,
+    },
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -599,6 +702,10 @@ async function createWindow() {
       sandbox: true,
     },
   });
+
+  installMenu();
+  mainWindow.setMenuBarVisibility(false);
+  applyTitleBarTheme(titleBarTheme);
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
@@ -638,6 +745,19 @@ async function createWindow() {
 }
 
 ipcMain.handle('shell:getBackendInfo', () => backendInfo);
+ipcMain.handle('shell:getMenuModel', () => currentMenuModel());
+ipcMain.handle('shell:runMenuCommand', (_event, id) => runMenuCommand(id));
+ipcMain.handle('shell:getWindowChrome', () => ({
+  platform: process.platform,
+  titleBarHeight: TITLE_BAR_HEIGHT,
+  appName,
+  customTitleBar: true,
+}));
+ipcMain.handle('shell:setTitleBarTheme', (_event, theme) => applyTitleBarTheme(theme || {}));
+ipcMain.handle('shell:getWindowState', () => ({
+  maximized: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized()),
+  fullScreen: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()),
+}));
 ipcMain.on('shell:project-close-response', resolveProjectCloseRequest);
 ipcMain.handle('shell:openExternal', async (_event, rawUrl) => {
   if (!isSafeExternalUrl(rawUrl)) {

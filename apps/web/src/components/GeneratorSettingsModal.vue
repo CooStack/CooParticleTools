@@ -17,7 +17,7 @@
 
         <section class="generator-settings-panel">
           <h3>显示</h3>
-          <label class="generator-settings-row"><span>主题</span><select v-model="project.settings.theme" class="input"><option v-for="theme in themeOptions" :key="theme.id" :value="theme.id">{{ theme.label }}</option></select></label>
+          <label class="generator-settings-row"><span>主题</span><select :value="activeTheme" class="input" @change="$emit('update-theme', $event.target.value)"><template v-for="group in themeGroups" :key="group.name"><optgroup v-if="group.name" :label="group.name"><option v-for="theme in group.items" :key="theme.id" :value="theme.id">{{ theme.label }}</option></optgroup><option v-for="theme in group.name ? [] : group.items" :key="theme.id" :value="theme.id">{{ theme.label }}</option></template></select></label>
           <label class="generator-settings-toggle"><input v-model="project.settings.showSkybox" type="checkbox" /><span>显示天空背景</span></label>
           <label class="generator-settings-toggle"><input v-model="project.settings.showGrid" type="checkbox" /><span>显示网格</span></label>
           <label class="generator-settings-toggle"><input v-model="project.settings.showAxes" type="checkbox" /><span>显示坐标轴</span></label>
@@ -41,13 +41,14 @@
         </section>
 
         <section class="generator-settings-panel generator-settings-panel-wide">
-          <div class="generator-settings-panel-head"><h3>快捷键</h3><button class="generator-settings-reset" type="button" @click="$emit('reset-hotkeys')">恢复默认</button></div>
-          <div class="generator-hotkey-grid">
-            <label v-for="item in hotkeyFields" :key="item.key" class="generator-hotkey-row">
-              <span>{{ item.label }}</span>
-              <input class="input" type="text" readonly :value="formatHotkey(project.settings.hotkeys[item.key])" @keydown="captureHotkey(item.key, $event)" />
-            </label>
+          <h3>快捷键</h3>
+          <div class="generator-settings-actions">
+            <button class="generator-settings-btn primary" type="button" @click="$emit('open-hotkeys')">打开快捷键设置</button>
+            <button class="generator-settings-btn" type="button" @click="$emit('export-settings')">导出设置</button>
+            <button class="generator-settings-btn" type="button" @click="pickSettingsFile">导入设置</button>
+            <input ref="settingsFileRef" type="file" accept="application/json,.json" hidden @change="onSettingsFileChange" />
           </div>
+          <p v-if="message" class="generator-settings-message" :class="{ error: messageIsError }" role="status">{{ message }}</p>
         </section>
       </div>
     </section>
@@ -55,19 +56,41 @@
 </template>
 
 <script setup>
-import { nextTick, ref, watch } from 'vue';
-import { hotkeyToHuman } from '../modules/pointsbuilder/hotkeys.js';
+import { computed, nextTick, ref, watch } from 'vue';
 
 const props = defineProps({
   open: { type: Boolean, default: false },
   project: { type: Object, required: true },
   themeOptions: { type: Array, default: () => [] },
-  hotkeyFields: { type: Array, default: () => [] }
+  // The app-wide theme; shared with every other tool rather than stored per project.
+  activeTheme: { type: String, default: 'dark-1' },
+  message: { type: String, default: '' },
+  messageIsError: { type: Boolean, default: false }
 });
 
-const emit = defineEmits(['close', 'record-hotkey', 'reset-hotkeys', 'lifecycle-change']);
+const emit = defineEmits([
+  'close',
+  'lifecycle-change',
+  'open-hotkeys',
+  'export-settings',
+  'import-settings'
+, 'update-theme']);
 const modalRef = ref(null);
+const settingsFileRef = ref(null);
 let returnFocusElement = null;
+
+// Preserve declaration order while collapsing consecutive same-group entries
+// into one <optgroup>; entries without a group render as bare options.
+const themeGroups = computed(() => {
+  const groups = [];
+  for (const theme of props.themeOptions) {
+    const name = theme.group || '';
+    const last = groups[groups.length - 1];
+    if (last && last.name === name) last.items.push(theme);
+    else groups.push({ name, items: [theme] });
+  }
+  return groups;
+});
 
 watch(() => props.open, async (open) => {
   if (open) {
@@ -81,15 +104,14 @@ watch(() => props.open, async (open) => {
   }
 });
 
-function captureHotkey(key, event) {
-  if (event.key === 'Tab' || event.key === 'Escape') return;
-  event.preventDefault();
-  event.stopPropagation();
-  emit('record-hotkey', key, event);
+function pickSettingsFile() {
+  settingsFileRef.value?.click();
 }
 
-function formatHotkey(value) {
-  return hotkeyToHuman(value);
+function onSettingsFileChange(event) {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (file) emit('import-settings', file);
 }
 </script>
 
@@ -101,7 +123,8 @@ function formatHotkey(value) {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgb(2 5 13 / 52%);
+  background: var(--scrim, rgb(2 5 13 / 58%));
+  backdrop-filter: blur(3px);
 }
 
 .generator-settings-modal {
@@ -110,21 +133,21 @@ function formatHotkey(value) {
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  border: 2px solid var(--border);
-  border-radius: 2px;
-  background: var(--bg-panel-strong, #1f0e18);
-  color: inherit;
-  box-shadow: 0 22px 60px rgb(0 0 0 / 48%);
+  border: 1px solid var(--line2, rgba(255, 255, 255, 0.14));
+  border-radius: var(--radius, 14px);
+  background: var(--panel, #171d23);
+  color: var(--text, #ecf0f5);
+  box-shadow: var(--shadow, 0 12px 30px rgba(0, 0, 0, 0.35));
 }
 
 .generator-settings-head {
-  min-height: 58px;
+  min-height: 52px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.08));
 }
 
 .generator-settings-head h2,
@@ -133,18 +156,23 @@ function formatHotkey(value) {
 }
 
 .generator-settings-head h2 {
-  font-size: 20px;
+  font-size: 16px;
 }
 
 .generator-settings-close {
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--border);
-  border-radius: 0;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius2, 10px);
   color: inherit;
-  background: var(--bg-soft);
-  font-size: 22px;
+  background: var(--card, #1d242b);
+  font-size: 18px;
   line-height: 1;
+}
+
+.generator-settings-close:hover {
+  border-color: var(--line2, rgba(255, 255, 255, 0.14));
 }
 
 .generator-settings-body {
@@ -162,10 +190,10 @@ function formatHotkey(value) {
   display: grid;
   gap: 10px;
   align-content: start;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--bg-soft);
+  padding: 10px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius2, 10px);
+  background: color-mix(in srgb, var(--panel2, #12171d) 72%, transparent);
 }
 
 .generator-settings-panel-wide {
@@ -173,9 +201,12 @@ function formatHotkey(value) {
 }
 
 .generator-settings-panel h3 {
-  padding-bottom: 7px;
-  border-bottom: 1px solid var(--border);
-  font-size: 14px;
+  color: var(--muted, rgba(152, 166, 181, 0.68));
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .generator-settings-row {
@@ -184,7 +215,7 @@ function formatHotkey(value) {
   grid-template-columns: minmax(105px, 0.7fr) minmax(0, 1.3fr);
   gap: 10px;
   align-items: center;
-  color: var(--text-soft);
+  color: var(--muted, rgba(152, 166, 181, 0.68));
   font-size: 12px;
 }
 
@@ -203,56 +234,70 @@ function formatHotkey(value) {
   align-items: center;
   gap: 8px;
   padding: 7px 9px;
-  border: 1px solid var(--border);
-  color: var(--text-soft);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius3, 8px);
+  background: color-mix(in srgb, var(--panel2, #12171d) 55%, transparent);
+  color: var(--muted, rgba(152, 166, 181, 0.68));
   font-size: 12px;
 }
 
 .generator-settings-toggle input {
-  accent-color: var(--brand);
+  accent-color: var(--accent, #8fa7b8);
 }
 
-.generator-settings-panel-head {
+.generator-settings-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.generator-settings-reset {
-  min-height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  color: inherit;
-  background: transparent;
-  font-size: 11px;
-}
-
-.generator-hotkey-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  flex-wrap: wrap;
   gap: 8px;
 }
 
-.generator-hotkey-row {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(84px, 110px);
-  gap: 8px;
-  align-items: center;
-  color: var(--text-soft);
+.generator-settings-btn {
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius2, 10px);
+  color: var(--text, #ecf0f5);
+  background: var(--card, #1d242b);
+  font-size: 12px;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.generator-settings-btn:hover {
+  border-color: var(--line2, rgba(255, 255, 255, 0.14));
+  background: color-mix(in srgb, var(--card, #1d242b) 88%, var(--hover-veil, rgba(255, 255, 255, 0.04)));
+}
+
+.generator-settings-btn.primary {
+  border-color: color-mix(in srgb, var(--accent, #8fa7b8) 52%, transparent);
+  background: var(--accent, #8fa7b8);
+  color: var(--accent-ink, #171513);
+  font-weight: 600;
+}
+
+.generator-settings-btn.primary:hover {
+  background: color-mix(in srgb, var(--accent, #8fa7b8) 88%, white 12%);
+}
+
+.generator-settings-btn:focus-visible,
+.generator-settings-close:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent, #8fa7b8) 58%, transparent);
+  box-shadow: var(--focus-ring, 0 0 0 3px rgba(143, 167, 184, 0.22));
+}
+
+.generator-settings-message {
+  margin: 0;
+  color: var(--muted, rgba(152, 166, 181, 0.68));
   font-size: 12px;
 }
 
-@media (max-width: 900px) {
-  .generator-hotkey-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.generator-settings-message.error {
+  color: color-mix(in srgb, var(--danger, #c96f62) 78%, white 22%);
 }
 
 @media (max-width: 680px) {
   .generator-settings-mask { padding: 10px; }
-  .generator-settings-body,
-  .generator-hotkey-grid { grid-template-columns: 1fr; }
+  .generator-settings-body { grid-template-columns: 1fr; }
   .generator-settings-panel-wide { grid-column: auto; }
   .generator-settings-row { grid-template-columns: 1fr; gap: 5px; }
 }

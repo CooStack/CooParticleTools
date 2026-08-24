@@ -14,6 +14,17 @@
         <RouterLink :to="{ name: 'plugins' }">插件</RouterLink>
       </nav>
 
+      <label class="rail-theme">
+        <span>主题</span>
+        <select v-model="appTheme" class="rail-theme-select">
+          <template v-for="group in themeGroups" :key="group.name">
+            <optgroup v-if="group.name" :label="group.name">
+              <option v-for="theme in group.items" :key="theme.id" :value="theme.id">{{ theme.label }}</option>
+            </optgroup>
+          </template>
+        </select>
+      </label>
+
       <div class="rail-status">
         <span :class="['status-dot', shellAvailable ? 'online' : '']"></span>
         <span>{{ shellAvailable ? 'Desktop runtime' : 'Web runtime' }}</span>
@@ -172,7 +183,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   PROJECT_TYPES,
@@ -193,6 +204,14 @@ import {
   stashPendingProject
 } from '../services/shell/electron-shell.js';
 import { formatDateTime } from '../utils/format.js';
+import { groupThemeOptions } from '../modules/theme/options.js';
+import { onAppThemeChange, readAppTheme, watchAppTheme, writeAppTheme } from '../modules/theme/app-theme.js';
+import {
+  GLASS_SURFACE_LIMITS,
+  onGlassSurfaceChange,
+  readGlassSurface,
+  writeGlassSurface
+} from '../modules/theme/glass-surface.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -213,6 +232,36 @@ const projectFilePath = ref('');
 const projectPackageName = ref('');
 const projectMapping = ref('yarn');
 const shellAvailable = computed(() => isElectronShell());
+const themeGroups = groupThemeOptions();
+const appTheme = ref(readAppTheme());
+/*
+ * `syncingTheme` stops the round trip: an external change sets the ref, which
+ * would otherwise fire the watcher and write the same value straight back out.
+ */
+let syncingTheme = false;
+watch(appTheme, (next) => {
+  if (syncingTheme) return;
+  writeAppTheme(next);
+});
+
+function adoptTheme(next) {
+  if (next === appTheme.value) return;
+  syncingTheme = true;
+  appTheme.value = next;
+  nextTick(() => {
+    syncingTheme = false;
+  });
+}
+
+// A builder iframe can change the theme too; keep the picker in step with it.
+const disposeThemeWatch = watchAppTheme(adoptTheme);
+// And the durable theme arrives asynchronously at startup (the renderer's origin
+// changes every launch, so the cache the ref was seeded from may be empty).
+const disposeThemeApplied = onAppThemeChange(adoptTheme);
+onBeforeUnmount(() => {
+  disposeThemeWatch();
+  disposeThemeApplied();
+});
 const supportsPackageConfig = computed(() => ['generator', 'composition'].includes(selectedProjectType.value));
 const unindexedRecentFiles = computed(() => {
   const indexedPaths = new Set(
@@ -501,13 +550,13 @@ onMounted(() => {
 
 <style scoped>
 .workbench-page {
-  min-height: 100vh;
+  min-height: var(--app-vh);
   display: grid;
   grid-template-columns: 236px minmax(0, 1fr);
-  color: var(--mc-text, #fff3f8);
+  color: var(--text);
   background:
-    linear-gradient(180deg, rgba(255, 116, 176, 0.08), transparent 34%),
-    linear-gradient(180deg, #1b0a15 0%, #12070e 60%, #080408 100%);
+    radial-gradient(1100px 760px at 6% -6%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 56%),
+    var(--bg);
 }
 
 .workbench-rail {
@@ -515,8 +564,8 @@ onMounted(() => {
   flex-direction: column;
   gap: 28px;
   padding: 22px 18px;
-  border-right: 1px solid rgba(255, 214, 232, 0.14);
-  background: rgba(20, 8, 17, 0.96);
+  border-right: 1px solid var(--line);
+  background: var(--panel);
 }
 
 .rail-brand,
@@ -555,7 +604,7 @@ onMounted(() => {
 .recent-row small,
 .project-type-option small,
 .rail-status {
-  color: #dec0cf;
+  color: var(--muted);
 }
 
 .rail-mark,
@@ -564,36 +613,46 @@ onMounted(() => {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  border: 1px solid rgba(255, 214, 232, 0.28);
-  color: #fff3f8;
-  background: #321621;
-  font-weight: 800;
+  border: 1px solid var(--line);
+  border-radius: var(--radius3);
+  color: var(--text);
+  background: var(--card2);
+  font-family: var(--font-mono);
+  font-weight: 700;
 }
 
 .rail-mark {
   width: 42px;
   height: 42px;
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  color: color-mix(in srgb, var(--accent) 82%, white 18%);
+  background: color-mix(in srgb, var(--accent) 12%, var(--card2));
 }
 
 .rail-nav {
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .rail-nav a {
-  min-height: 40px;
+  min-height: 36px;
   display: flex;
   align-items: center;
-  padding: 0 12px;
-  border-left: 3px solid transparent;
-  color: #dec0cf;
+  padding: 0 10px;
+  border-radius: var(--radius2);
+  color: var(--muted);
+  transition: background var(--speed) ease, color var(--speed) ease;
 }
 
 .rail-nav a.router-link-active,
 .rail-nav a:hover {
-  border-left-color: #f06aa7;
-  color: #fff3f8;
-  background: rgba(240, 106, 167, 0.1);
+  color: var(--text);
+  background: var(--hover-veil);
+}
+
+.rail-nav a.router-link-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .rail-status {
@@ -602,15 +661,39 @@ onMounted(() => {
   font-size: 12px;
 }
 
+.rail-theme {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rail-theme-select {
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius2);
+  color: var(--text);
+  background: var(--input-bg);
+  outline: 0;
+}
+
+.rail-theme-select:focus {
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  box-shadow: var(--focus-ring);
+}
+
 .status-dot {
-  width: 8px;
-  height: 8px;
-  background: #6b5360;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted2);
 }
 
 .status-dot.online {
-  background: #f06aa7;
-  box-shadow: 0 0 0 3px rgba(240, 106, 167, 0.12);
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent);
 }
 
 .workbench-main {
@@ -624,13 +707,15 @@ onMounted(() => {
 .workbench-header {
   align-items: flex-start;
   padding-bottom: 22px;
-  border-bottom: 1px solid rgba(255, 214, 232, 0.14);
+  border-bottom: 1px solid var(--line);
 }
 
 .workbench-kicker {
-  color: #f06aa7;
+  color: var(--muted);
+  font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -660,47 +745,60 @@ onMounted(() => {
 button,
 input,
 select {
-  border-radius: 0;
+  border-radius: var(--radius2);
 }
 
 button {
-  min-height: 36px;
+  min-height: 34px;
   padding: 0 12px;
-  border: 1px solid rgba(255, 214, 232, 0.26);
-  color: #fff3f8;
-  background: #321621;
-  box-shadow: 0 2px 0 #090408;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: var(--card);
+  transition: background var(--speed) ease, border-color var(--speed) ease, color var(--speed) ease;
 }
 
 button:hover {
-  border-color: rgba(255, 214, 232, 0.46);
-  background: #421b2f;
+  border-color: var(--line2);
+  background: color-mix(in srgb, var(--card) 88%, var(--hover-veil));
+}
+
+button:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 button:disabled {
   cursor: default;
-  opacity: 0.58;
+  opacity: 0.55;
 }
 
 .primary-action {
-  border-color: rgba(255, 214, 232, 0.5);
-  color: #170812;
-  background: #f06aa7;
-  box-shadow: 0 2px 0 #8e2d58;
-  font-weight: 700;
+  border-color: color-mix(in srgb, var(--accent) 52%, transparent);
+  color: var(--accent-ink, #171513);
+  background: var(--accent);
+  font-weight: 600;
 }
 
 .primary-action:hover {
-  color: #170812;
-  background: #ff7db5;
+  color: var(--accent-ink, #171513);
+  background: color-mix(in srgb, var(--accent) 88%, white 12%);
 }
 
 .text-button,
 .row-action {
-  min-height: 32px;
+  min-height: 30px;
   padding: 0 9px;
-  box-shadow: none;
+  border-color: transparent;
+  color: var(--muted);
   background: transparent;
+}
+
+.text-button:hover,
+.row-action:hover {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--hover-veil);
 }
 
 .project-section {
@@ -729,47 +827,57 @@ button:disabled {
 }
 
 .project-row {
-  min-height: 68px;
+  min-height: 66px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  border: 1px solid rgba(255, 214, 232, 0.14);
-  background: rgba(36, 16, 27, 0.7);
+  border: 1px solid var(--line);
+  border-radius: var(--radius2);
+  background: var(--card);
+  box-shadow: var(--elev-1);
+  transition: background var(--speed) ease, border-color var(--speed) ease, box-shadow var(--speed) ease;
 }
 
 .project-row:hover {
-  border-color: rgba(240, 106, 167, 0.42);
-  background: rgba(48, 20, 35, 0.82);
+  border-color: var(--line2);
+  background: color-mix(in srgb, var(--card) 90%, var(--hover-veil));
+}
+
+.project-row:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent), var(--elev-1);
 }
 
 .project-open,
 .recent-row {
   width: 100%;
   min-width: 0;
-  min-height: 66px;
+  min-height: 64px;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
   border: 0;
+  border-radius: var(--radius2);
   text-align: left;
   background: transparent;
-  box-shadow: none;
 }
 
 .project-open:hover,
 .recent-row:hover {
-  background: rgba(240, 106, 167, 0.05);
+  background: var(--hover-veil);
 }
 
 .project-type-mark {
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
+  font-size: 13px;
 }
 
 .project-type-mark.large {
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
+  font-size: 14px;
 }
 
 .project-copy,
@@ -790,18 +898,30 @@ button:disabled {
 
 .danger-action {
   margin-right: 10px;
-  color: #ffb4c8;
+  color: color-mix(in srgb, var(--danger) 78%, white 22%);
+}
+
+.danger-action:hover {
+  border-color: color-mix(in srgb, var(--danger) 46%, transparent);
+  color: color-mix(in srgb, var(--danger) 86%, white 14%);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .file-mark {
-  width: 46px;
-  height: 30px;
+  width: 44px;
+  height: 28px;
   font-size: 10px;
 }
 
 .recent-row {
-  border: 1px solid rgba(255, 214, 232, 0.12);
-  background: rgba(31, 14, 24, 0.54);
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  transition: background var(--speed) ease, border-color var(--speed) ease;
+}
+
+.recent-row:hover {
+  border-color: var(--line2);
+  background: color-mix(in srgb, var(--panel2) 88%, var(--hover-veil));
 }
 
 .empty-state {
@@ -810,29 +930,37 @@ button:disabled {
   place-items: center;
   align-content: center;
   gap: 14px;
-  border: 1px dashed rgba(255, 214, 232, 0.2);
-  color: #dec0cf;
-  background: rgba(31, 14, 24, 0.4);
+  border: 1px dashed var(--line2);
+  border-radius: var(--radius2);
+  color: var(--muted);
+  background: color-mix(in srgb, var(--panel2) 60%, transparent);
 }
 
 .error-banner {
-  min-height: 42px;
+  min-height: 40px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 8px 10px 8px 14px;
-  border: 1px solid rgba(255, 116, 140, 0.45);
-  color: #ffd6df;
-  background: rgba(112, 25, 48, 0.38);
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, transparent);
+  border-radius: var(--radius2);
+  color: color-mix(in srgb, var(--danger) 74%, white 26%);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .error-banner button {
-  width: 30px;
-  min-height: 28px;
+  width: 28px;
+  min-height: 26px;
   padding: 0;
-  box-shadow: none;
+  border-color: transparent;
+  color: inherit;
   background: transparent;
+}
+
+.error-banner button:hover {
+  border-color: color-mix(in srgb, var(--danger) 42%, transparent);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
 }
 
 .dialog-backdrop {
@@ -842,7 +970,8 @@ button:disabled {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(7, 4, 9, 0.78);
+  background: var(--scrim, rgba(8, 10, 13, 0.66));
+  backdrop-filter: blur(3px);
 }
 
 .create-dialog {
@@ -850,18 +979,17 @@ button:disabled {
   max-height: calc(100vh - 48px);
   overflow: auto;
   padding: 20px;
-  border: 3px solid #10070c;
-  color: #fff3f8;
-  background:
-    linear-gradient(180deg, rgba(255, 218, 235, 0.07), transparent 20%),
-    #24101b;
-  box-shadow: 0 6px 0 #090408, 0 20px 60px rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--line2);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: var(--shadow);
 }
 
 .dialog-head {
   align-items: flex-start;
   padding-bottom: 16px;
-  border-bottom: 1px solid rgba(255, 214, 232, 0.16);
+  border-bottom: 1px solid var(--line);
 }
 
 .dialog-head h2 {
@@ -883,8 +1011,9 @@ button:disabled {
 }
 
 .project-copy .project-path {
-  color: #bd99aa;
-  font-family: Consolas, "Courier New", monospace;
+  color: var(--muted2);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .project-config-fields {
@@ -895,45 +1024,65 @@ button:disabled {
 
 .project-type-option {
   min-width: 0;
-  min-height: 74px;
+  min-height: 72px;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 11px;
   padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius2);
   text-align: left;
-  box-shadow: none;
-  background: rgba(31, 14, 24, 0.82);
+  background: var(--card);
+}
+
+.project-type-option:hover {
+  border-color: var(--line2);
+  background: color-mix(in srgb, var(--card) 90%, var(--hover-veil));
 }
 
 .project-type-option.selected {
-  border-color: #f06aa7;
-  background: rgba(240, 106, 167, 0.13);
-  box-shadow: inset 0 0 0 1px rgba(240, 106, 167, 0.28);
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--card));
+  box-shadow:
+    inset 2px 0 0 var(--accent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+.project-type-option.selected .project-type-mark {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: color-mix(in srgb, var(--accent) 84%, white 16%);
+  background: color-mix(in srgb, var(--accent) 16%, var(--card2));
 }
 
 .name-field {
   display: grid;
   gap: 7px;
-  color: #dec0cf;
+  color: var(--muted);
   font-size: 13px;
 }
 
 .name-field input,
 .name-field select {
   width: 100%;
-  height: 42px;
+  height: 38px;
   padding: 0 11px;
-  border: 1px solid rgba(255, 214, 232, 0.3);
+  border: 1px solid var(--line);
   outline: 0;
-  color: #fff3f8;
-  background: #21101a;
+  color: var(--text);
+  background: var(--input-bg);
+  transition: border-color var(--speed) ease, box-shadow var(--speed) ease, background var(--speed) ease;
+}
+
+.name-field input::placeholder {
+  color: var(--muted2);
 }
 
 .name-field input:focus,
 .name-field select:focus {
-  border-color: #f06aa7;
-  box-shadow: 0 0 0 2px rgba(240, 106, 167, 0.16);
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  background: var(--input-bg-focus);
+  box-shadow: var(--focus-ring);
 }
 
 .project-location-control {
@@ -945,17 +1094,94 @@ button:disabled {
 .project-location-control input {
   min-width: 0;
   cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
 .project-location-control button {
-  min-height: 42px;
+  min-height: 38px;
 }
 
 .dialog-actions {
   justify-content: flex-end;
   margin-top: 20px;
   padding-top: 16px;
-  border-top: 1px solid rgba(255, 214, 232, 0.16);
+  border-top: 1px solid var(--line);
+}
+
+/*
+ * Glass variants. The tokens already arrive through <body data-theme>, so these
+ * rules only add what a token cannot express: the blur and the top highlight.
+ *
+ * The whole selector must sit inside :global() — Vue's scoped compiler drops the
+ * descendant part of `:global(a) .b`, which would apply these to <body> itself.
+ */
+/*
+ * The page container must not paint under glass: body carries the colour field
+ * that the panels refract, and an opaque --bg here would bury it (which is
+ * exactly what made the glass read as flat frosted plastic).
+ */
+:global(body[data-theme^='glass-'] .workbench-page) {
+  background: transparent;
+}
+
+:global(body[data-theme^='glass-'] .workbench-rail),
+:global(body[data-theme^='glass-'] .create-dialog) {
+  border: 0;
+  background:
+    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 30%, transparent 68%, var(--glass-sheen-2) 100%),
+    var(--glass-fill-2);
+  backdrop-filter: var(--glass-blur);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-rim-top),
+    inset 1px 0 0 0 var(--glass-rim-side),
+    inset -1px 0 0 0 var(--glass-rim-side),
+    inset 0 -1px 0 0 var(--glass-rim-bottom),
+    var(--glass-shadow);
+}
+
+:global(body[data-theme^='glass-'] .project-row),
+:global(body[data-theme^='glass-'] .recent-row),
+:global(body[data-theme^='glass-'] .project-type-option) {
+  border: 0;
+  background:
+    linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 42%),
+    var(--glass-fill);
+  backdrop-filter: var(--glass-blur-2);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-rim-side),
+    inset 0 -1px 0 0 var(--glass-rim-bottom);
+}
+
+:global(body[data-theme^='glass-'] .project-row:hover),
+:global(body[data-theme^='glass-'] .recent-row:hover),
+:global(body[data-theme^='glass-'] .project-type-option:hover) {
+  background:
+    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 46%),
+    var(--glass-fill-2);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-rim-top),
+    inset 0 -1px 0 0 var(--glass-rim-bottom);
+}
+
+:global(body[data-theme^='glass-'] .workbench-page button),
+:global(body[data-theme^='glass-'] .rail-theme-select) {
+  border: 0;
+  background:
+    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 52%),
+    var(--glass-fill-2);
+  backdrop-filter: var(--glass-blur-2);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-rim-top),
+    inset 0 -1px 0 0 var(--glass-rim-bottom);
+}
+
+:global(body[data-theme^='glass-'] .primary-action) {
+  color: color-mix(in srgb, var(--glass-base) 84%, black);
+}
+
+:global(body[data-theme^='glass-light-'] .primary-action) {
+  color: #ffffff;
 }
 
 @media (max-width: 820px) {
@@ -970,7 +1196,7 @@ button:disabled {
     gap: 14px;
     padding: 12px 16px;
     border-right: 0;
-    border-bottom: 1px solid rgba(255, 214, 232, 0.14);
+    border-bottom: 1px solid var(--line);
   }
 
   .rail-nav {

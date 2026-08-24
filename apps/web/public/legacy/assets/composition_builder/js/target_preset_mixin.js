@@ -81,6 +81,9 @@ export function installTargetPresetMethods(CompositionBuilderApp, deps = {}) {
         if (target === "currentAge" || target === "age") return `${target} (年龄)`;
         if (target === "textureSheet") return "textureSheet (代码生成, 不影响预览)";
         if (target === "color" || target === "particleColor") return `${target} (颜色 Vector3f)`;
+        if (target === "alphaCurve") return "alphaCurve (GPU 生命周期透明度曲线)";
+        if (target === "scaleCurve") return "scaleCurve (GPU 生命周期大小曲线)";
+        if (target === "colorCurve") return "colorCurve (GPU 生命周期颜色曲线)";
         return target;
     }
 
@@ -92,6 +95,11 @@ export function installTargetPresetMethods(CompositionBuilderApp, deps = {}) {
     isParticleInitCodegenOnlyTarget(targetRaw = "") {
         const target = String(targetRaw || "").trim().toLowerCase();
         return target === "texturesheet";
+    }
+
+    isParticleInitCurveTarget(targetRaw = "") {
+        const target = String(targetRaw || "").trim().toLowerCase();
+        return target === "alphacurve" || target === "scalecurve" || target === "colorcurve";
     }
 
     getParticleInitTextureSheetCodegenOptions() {
@@ -118,6 +126,10 @@ export function installTargetPresetMethods(CompositionBuilderApp, deps = {}) {
         if (target === "alpha" || target === "particlealpha" || target === "particle.particlealpha") return "1.0";
         if (target === "currentage" || target === "age") return "0";
         if (target === "maxage" || target === "lifetime") return "20";
+        if (target === "alphacurve" || target === "scalecurve") return "CParticleCurve.linear(1f, 0f)";
+        if (target === "colorcurve") {
+            return "CParticleColorCurve.linear(Vector3f(1f, 1f, 1f), Vector3f(1f, 1f, 1f))";
+        }
         if (target === "texturesheet") return "0";
         if (target === "color" || target === "particlecolor" || target === "particle.particlecolor") return "Vector3f(1F, 1F, 1F)";
         return "0";
@@ -126,10 +138,11 @@ export function installTargetPresetMethods(CompositionBuilderApp, deps = {}) {
     getParticleInitValuePresetOptionsHtml(selectedExpr = "", targetRaw = "") {
         const selected = String(selectedExpr || "").trim();
         const useVector = this.isParticleInitVectorTarget(targetRaw);
+        const useCurve = this.isParticleInitCurveTarget(targetRaw);
         const projectClass = sanitizeKotlinClassName(this.state.projectName || "NewComposition");
         const rows = [{ value: "", label: "手动输入常量" }];
 
-        for (const g of (this.state.globalVars || [])) {
+        for (const g of (useCurve ? [] : (this.state.globalVars || []))) {
             const name = String(g?.name || "").trim();
             const type = String(g?.type || "").trim();
             if (!name) continue;
@@ -143,7 +156,7 @@ export function installTargetPresetMethods(CompositionBuilderApp, deps = {}) {
             });
         }
 
-        if (!useVector) {
+        if (!useVector && !useCurve) {
             for (const c of (this.state.globalConsts || [])) {
                 const name = String(c?.name || "").trim();
                 if (!name) continue;

@@ -6,7 +6,7 @@ import {
     DEFAULT_SETTINGS,
     createDefaultModelParams,
     createDefaultPostParams
-} from "./constants.js";
+} from "./constants.js?v=20260824_1";
 import { deepClone, uid } from "./utils.js";
 
 export const GRAPH_INPUT_ID = "__input__";

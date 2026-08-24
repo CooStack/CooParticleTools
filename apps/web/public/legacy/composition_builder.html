@@ -4,11 +4,11 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>Composition 构建器</title>
-    <link rel="stylesheet" href="./assets/composition_builder/css/style.css?v=20260729_2"/>
-    <link rel="stylesheet" href="./assets/shared/css/minecraft-theme.css?v=20260710_2"/>
+    <link rel="stylesheet" href="./assets/composition_builder/css/style.css?v=20260823_1"/>
+    <link rel="stylesheet" href="./assets/shared/css/glass-theme.css?v=20260824_1"/>
     <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
 </head>
-<body data-theme="dark-1" data-mc-theme="deep-pink">
+<body data-theme="dark-1">
 <div id="app">
     <header class="topbar">
         <div class="topbar-left">
@@ -134,9 +134,37 @@
                         <div class="settings-row">
                             <div class="settings-label">主题</div>
                             <select id="themeSelect" class="input">
-                                <option value="dark-1">深粉</option>
-                                <option value="light-pink">浅粉</option>
+                                <optgroup label="扁平">
+                                    <option value="dark-1">深色</option>
+                                    <option value="light-1">浅色</option>
+                                </optgroup>
+                                <optgroup label="玻璃拟态 · 深色">
+                                    <option value="glass-dark-blue">蓝</option>
+                                    <option value="glass-dark-green">绿</option>
+                                    <option value="glass-dark-violet">紫</option>
+                                    <option value="glass-dark-neutral">黑</option>
+                                </optgroup>
+                                <optgroup label="玻璃拟态 · 浅色">
+                                    <option value="glass-light-blue">蓝</option>
+                                    <option value="glass-light-green">绿</option>
+                                    <option value="glass-light-violet">紫</option>
+                                    <option value="glass-light-neutral">白</option>
+                                </optgroup>
                             </select>
+                        </div>
+                        <div class="settings-row glass-pref-row">
+                            <div class="settings-label">玻璃模糊度</div>
+                            <div class="glass-pref-field">
+                                <input type="range" data-glass-pref="blur" aria-label="玻璃模糊度"/>
+                                <span class="glass-pref-value" data-glass-pref-value="blur"></span>
+                            </div>
+                        </div>
+                        <div class="settings-row glass-pref-row">
+                            <div class="settings-label">玻璃磨砂度</div>
+                            <div class="glass-pref-field">
+                                <input type="range" data-glass-pref="frost" aria-label="玻璃磨砂度"/>
+                                <span class="glass-pref-value" data-glass-pref-value="frost"></span>
+                            </div>
                         </div>
                         <label class="chk settings-toggle">
                             <input id="chkAxes" type="checkbox" checked/>
@@ -390,6 +418,6 @@
   }
 }
 </script>
-<script type="module" src="./assets/src/js/pages/composition-builder.page.js?v=20260815_2"></script>
+<script type="module" src="./assets/src/js/pages/composition-builder.page.js?v=20260824_14"></script>
 </body>
 </html>

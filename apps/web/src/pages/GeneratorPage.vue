@@ -3,7 +3,7 @@
     v-if="projectReady"
     class="generator-page"
     :class="{ 'generator-page--skybox-off': project.settings.showSkybox === false }"
-    :data-theme="project.settings.theme"
+    :data-theme="appTheme"
   >
     <header class="generator-topbar">
       <div class="generator-brand">
@@ -545,10 +545,25 @@
       :open="settingsOpen"
       :project="project"
       :theme-options="generatorThemeOptions"
-      :hotkey-fields="hotkeyFields"
+      :active-theme="appTheme"
+      :message="settingsMessage"
+      :message-is-error="settingsMessageIsError"
       @close="closeGeneratorSettings"
       @lifecycle-change="restartPreviewAfterRootLifecycleChange"
-      @record-hotkey="recordHotkeyFromSettings"
+      @open-hotkeys="openGeneratorHotkeys"
+      @export-settings="exportGeneratorSettings"
+      @import-settings="importGeneratorSettings"
+      @update-theme="appTheme = $event"
+    />
+    <GeneratorHotkeysModal
+      :open="hotkeysOpen"
+      :hotkeys="project.settings.hotkeys"
+      :hotkey-defs="hotkeyDefs"
+      :capturing-key="hotkeyCaptureKey"
+      :hint="hotkeyHint"
+      @close="closeGeneratorHotkeys"
+      @start-capture="startHotkeyCapture"
+      @clear-hotkey="clearHotkey"
       @reset-hotkeys="resetAllHotkeys"
     />
   </div>
@@ -564,7 +579,9 @@ import LifecycleCurveEditor from '../components/LifecycleCurveEditor.vue';
 import GeneratorParameterValueEditor from '../components/GeneratorParameterValueEditor.vue';
 import GeneratorExpressionEditor from '../components/GeneratorExpressionEditor.vue';
 import GeneratorSettingsModal from '../components/GeneratorSettingsModal.vue';
+import GeneratorHotkeysModal from '../components/GeneratorHotkeysModal.vue';
 import { highlightKotlin } from '../utils/legacy-code-highlight.js';
+import { readAppTheme, watchAppTheme, writeAppTheme } from '../modules/theme/app-theme.js';
 import {
   BILLBOARD_MODES,
   CPARTICLE_COMMAND_TYPE_IDS,
@@ -643,6 +660,16 @@ const previewPoints = shallowRef([]);
 const previewErrors = ref([]);
 const visibleAutocompleteIds = ref(new Set());
 const settingsOpen = ref(false);
+const hotkeysOpen = ref(false);
+const hotkeyCaptureKey = ref('');
+const settingsMessage = ref('');
+const settingsMessageIsError = ref(false);
+const HOTKEY_HINT_IDLE = '点击“设置”后按下按键（Esc 取消，Backspace 清空）。';
+const hotkeyHint = computed(() => {
+  if (!hotkeyCaptureKey.value) return HOTKEY_HINT_IDLE;
+  const def = hotkeyDefs.find((item) => item.key === hotkeyCaptureKey.value);
+  return `正在设置：${def?.label || hotkeyCaptureKey.value}（Esc 取消，Backspace 清空）`;
+});
 const project = ref(createGeneratorProject(loadSavedProject()));
 const currentProjectPath = ref('');
 const projectReady = ref(!String(route.query.projectId || ''));
@@ -692,6 +719,10 @@ const hotkeyFields = [
   { key: 'undo', label: '撤销' },
   { key: 'redo', label: '重做' }
 ];
+const hotkeyDefs = hotkeyFields.map((item) => ({
+  ...item,
+  desc: `默认 ${hotkeyToHuman(GENERATOR_HOTKEY_DEFAULTS[item.key]) || '未设置'}`
+}));
 
 const selectedEmitter = computed(() => project.value.emitters.find((card) => card.id === project.value.selectedEmitterId) || project.value.emitters[0] || null);
 const selectedQueue = computed(() => project.value.commandQueues.find((queue) => queue.id === project.value.selectedQueueId) || project.value.commandQueues[0] || null);
@@ -808,7 +839,7 @@ const BindableField = defineComponent({
   }
 });
 
-let minecraftAutocompleteSequence = 0;
+let autocompleteSequence = 0;
 
 const MinecraftAutocomplete = defineComponent({
   name: 'MinecraftAutocomplete',
@@ -827,7 +858,7 @@ const MinecraftAutocomplete = defineComponent({
   },
   emits: ['update:modelValue', 'commit'],
   setup(props, { emit }) {
-    const instanceId = `generator-autocomplete-${++minecraftAutocompleteSequence}`;
+    const instanceId = `generator-autocomplete-${++autocompleteSequence}`;
     const listboxId = `${instanceId}-listbox`;
     const validationId = `${instanceId}-validation`;
     const inputRef = ref(null);
@@ -2009,9 +2040,20 @@ watch(project, (next) => {
   if (!suppressAutoSave) scheduleIndexedProjectSave();
 }, { deep: true });
 
-watch(() => project.value.settings.theme, (theme) => {
+/*
+ * Theme is a per-machine preference shared with every other tool, not a property
+ * of the emitter project. Reading it from project.settings.theme is what made the
+ * emitter keep a different look from the builders and the shell.
+ */
+const appTheme = ref(readAppTheme());
+watch(appTheme, (theme) => {
   document.documentElement.dataset.generatorTheme = theme;
+  writeAppTheme(theme);
 }, { immediate: true });
+const disposeAppThemeWatch = watchAppTheme((next) => {
+  if (next !== appTheme.value) appTheme.value = next;
+});
+onBeforeUnmount(() => disposeAppThemeWatch());
 
 onMounted(async () => {
   await consumeShellRouteState();
@@ -2841,21 +2883,115 @@ function selectGeneratorTab(tabId) {
 
 function toggleGeneratorSettings() {
   settingsOpen.value = !settingsOpen.value;
+  if (settingsOpen.value) setSettingsMessage('');
 }
 
 function closeGeneratorSettings() {
   settingsOpen.value = false;
+  setSettingsMessage('');
 }
 
-function recordHotkeyFromSettings(key, event) {
-  recordHotkey(key, event);
+function openGeneratorHotkeys() {
+  hotkeyCaptureKey.value = '';
+  hotkeysOpen.value = true;
+}
+
+function closeGeneratorHotkeys() {
+  hotkeyCaptureKey.value = '';
+  hotkeysOpen.value = false;
+}
+
+function startHotkeyCapture(key) {
+  hotkeyCaptureKey.value = String(key || '');
+}
+
+function clearHotkey(key) {
+  const hotkeys = project.value.settings.hotkeys || (project.value.settings.hotkeys = {});
+  hotkeys[key] = '';
+  hotkeyCaptureKey.value = '';
+}
+
+function setSettingsMessage(text, isError = false) {
+  settingsMessage.value = String(text || '');
+  settingsMessageIsError.value = Boolean(isError);
+}
+
+function exportGeneratorSettings() {
+  try {
+    const payload = {
+      settings: JSON.parse(JSON.stringify(project.value.settings || {})),
+      kotlin: JSON.parse(JSON.stringify(project.value.kotlin || {})),
+      ticksPerSecond: project.value.ticksPerSecond,
+      previewTicks: project.value.previewTicks,
+      ts: Date.now()
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'emitter_generator.settings.json';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setSettingsMessage('设置已导出');
+  } catch (error) {
+    setSettingsMessage(`设置导出失败：${error?.message || error}`, true);
+  }
+}
+
+async function importGeneratorSettings(file) {
+  try {
+    const parsed = JSON.parse(await file.text()) || {};
+    const incoming = parsed.settings && typeof parsed.settings === 'object'
+      ? parsed.settings
+      : (parsed.hotkeys || parsed.kotlin ? {} : parsed);
+    project.value.settings = { ...project.value.settings, ...incoming };
+    if (parsed.hotkeys && typeof parsed.hotkeys === 'object') {
+      project.value.settings.hotkeys = { ...project.value.settings.hotkeys, ...parsed.hotkeys };
+    }
+    if (parsed.kotlin && typeof parsed.kotlin === 'object') {
+      project.value.kotlin = { ...project.value.kotlin, ...parsed.kotlin };
+    }
+    if (Number.isFinite(Number(parsed.ticksPerSecond))) project.value.ticksPerSecond = Number(parsed.ticksPerSecond);
+    if (Number.isFinite(Number(parsed.previewTicks))) project.value.previewTicks = Number(parsed.previewTicks);
+    project.value = normalizeGeneratorProject(project.value);
+    setSettingsMessage('设置已导入');
+  } catch (error) {
+    setSettingsMessage(`设置导入失败：${error?.message || error}`, true);
+  }
 }
 
 function resetAllHotkeys() {
   project.value.settings.hotkeys = { ...GENERATOR_HOTKEY_DEFAULTS };
+  hotkeyCaptureKey.value = '';
 }
 
 function handleGeneratorHotkey(event) {
+  // While the hotkeys modal is capturing, every key belongs to the binding
+  // being recorded — swallow it before any shortcut can fire.
+  if (hotkeyCaptureKey.value) {
+    if (event.key === 'Tab') return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      hotkeyCaptureKey.value = '';
+      return;
+    }
+    if (event.key === 'Backspace') {
+      clearHotkey(hotkeyCaptureKey.value);
+      return;
+    }
+    recordHotkey(hotkeyCaptureKey.value, event);
+    hotkeyCaptureKey.value = '';
+    return;
+  }
+  if (event.key === 'Escape' && hotkeysOpen.value) {
+    event.preventDefault();
+    closeGeneratorHotkeys();
+    return;
+  }
+  if (hotkeysOpen.value) return;
   if (event.repeat && matchesHotkey(event, 'toggleSettings')) return;
   if (event.key === 'Escape' && settingsOpen.value) {
     event.preventDefault();
@@ -3213,32 +3349,35 @@ function normalizeVector(vector) {
 
 <style scoped>
 .generator-loading {
-  min-height: 100vh;
+  min-height: var(--app-vh);
   display: grid;
   place-items: center;
   align-content: center;
   gap: 14px;
-  color: #dec0cf;
+  color: var(--muted);
   background:
-    linear-gradient(180deg, rgba(255, 116, 176, 0.08), transparent 34%),
-    linear-gradient(180deg, #1b0a15 0%, #12070e 60%, #080408 100%);
+    radial-gradient(1100px 760px at 6% -6%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 56%),
+    var(--bg);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .generator-loading::before {
   content: "";
-  width: 10px;
-  height: 10px;
-  background: #f06aa7;
-  box-shadow: -18px 0 0 rgba(240, 106, 167, 0.28), 18px 0 0 rgba(240, 106, 167, 0.28);
-  animation: generator-loading-pulse 900ms steps(2, end) infinite;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow:
+    -18px 0 0 color-mix(in srgb, var(--accent) 28%, transparent),
+    18px 0 0 color-mix(in srgb, var(--accent) 28%, transparent);
+  animation: generator-loading-pulse 900ms ease-in-out infinite;
 }
 
 @keyframes generator-loading-pulse {
   50% {
-    background: rgba(240, 106, 167, 0.28);
-    box-shadow: -18px 0 0 #f06aa7, 18px 0 0 #f06aa7;
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+    box-shadow: -18px 0 0 var(--accent), 18px 0 0 var(--accent);
   }
 }
 
@@ -3252,7 +3391,7 @@ function normalizeVector(vector) {
   --generator-page-bg: rgba(2, 8, 23, 0.22);
   --generator-text: #e2e8f0;
   --input-bg: rgba(15, 23, 42, 0.7);
-  height: 100vh;
+  height: var(--app-vh);
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -3267,18 +3406,44 @@ function normalizeVector(vector) {
   box-sizing: border-box;
 }
 
-.generator-page[data-theme='light-pink'] {
-  --bg-panel: rgba(248, 250, 252, 0.92);
-  --bg-panel-strong: rgba(255, 255, 255, 0.98);
-  --bg-soft: rgba(213, 116, 150, 0.1);
-  --border: rgba(118, 81, 97, 0.28);
-  --text-soft: #765161;
-  --brand: #d86f9d;
-  --brand-2: #ef9ebe;
-  --generator-page-bg: rgba(255, 239, 245, 0.86);
-  --generator-text: #372630;
-  --input-bg: rgba(255, 247, 250, 0.9);
+.generator-page[data-theme='light-1'] {
+  --bg-panel: #f7f8fa;
+  --bg-panel-strong: #eef1f4;
+  --bg-soft: #eef2f5;
+  --border: rgba(79, 93, 109, 0.12);
+  --text-soft: rgba(92, 103, 118, 0.64);
+  --brand: #70879b;
+  --brand-2: #a07f52;
+  --scrim: rgba(38, 50, 66, 0.38);
+  --generator-page-bg: #edf1f4;
+  --generator-text: rgba(34, 42, 52, 0.92);
+  --input-bg: rgba(255, 255, 255, 0.85);
   color-scheme: light;
+}
+
+/*
+ * Glass variants: the tokens themselves live in the shared
+ * legacy/assets/shared/css/glass-theme.css (linked from index.html). These
+ * scoped rules only bridge the generator page's own variable names onto them —
+ * scoped selectors carry a [data-v-*] attribute and would otherwise outrank the
+ * shared sheet, including for the page backdrop.
+ */
+.generator-page[data-theme^='glass-'] {
+  --generator-text: var(--text);
+  --generator-page-bg:
+    radial-gradient(1250px 900px at 10% -10%, color-mix(in srgb, var(--glass-hue) 40%, transparent), transparent 60%),
+    radial-gradient(1050px 820px at 90% 2%, color-mix(in srgb, var(--glass-hue-2) 32%, transparent), transparent 58%),
+    radial-gradient(950px 760px at 46% 112%, color-mix(in srgb, var(--glass-hue) 24%, transparent), transparent 62%),
+    var(--glass-base);
+  --bg-panel: var(--panel);
+  --bg-panel-strong: var(--panel2);
+  --bg-soft: var(--card2);
+  --border: var(--line);
+  --text-soft: var(--muted);
+  --brand: var(--accent);
+  --brand-2: var(--ok);
+  --input-bg: var(--glass-sunken);
+  background-repeat: no-repeat;
 }
 
 .generator-page :deep(.input),
@@ -3536,11 +3701,13 @@ function normalizeVector(vector) {
 .queue-card,
 .command-card {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius2, 10px);
   background: var(--bg-soft);
   padding: 10px;
   display: grid;
   gap: 8px;
+  transition: background var(--speed, 140ms) ease, border-color var(--speed, 140ms) ease,
+    box-shadow var(--speed, 140ms) ease;
 }
 
 .emitter-list-card {
@@ -3559,9 +3726,18 @@ function normalizeVector(vector) {
   cursor: pointer;
 }
 
+.emitter-list-card:hover,
+.queue-card:hover {
+  border-color: var(--line2, rgba(255, 255, 255, 0.14));
+  background: color-mix(in srgb, var(--bg-soft) 90%, var(--hover-veil, rgba(255, 255, 255, 0.04)));
+}
+
 .emitter-list-card.selected,
 .queue-card.selected {
-  border-color: rgba(245, 158, 11, 0.66);
+  border-color: color-mix(in srgb, var(--brand) 70%, transparent);
+  box-shadow:
+    inset 2px 0 0 var(--brand),
+    0 0 0 1px color-mix(in srgb, var(--brand) 30%, transparent);
 }
 
 .emitter-list-card.disabled {
@@ -3905,11 +4081,11 @@ function normalizeVector(vector) {
   max-width: calc(100vw - 16px);
   overflow-x: hidden;
   overflow-y: auto;
-  border: 1px solid rgba(255, 214, 232, 0.32);
-  border-radius: 4px;
-  background: #21101a;
-  color: #fff3f8;
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.62);
+  border: 1px solid var(--line2, rgba(255, 255, 255, 0.14));
+  border-radius: var(--radius2, 10px);
+  background: var(--panel, #171d23);
+  color: var(--text, #ecf0f5);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.48);
   padding: 3px;
   font-family: inherit;
 }
@@ -3970,29 +4146,29 @@ function normalizeVector(vector) {
   font-size: 11px;
 }
 
-:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox.mc-suggestions) {
-  border-color: rgba(86, 49, 62, 0.52);
-  background: #fff7fa;
-  color: #2f1d28;
-  box-shadow: 0 16px 36px rgba(69, 38, 49, 0.2);
+:global(html[data-generator-theme='light-1'] .generator-autocomplete-listbox.mc-suggestions) {
+  border-color: rgba(79, 93, 109, 0.18);
+  background: #fbfcfd;
+  color: rgba(34, 42, 52, 0.92);
+  box-shadow: 0 16px 36px rgba(38, 50, 66, 0.14);
 }
 
-:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox .mc-suggestion) {
-  color: #2f1d28;
+:global(html[data-generator-theme='light-1'] .generator-autocomplete-listbox .mc-suggestion) {
+  color: rgba(34, 42, 52, 0.92);
 }
 
-:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox .mc-suggestion.active),
-:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox .mc-suggestion:hover) {
-  background: rgba(216, 111, 157, 0.25);
-  color: #2f1d28;
+:global(html[data-generator-theme='light-1'] .generator-autocomplete-listbox .mc-suggestion.active),
+:global(html[data-generator-theme='light-1'] .generator-autocomplete-listbox .mc-suggestion:hover) {
+  background: rgba(112, 135, 155, 0.18);
+  color: rgba(34, 42, 52, 0.92);
 }
 
-:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox .mc-suggestion-kind) {
-  color: #8b4768;
+:global(html[data-generator-theme='light-1'] .generator-autocomplete-listbox .mc-suggestion-kind) {
+  color: #70879b;
 }
 
-:global(html[data-generator-theme='light-pink'] .generator-autocomplete-listbox .mc-suggestion-label) {
-  color: rgba(86, 49, 62, 0.68);
+:global(html[data-generator-theme='light-1'] .generator-autocomplete-listbox .mc-suggestion-label) {
+  color: rgba(92, 103, 118, 0.68);
 }
 
 .bindable-vector-row {
@@ -4311,27 +4487,27 @@ function normalizeVector(vector) {
   color: #90e1ff;
 }
 
-.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-kw) {
+.generator-page[data-theme='light-1'] .kotlin-output :deep(.tok-kw) {
   color: #7c6147;
 }
 
-.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-str) {
+.generator-page[data-theme='light-1'] .kotlin-output :deep(.tok-str) {
   color: #5f7868;
 }
 
-.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-com) {
+.generator-page[data-theme='light-1'] .kotlin-output :deep(.tok-com) {
   color: #7c8793;
 }
 
-.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-num) {
+.generator-page[data-theme='light-1'] .kotlin-output :deep(.tok-num) {
   color: #6c7f90;
 }
 
-.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-fn) {
+.generator-page[data-theme='light-1'] .kotlin-output :deep(.tok-fn) {
   color: #96655d;
 }
 
-.generator-page[data-theme='light-pink'] .kotlin-output :deep(.tok-type) {
+.generator-page[data-theme='light-1'] .kotlin-output :deep(.tok-type) {
   color: #6e817a;
 }
 
@@ -4351,7 +4527,7 @@ function normalizeVector(vector) {
 @media (max-width: 1180px) {
   .generator-page {
     height: auto;
-    min-height: 100vh;
+    min-height: var(--app-vh);
     grid-template-rows: auto;
     overflow: visible;
   }

@@ -4,8 +4,8 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>CompositionBuilder - PointsBuilder 编辑器</title>
-    <link rel="stylesheet" href="./assets/points_builder/css/style.css?v=20260507_1"/>
-    <link rel="stylesheet" href="./assets/shared/css/minecraft-theme.css?v=20260709_2"/>
+    <link rel="stylesheet" href="./assets/points_builder/css/style.css?v=20260823_1"/>
+    <link rel="stylesheet" href="./assets/shared/css/glass-theme.css?v=20260824_1"/>
     <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
     <style>
         body.composition-no-kotlin #btnRightKotlinTab,
@@ -14,7 +14,7 @@
         }
     </style>
 </head>
-<body data-theme="dark-1" data-mc-theme="deep-pink" class="composition-no-kotlin">
+<body data-theme="dark-1" class="composition-no-kotlin">
 <div id="app">
     <header class="topbar">
         <div class="topbar-left">
@@ -367,6 +367,20 @@
                                 <option value="light-2">杏露</option>
                                 <option value="light-3">薄荷</option>
                             </select>
+                        </div>
+                        <div class="settings-row glass-pref-row">
+                            <div class="settings-label">玻璃模糊度</div>
+                            <div class="glass-pref-field">
+                                <input type="range" data-glass-pref="blur" aria-label="玻璃模糊度"/>
+                                <span class="glass-pref-value" data-glass-pref-value="blur"></span>
+                            </div>
+                        </div>
+                        <div class="settings-row glass-pref-row">
+                            <div class="settings-label">玻璃磨砂度</div>
+                            <div class="glass-pref-field">
+                                <input type="range" data-glass-pref="frost" aria-label="玻璃磨砂度"/>
+                                <span class="glass-pref-value" data-glass-pref-value="frost"></span>
+                            </div>
                         </div>
                         <div class="settings-toggles">
                             <label class="chk settings-toggle">

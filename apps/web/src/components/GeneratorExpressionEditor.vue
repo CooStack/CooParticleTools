@@ -308,11 +308,11 @@ function measureTextareaCaret(textarea, style) {
 function syncCompletionTheme(style) {
   const customProperty = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
   completionTheme.value = {
-    '--completion-border': customProperty('--border', '#56313e'),
-    '--completion-background': customProperty('--bg-panel-strong', '#24151d'),
-    '--completion-text': customProperty('--generator-text', '#f8e8f0'),
-    '--completion-muted': customProperty('--text-soft', '#bca2ae'),
-    '--completion-brand': customProperty('--brand', '#f06aa7'),
+    '--completion-border': customProperty('--border', 'rgba(255, 255, 255, 0.14)'),
+    '--completion-background': customProperty('--bg-panel-strong', '#12171d'),
+    '--completion-text': customProperty('--generator-text', '#ecf0f5'),
+    '--completion-muted': customProperty('--text-soft', 'rgba(152, 166, 181, 0.68)'),
+    '--completion-brand': customProperty('--brand', '#8fa7b8'),
     colorScheme: style.colorScheme
   };
 }
@@ -423,9 +423,9 @@ onBeforeUnmount(() => {
   align-content: start;
   overflow-x: hidden;
   overflow-y: auto;
-  border: 1px solid var(--completion-border, #56313e);
+  border: 1px solid var(--completion-border, rgba(255, 255, 255, 0.14));
   border-radius: 3px;
-  background: var(--completion-background, #24151d);
+  background: var(--completion-background, #12171d);
   box-shadow: 0 10px 24px rgb(0 0 0 / 38%);
 }
 
@@ -440,10 +440,10 @@ onBeforeUnmount(() => {
   gap: 10px;
   padding: 5px 10px !important;
   border: 0 !important;
-  border-bottom: 1px solid var(--completion-border, #56313e) !important;
+  border-bottom: 1px solid var(--completion-border, rgba(255, 255, 255, 0.14)) !important;
   border-radius: 0 !important;
-  color: var(--completion-text, #f8e8f0) !important;
-  background: var(--completion-background, #24151d) !important;
+  color: var(--completion-text, #ecf0f5) !important;
+  background: var(--completion-background, #12171d) !important;
   box-shadow: none !important;
   transform: none !important;
   filter: none !important;
@@ -460,8 +460,8 @@ onBeforeUnmount(() => {
 .expression-completions .expression-completion.expression-completion.active {
   background: color-mix(
     in srgb,
-    var(--completion-brand, #f06aa7) 20%,
-    var(--completion-background, #24151d)
+    var(--completion-brand, #8fa7b8) 20%,
+    var(--completion-background, #12171d)
   ) !important;
   box-shadow: none !important;
   transform: none !important;
@@ -478,7 +478,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   max-width: 156px;
   overflow: hidden;
-  color: var(--completion-muted, #bca2ae);
+  color: var(--completion-muted, rgba(152, 166, 181, 0.68));
   font-family: inherit;
   font-size: 10px;
   text-overflow: ellipsis;
@@ -486,7 +486,7 @@ onBeforeUnmount(() => {
 }
 
 .expression-error {
-  color: #ffb4c8;
+  color: color-mix(in srgb, var(--danger, #c96f62) 78%, white 22%);
   font-size: 12px;
 }
 </style>

@@ -1,11 +1,7 @@
 (() => {
     const q = new URLSearchParams(location.search);
-    const theme = q.get("theme") === "light-pink" ? "light-pink" : "dark-1";
-    const mcTheme = q.get("mcTheme") === "light-pink" && theme === "light-pink"
-        ? "light-pink"
-        : "deep-pink";
+    const theme = q.get("theme") === "light-1" ? "light-1" : "dark-1";
     document.body.setAttribute("data-theme", theme);
-    document.body.setAttribute("data-mc-theme", mcTheme);
     const bezierMode = q.get("mode") === "angle_ease" ? "angle_ease" : "scale";
     const isScaleBezierMode = bezierMode === "scale";
     const num = (v, fb = 0) => {
