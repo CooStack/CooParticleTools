@@ -1,3 +1,5 @@
+import { sampleAdaptiveBezierNodes } from "./bezier-sampling.js?v=20260826_1";
+
 export function createBuilderTools(ctx) {
     const { KIND, U, getState, getKotlinEndMode, rotatePointsToPointUpright } = ctx || {};
     const num = (value, fallback = 0) => {
@@ -9,43 +11,14 @@ export function createBuilderTools(ctx) {
         return Number.isFinite(next) ? next : fallback;
     };
 
+    const bezierSegmentCache = new Map();
+
     function evaluateBezierPath(nodes, count) {
         const list = Array.isArray(nodes) ? nodes : [];
         const total = Math.max(1, int(count, 16));
         if (!list.length) return Array.from({ length: total }, () => U.v(0, 0, 0));
         if (list.length === 1) return Array.from({ length: total }, () => U.v(num(list[0].x), num(list[0].y), num(list[0].z)));
-        const pointAt = (t) => {
-            const scaled = Math.max(0, Math.min(1, t)) * (list.length - 1);
-            const index = Math.min(list.length - 2, Math.floor(scaled));
-            const local = index === list.length - 2 && t >= 1 ? 1 : scaled - index;
-            const a = list[index];
-            const b = list[index + 1];
-            const p0 = U.v(num(a.x), num(a.y), num(a.z));
-            const p1 = U.add(p0, U.v(num(a.shx), num(a.shy), num(a.shz)));
-            const p3 = U.v(num(b.x), num(b.y), num(b.z));
-            const p2 = U.add(p3, U.v(num(b.ehx), num(b.ehy), num(b.ehz)));
-            const u = 1 - local;
-            return U.v(
-                u * u * u * p0.x + 3 * u * u * local * p1.x + 3 * u * local * local * p2.x + local * local * local * p3.x,
-                u * u * u * p0.y + 3 * u * u * local * p1.y + 3 * u * local * local * p2.y + local * local * local * p3.y,
-                u * u * u * p0.z + 3 * u * u * local * p1.z + 3 * u * local * local * p2.z + local * local * local * p3.z
-            );
-        };
-        const dense = Array.from({ length: Math.min(16384, Math.max(256, total * 256)) }, (_, i) => pointAt(i / (Math.min(16384, Math.max(256, total * 256)) - 1)));
-        const lengths = [0];
-        for (let i = 1; i < dense.length; i++) lengths.push(lengths[i - 1] + U.len(U.sub(dense[i], dense[i - 1])));
-        const full = lengths[lengths.length - 1];
-        if (!(full > 1e-9)) return Array.from({ length: total }, () => ({ ...dense[0] }));
-        return Array.from({ length: total }, (_, i) => {
-            const target = full * i / (total - 1);
-            let hi = lengths.findIndex((value) => value >= target);
-            if (hi <= 0) return { ...dense[0] };
-            if (hi < 0) hi = lengths.length - 1;
-            const lo = hi - 1;
-            const span = lengths[hi] - lengths[lo];
-            const ratio = span > 1e-9 ? (target - lengths[lo]) / span : 0;
-            return U.v(dense[lo].x + (dense[hi].x - dense[lo].x) * ratio, dense[lo].y + (dense[hi].y - dense[lo].y) * ratio, dense[lo].z + (dense[hi].z - dense[lo].z) * ratio);
-        });
+        return sampleAdaptiveBezierNodes(list, total, { cache: bezierSegmentCache });
     }
 
     function closeBezierPathNodes(nodes) {

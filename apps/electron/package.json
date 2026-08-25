@@ -13,7 +13,7 @@
     "dev": "node scripts/ensure-electron.js && electron .",
     "start": "node scripts/ensure-electron.js && electron .",
     "test": "node --test tests/*.test.js",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/app-menu.js && node --check src/atomic-text-file.js && node --check src/project-auto-save.js && node --check src/preferences-store.js && node --check src/project-close-guard.js && node --check src/project-preset-files.js && node --check scripts/ensure-electron.js"
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/app-menu.js && node --check src/atomic-text-file.js && node --check src/project-auto-save.js && node --check src/preferences-store.js && node --check src/project-close-guard.js && node --check src/project-preset-files.js && node --check src/legacy-navigation.js && node --check scripts/ensure-electron.js"
   },
   "devDependencies": {
     "electron": "^43.1.0"

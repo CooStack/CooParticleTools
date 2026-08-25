@@ -486,6 +486,7 @@ export class InlineCodeEditor {
         this.monaco = null;
         this.editor = null;
         this.model = null;
+        this.overflowWidgetsHostEl = null;
         this.languageService = null;
         this.completionRegistration = null;
         this.languageDiagnostics = [];
@@ -494,6 +495,8 @@ export class InlineCodeEditor {
         this.syncingFromSource = false;
         this.changeLock = false;
         this.autoCompletionTimer = null;
+        this.viewportLayoutFrame = null;
+        this.viewportLayoutFrameUsesRaf = false;
         this.disposables = [];
         this.monacoReady = false;
         this.monacoLoadError = null;
@@ -580,6 +583,7 @@ export class InlineCodeEditor {
             this.runValidation();
         } catch (error) {
             if (this.disposed) return;
+            this.disposeMonacoResources();
             this.monacoLoadError = error instanceof Error ? error : new Error(String(error || "Unknown Monaco error"));
             this.shellEl.classList.remove("editor-loading");
             this.showFallbackError(`CodeTip 加载失败：${this.monacoLoadError.message}`);
@@ -593,6 +597,21 @@ export class InlineCodeEditor {
         const isLight = String(document.body?.dataset?.theme || "").startsWith("light");
         const modelUri = monaco.Uri.parse(`inmemory://code-tip-inline/${Date.now()}-${Math.random().toString(16).slice(2)}.js`);
         this.model = monaco.editor.createModel(String(this.textarea.value || ""), "javascript", modelUri);
+
+        this.overflowWidgetsHostEl = document.createElement("div");
+        this.overflowWidgetsHostEl.className = "monaco-editor codetip-overflow-widgets-host";
+        this.overflowWidgetsHostEl.setAttribute("data-codetip-overflow-host", "true");
+        Object.assign(this.overflowWidgetsHostEl.style, {
+            position: "fixed",
+            inset: "0",
+            width: "100vw",
+            height: "100vh",
+            overflow: "visible",
+            pointerEvents: "none",
+            zIndex: "50",
+            background: "transparent"
+        });
+        document.body.appendChild(this.overflowWidgetsHostEl);
 
         this.editor = monaco.editor.create(this.monacoHostEl, {
             model: this.model,
@@ -612,6 +631,7 @@ export class InlineCodeEditor {
             suggestFontSize: 12,
             suggestLineHeight: 20,
             fixedOverflowWidgets: true,
+            overflowWidgetsDomNode: this.overflowWidgetsHostEl,
             inlineSuggest: { enabled: false },
             suggest: {
                 showStatusBar: false,
@@ -643,6 +663,39 @@ export class InlineCodeEditor {
             padding: this.compact
                 ? { top: 7, bottom: 7 }
                 : undefined
+        });
+
+        const scheduleViewportLayout = () => {
+            if (!this.editor || this.disposed || this.viewportLayoutFrame !== null) return;
+            const relayout = () => {
+                this.viewportLayoutFrame = null;
+                if (!this.editor || this.disposed) return;
+                this.editor.layout();
+                this.editor.render?.(true);
+            };
+            if (typeof requestAnimationFrame === "function") {
+                this.viewportLayoutFrameUsesRaf = true;
+                this.viewportLayoutFrame = requestAnimationFrame(relayout);
+            } else {
+                this.viewportLayoutFrameUsesRaf = false;
+                this.viewportLayoutFrame = setTimeout(relayout, 0);
+            }
+        };
+        const onViewportScroll = () => scheduleViewportLayout();
+        document.addEventListener("scroll", onViewportScroll, true);
+        window.addEventListener("resize", onViewportScroll);
+        this.disposables.push({
+            dispose: () => {
+                document.removeEventListener("scroll", onViewportScroll, true);
+                window.removeEventListener("resize", onViewportScroll);
+                if (this.viewportLayoutFrame === null) return;
+                if (this.viewportLayoutFrameUsesRaf && typeof cancelAnimationFrame === "function") {
+                    cancelAnimationFrame(this.viewportLayoutFrame);
+                } else {
+                    clearTimeout(this.viewportLayoutFrame);
+                }
+                this.viewportLayoutFrame = null;
+            }
         });
 
         this.languageService = createLanguageService({
@@ -903,16 +956,11 @@ export class InlineCodeEditor {
         this.shellEl.classList.toggle("editor-invalid", !!invalid);
     }
 
-    dispose() {
-        if (this.disposed) return;
-        this.disposed = true;
-
+    disposeMonacoResources() {
         if (this.autoCompletionTimer !== null) {
             clearTimeout(this.autoCompletionTimer);
             this.autoCompletionTimer = null;
         }
-
-        this.textarea.removeEventListener("input", this.sourceInputHandler);
 
         for (const d of this.disposables) {
             try {
@@ -945,6 +993,20 @@ export class InlineCodeEditor {
         } catch (_) {
         }
         this.model = null;
+
+        this.overflowWidgetsHostEl?.remove?.();
+        this.overflowWidgetsHostEl = null;
+        this.monaco = null;
+        this.viewportLayoutFrame = null;
+        this.viewportLayoutFrameUsesRaf = false;
+    }
+
+    dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
+
+        this.textarea.removeEventListener("input", this.sourceInputHandler);
+        this.disposeMonacoResources();
 
         this.textarea.classList.remove("editor-source-hidden");
         this.textarea.classList.remove("editor-textarea-fallback");

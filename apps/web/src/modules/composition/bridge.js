@@ -55,7 +55,8 @@ export function openCompositionPointsBuilderBridge({ router, cardId, target = 'r
       return: 'composition_builder.html'
     }
   });
-  window.open(route.href, '_blank');
+  // Composition PointsBuilder is an editor route, not a child window.
+  void router.push(route);
 }
 
 export function saveBezierSeed({ cardId = '', treePath = [], targetType = 'card', scaleHelper = null } = {}) {

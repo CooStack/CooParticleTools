@@ -21,6 +21,10 @@ function getGridOffset(plane) {
 
 function applyPlaneToGrid(grid, plane) {
     if (!grid) return;
+    if (grid.userData?.adaptiveGrid?.setPlane) {
+        grid.userData.adaptiveGrid.setPlane(plane, -0.01);
+        return;
+    }
     grid.rotation.set(0, 0, 0);
     if (plane === "XY") {
         grid.rotation.x = Math.PI * 0.5;

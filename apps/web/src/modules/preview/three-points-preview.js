@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { ADAPTIVE_GRID_BASE_STEP, resolveAdaptiveGridLod } from './adaptive-grid.js';
 import {
   getMergedParticleAtlas,
   loadAllParticleTextures,
@@ -10,6 +11,7 @@ const PREVIEW_SPRITE_SCALE = 1.6;
 const PREVIEW_RENDER_SCALE = 0.6;
 const MAX_RENDERED_SPRITES = 65536;
 const DEFAULT_INTERPOLATION_MS = 50;
+const INFINITE_GRID_PLANE_SIZE = 1000000;
 
 const pointVertexShader = `
 attribute vec3 prevPosition;
@@ -148,6 +150,86 @@ void main() {
   vec3 color = vColor * (0.22 + intensity * 0.78);
   if (uPremultiplyRgbByAlpha == 1) color *= intensity;
   gl_FragColor = vec4(color, intensity);
+}
+`;
+
+const infiniteGridVertexShader = `
+varying vec2 vScreenUv;
+
+void main() {
+  vScreenUv = position.xy * 0.5 + 0.5;
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`;
+
+const infiniteGridFragmentShader = `
+uniform float uFineStep;
+uniform float uCoarseStep;
+uniform float uNextStep;
+uniform float uFarStep;
+uniform float uLodBlend;
+uniform vec2 uCenterXZ;
+uniform mat4 uInvProjection;
+uniform mat4 uInvView;
+uniform vec3 uPlaneOrigin;
+uniform float uFadeStart;
+uniform float uFadeEnd;
+uniform vec3 uMinorColor;
+uniform vec3 uMajorColor;
+varying vec2 vScreenUv;
+
+vec3 unproject(vec2 uv, float depth) {
+  vec4 clipPosition = vec4(uv * 2.0 - 1.0, depth, 1.0);
+  vec4 viewPosition = uInvProjection * clipPosition;
+  viewPosition /= max(abs(viewPosition.w), 0.000001);
+  return (uInvView * vec4(viewPosition.xyz, 1.0)).xyz;
+}
+
+float gridLine(vec2 coordinate) {
+  vec2 distanceToLine = abs(fract(coordinate - 0.5) - 0.5);
+  vec2 derivative = fwidth(coordinate);
+  vec2 antiAlias = clamp(derivative * 1.5, vec2(0.0001), vec2(0.22));
+  vec2 line = 1.0 - smoothstep(vec2(0.0), antiAlias, distanceToLine);
+  float pixelCoverage = min(1.0, 0.5 / max(max(derivative.x, derivative.y), 0.0001));
+  return max(line.x, line.y) * pixelCoverage;
+}
+
+float gridDensity(vec2 coordinate, float step) {
+  vec2 derivative = fwidth(coordinate / max(step, 0.0001));
+  return max(derivative.x, derivative.y);
+}
+
+void main() {
+  vec3 rayStart = unproject(vScreenUv, -1.0);
+  vec3 rayEnd = unproject(vScreenUv, 1.0);
+  vec3 rayDirection = normalize(rayEnd - rayStart);
+  float denominator = rayDirection.y;
+  if (abs(denominator) < 0.00001) discard;
+  float rayDistance = (uPlaneOrigin.y - rayStart.y) / denominator;
+  if (rayDistance < 0.0) discard;
+  vec3 worldPosition = rayStart + rayDirection * rayDistance;
+  float fineDensity = gridDensity(worldPosition.xz, uFineStep);
+  float coarseDensity = gridDensity(worldPosition.xz, uCoarseStep);
+  float nextDensity = gridDensity(worldPosition.xz, uNextStep);
+  float fineToCoarse = max(smoothstep(0.45, 0.9, fineDensity), uLodBlend);
+  float coarseToNext = smoothstep(0.45, 0.9, coarseDensity);
+  float nextToFar = smoothstep(0.45, 0.9, nextDensity);
+  float fineLine = gridLine(worldPosition.xz / max(uFineStep, 0.0001));
+  float coarseLine = gridLine(worldPosition.xz / max(uCoarseStep, 0.0001));
+  float nextLine = gridLine(worldPosition.xz / max(uNextStep, 0.0001));
+  float farLine = gridLine(worldPosition.xz / max(uFarStep, 0.0001));
+  float distanceToCenter = distance(worldPosition.xz, uCenterXZ);
+  float fade = 1.0 - smoothstep(uFadeStart, uFadeEnd, distanceToCenter);
+  float coarseMix = smoothstep(0.2, 1.0, uLodBlend);
+  float fineAlpha = fineLine * (1.0 - fineToCoarse) * 0.52;
+  float coarseAlpha = coarseLine * fineToCoarse * (1.0 - coarseToNext) * 0.92;
+  float nextAlpha = nextLine * coarseToNext * (1.0 - nextToFar) * 0.86;
+  float farAlpha = farLine * nextToFar * 0.78;
+  float alpha = max(max(fineAlpha, coarseAlpha), max(nextAlpha, farAlpha)) * fade;
+  if (alpha <= 0.01) discard;
+  float coarseWeight = coarseAlpha / max(alpha, 0.0001);
+  vec3 color = mix(uMinorColor, uMajorColor, clamp(coarseWeight, 0.0, 1.0));
+  gl_FragColor = vec4(color, alpha);
 }
 `;
 
@@ -329,7 +411,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
 
   const scene = new THREE.Scene();
 
-  const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 2000);
+  const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 1000000);
   camera.position.set(2.4, 1.8, 2.4);
 
   const controls = new OrbitControls(camera, renderer.domElement);
@@ -355,10 +437,37 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
   scene.add(ambient);
   scene.add(directional);
 
-  const grid = new THREE.GridHelper(20, 20, 0x334155, 0x1e293b);
+  const gridMaterial = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    side: THREE.DoubleSide,
+    extensions: { derivatives: true },
+    uniforms: {
+      uFineStep: { value: ADAPTIVE_GRID_BASE_STEP },
+      uCoarseStep: { value: ADAPTIVE_GRID_BASE_STEP * 2 },
+      uNextStep: { value: ADAPTIVE_GRID_BASE_STEP * 10 },
+      uFarStep: { value: ADAPTIVE_GRID_BASE_STEP * 250 },
+      uLodBlend: { value: 0 },
+      uCenterXZ: { value: new THREE.Vector2() },
+      uInvProjection: { value: new THREE.Matrix4() },
+      uInvView: { value: new THREE.Matrix4() },
+      uPlaneOrigin: { value: new THREE.Vector3(0, -0.01, 0) },
+      uFadeStart: { value: 12 },
+      uFadeEnd: { value: 64 },
+      uMinorColor: { value: new THREE.Color(0x3f5e82) },
+      uMajorColor: { value: new THREE.Color(0x7594b8) }
+    },
+    vertexShader: infiniteGridVertexShader,
+    fragmentShader: infiniteGridFragmentShader
+  });
+  const grid = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), gridMaterial);
+  grid.frustumCulled = false;
+  grid.renderOrder = -10;
   const axes = new THREE.AxesHelper(4);
   scene.add(grid);
   scene.add(axes);
+  let gridStep = ADAPTIVE_GRID_BASE_STEP;
 
   const matrix = new THREE.Matrix4();
   const basis = new THREE.Matrix4();
@@ -417,6 +526,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     if (disposed) return;
     const interpolationChanged = updateInterpolationUniforms(now);
     controls.update();
+    updateAdaptiveGrid();
     if (orientedMesh && (hasDynamicOrientedBillboards || interpolationAlpha < 1 || interpolationChanged)) {
       applyOrientedParticleMatrices(false);
     }
@@ -441,6 +551,34 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     camera.updateProjectionMatrix();
     applyViewportUniforms(billboardMaterial);
     applyViewportUniforms(orientedMesh?.material);
+  }
+
+  function updateAdaptiveGrid() {
+    camera.updateMatrixWorld();
+    gridMaterial.uniforms.uInvProjection.value.copy(camera.projectionMatrix).invert();
+    gridMaterial.uniforms.uInvView.value.copy(camera.matrixWorld);
+    const cameraDistance = camera.position.distanceTo(controls.target);
+    const lod = resolveAdaptiveGridLod({
+      distance: cameraDistance,
+      fov: camera.fov,
+      viewportHeight
+    });
+    if (Math.abs(lod.fineStep - gridStep) > Math.max(1e-6, lod.fineStep * 1e-6)) {
+      gridMaterial.uniforms.uFineStep.value = lod.fineStep;
+      gridMaterial.uniforms.uCoarseStep.value = lod.coarseStep;
+      gridMaterial.uniforms.uNextStep.value = lod.coarseStep * 5;
+      gridMaterial.uniforms.uFarStep.value = lod.coarseStep * 125;
+      gridStep = lod.fineStep;
+    }
+    gridMaterial.uniforms.uLodBlend.value = lod.blend;
+    gridMaterial.uniforms.uCenterXZ.value.set(controls.target.x, controls.target.z);
+    gridMaterial.uniforms.uPlaneOrigin.value.set(controls.target.x, -0.01, controls.target.z);
+    const fadeEnd = Math.min(
+      INFINITE_GRID_PLANE_SIZE * 0.35,
+      Math.max(lod.coarseStep * 96, cameraDistance * 16)
+    );
+    gridMaterial.uniforms.uFadeStart.value = fadeEnd * 0.42;
+    gridMaterial.uniforms.uFadeEnd.value = fadeEnd;
   }
 
   function clearObject(object) {
@@ -1025,6 +1163,8 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     disposed = true;
     cancelAnimationFrame(frameId);
     clearPoints();
+    grid.geometry.dispose();
+    grid.material.dispose();
     controls.dispose();
     renderer.dispose();
   }

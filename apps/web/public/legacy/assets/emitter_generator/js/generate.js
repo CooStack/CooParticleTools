@@ -1,6 +1,6 @@
 
 import { COMMAND_META, newCommand, normalizeCommand, humanFieldName, cloneDefaultCommands } from "./command_meta.js";
-import { initPreview } from "./preview.js?v=20260313_4";
+import { initPreview } from "./preview.js?v=20260825_1";
 import { genEmitterKotlin } from "./kotlin_gen.js?v=20260312_6";
 import { initSettingsSystem } from "./settings.js";
 import { initHotkeysSystem } from "./hotkeys.js?v=20260312_7";

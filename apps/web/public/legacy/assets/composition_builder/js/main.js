@@ -46,6 +46,7 @@ import {
 } from "./kotlin_mapping.js?v=20260720_1";
 import { createExpressionRuntime } from "./expression_runtime.js?v=20260729_3";
 import { APP_THEME_KEY, watchAppTheme, writeAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
+import { createAdaptiveGrid } from "../../shared/js/adaptive-grid.js?v=20260825_14";
 import { InlineCodeEditor, mergeCompletionGroups } from "./code_editor.js?v=20260725_1";
 import {
     normalizeAlphaHelperConfig,
@@ -78,7 +79,7 @@ import {
     hasAngleOffsetEaseSpecialParams,
     formatAngleValue
 } from "./angle_offset_utils.js";
-import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260825_15";
+import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260826_1";
 import { installKotlinCodegenMethods } from "./kotlin_codegen_mixin.js?v=20260730_3";
 import { compositionVectorApiTypeDeclaration } from "./composition_vector_expression.js?v=20260729_3";
 import { installCodeOutputMethods } from "./code_output_mixin.js";
@@ -112,11 +113,36 @@ const CPB_PROJECT_KEY = `${CPB_PREFIX}pb_project_name_v1`;
 const CPB_RETURN_CARD_KEY = `${CPB_PREFIX}return_card_v1`;
 const CPB_RETURN_TARGET_KEY = `${CPB_PREFIX}return_target_v1`;
 const CPB_COMP_CONTEXT_KEY = `${CPB_PREFIX}pb_comp_context_v1`;
+// Isolate persisted reference data when the sampling contract or Composition changes.
+const COMPOSITION_REFERENCE_BUILD_VERSION = "20260825_19";
+const COMPOSITION_REFERENCE_STORAGE_PREFIX = "composition-reference-v3:";
+
+function compositionReferenceStateRevision(state) {
+    let source = "";
+    try {
+        source = JSON.stringify(state || {});
+    } catch {
+        source = String(Date.now());
+    }
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < source.length; index++) {
+        hash = Math.imul((hash ^ source.charCodeAt(index)) >>> 0, 0x01000193) >>> 0;
+    }
+    return `${hash.toString(16).padStart(8, "0")}:${source.length}`;
+}
 
 function compositionReferenceNodeId(cardId, path = []) {
     const id = String(cardId || "").trim();
     const normalizedPath = Array.isArray(path) ? path.map((value) => Math.max(0, Math.trunc(Number(value) || 0))) : [];
     return normalizedPath.length ? `${id}::shape:${normalizedPath.join(".")}` : id;
+}
+
+function compositionReferenceSnapshotHasPoints(snapshot) {
+    if (!snapshot || typeof snapshot !== "object") return false;
+    const sourcePointTotal = Math.max(0, Math.trunc(Number(snapshot.sourcePointTotal) || 0));
+    if (sourcePointTotal > 0) return true;
+    return Array.isArray(snapshot.groups)
+        && snapshot.groups.some((group) => Math.max(0, Math.trunc(Number(group?.pointCount) || 0)) > 0);
 }
 
 function buildCompositionReferenceTree(card, path = [], parentId = null, depth = 0, out = [], rootCardId = "") {
@@ -709,6 +735,13 @@ class CompositionBuilderApp {
 
         this.currentKotlin = "";
         this.saveTimer = 0;
+        this.referenceSamplerMode = (() => {
+            try {
+                return new URLSearchParams(globalThis.location?.search || "").get("referenceSampler") === "1";
+            } catch {
+                return false;
+            }
+        })();
         this.toastTimer = 0;
         this.pendingImeMutate = null;
         this.pendingImeMutateTimer = 0;
@@ -716,7 +749,7 @@ class CompositionBuilderApp {
 
         this.scene = null;
         this.camera = null;
-        this.renderer = null;        this.grid = null;
+        this.renderer = null;        this.grid = null;        this.adaptiveGrid = null;
         this.pointsMesh = null;
         this.pointsGeom = null;
         this.pointsMat = null;
@@ -837,6 +870,7 @@ class CompositionBuilderApp {
         this.generateCodeAndRender(true);
         this.writeBuilderCompositionContext();
         this.bindEvents();
+        setTimeout(() => this.startCompositionReferenceSamplerFromQuery(), 0);
         if (startupCParticleConflict) {
             this.showCParticleConflict("GPU 粒子配置需要处理", startupCParticleConflict);
         }
@@ -1134,6 +1168,9 @@ class CompositionBuilderApp {
         window.addEventListener("message", (e) => {
             if (e?.data?.type === "cpb-builder-return") this.pullBuilderStateAndClose();
         });
+        window.addEventListener("storage", (e) => {
+            if (e?.key === CPB_RETURN_CARD_KEY) this.consumeBuilderReturnState();
+        });
     }
 
     initThree() {
@@ -1143,7 +1180,7 @@ class CompositionBuilderApp {
 
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x0b1017);
-        this.camera = new THREE.PerspectiveCamera(58, width / height, 0.1, 5000);
+        this.camera = new THREE.PerspectiveCamera(58, width / height, 0.1, 1000000);
         this.camera.position.set(16, 11, 16);
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -1166,6 +1203,9 @@ class CompositionBuilderApp {
         };
         this.controls.target.set(0, 0, 0);
         this.controls.update();
+        this.controls.addEventListener("change", () => {
+            this.previewSceneDirty = true;
+        });
 
         this.scene.add(new THREE.AmbientLight(0xffffff, 0.7));
         const dir = new THREE.DirectionalLight(0xffffff, 0.7);
@@ -1173,10 +1213,18 @@ class CompositionBuilderApp {
         this.scene.add(dir);
 
         this.axes = new THREE.AxesHelper(6);
-        this.grid = new THREE.GridHelper(200, 200, 0x2b405c, 0x2b405c);
-        this.grid.position.y = -0.001;
         this.scene.add(this.axes);
-        this.scene.add(this.grid);
+        this.adaptiveGrid = createAdaptiveGrid({
+            scene: this.scene,
+            camera: this.camera,
+            controls: this.controls,
+            renderer: this.renderer,
+            color: getComputedStyle(document.body).getPropertyValue("--grid-color").trim() || "#617d9b",
+            visible: true,
+            plane: "XZ",
+            offset: -0.001,
+        });
+        this.grid = this.adaptiveGrid?.mesh || null;
 
         this.pointsGeom = new THREE.BufferGeometry();
         this.pointsMat = new THREE.PointsMaterial({
@@ -1353,8 +1401,8 @@ class CompositionBuilderApp {
                     "      vec3 gpuCurvedColor = srgbToLinearGpu(linearToSrgbGpu(gpuBaseColor) * gpuColorCurve);",
                     "      vGpuColorScale = gpuCurvedColor / max(gpuBaseColor, vec3(0.000001));",
                     "    }",
-                    "    if (aGpuFadeOut.x > 0.0 && previewAge >= uGpuPreviewPlayTicks) {",
-                    "      float progress = clamp((previewAge - uGpuPreviewPlayTicks) / aGpuFadeOut.x, 0.0, 1.0);",
+                    "    if (aGpuFadeOut.x > 0.0 && previewCycleAge >= uGpuPreviewPlayTicks) {",
+                    "      float progress = clamp((previewCycleAge - uGpuPreviewPlayTicks) / aGpuFadeOut.x, 0.0, 1.0);",
                     "      previewAlpha *= mix(aGpuFadeOut.y, aGpuFadeOut.z, progress);",
                     "    } else if (aGpuFadeIn.x > 0.0) {",
                     "      float progress = clamp(previewAge / aGpuFadeIn.x, 0.0, 1.0);",
@@ -1456,6 +1504,7 @@ class CompositionBuilderApp {
             requestAnimationFrame(animate);
             const frameNow = performance.now();
             const controlsChanged = this.controls.update();
+            if (this.adaptiveGrid) this.adaptiveGrid.update();
             if (controlsChanged) this.previewSceneDirty = true;
             if (!this.previewPaused) this.updatePreviewAnimation();
             this.updatePreviewFps(frameNow);
@@ -1522,25 +1571,14 @@ class CompositionBuilderApp {
         }
         if (this.dom?.themeSelect && this.dom.themeSelect.value !== theme) this.dom.themeSelect.value = theme;
         const styles = getComputedStyle(document.body);
-        const gridColor = styles.getPropertyValue("--line2").trim() || "#2b405c";
+        const gridColor = styles.getPropertyValue("--grid-color").trim() || "#617d9b";
         const previewSceneColor = styles.getPropertyValue("--wb-preview-scene").trim() || "#0b1017";
 
         if (this.scene) this.scene.background = new THREE.Color(previewSceneColor);
         if (this.renderer) this.renderer.setClearColor(previewSceneColor, 1);
 
-        if (this.grid && this.scene) {
-            this.scene.remove(this.grid);
-            this.grid.geometry.dispose();
-            if (Array.isArray(this.grid.material)) {
-                this.grid.material.forEach((m) => m.dispose && m.dispose());
-            } else if (this.grid.material && this.grid.material.dispose) {
-                this.grid.material.dispose();
-            }
-            this.grid = new THREE.GridHelper(200, 200, gridColor, gridColor);
-            this.grid.position.y = -0.001;
-            this.grid.visible = this.state.settings.showGrid;
-            this.scene.add(this.grid);
-        }
+        if (this.adaptiveGrid) this.adaptiveGrid.setColor(gridColor);
+        if (this.grid) this.grid.visible = this.state.settings.showGrid;
         if (this.axes) this.axes.visible = this.state.settings.showAxes;
         this.rebuildPreview();
     }
@@ -2892,7 +2930,9 @@ class CompositionBuilderApp {
                 || act === "import-builder-json"
                 || act === "import-node-builder-json"
                 || act === "export-builder-json"
-                || act === "export-node-builder-json";
+                || act === "export-node-builder-json"
+                || act === "shape-tree-drill-into"
+                || act === "shape-tree-navigate-breadcrumb";
             if (act === "delete-card") {
                 const card = this.getCardById(cardId);
                 const cardName = String(card?.name || "该卡片").trim() || "该卡片";
@@ -3113,7 +3153,11 @@ class CompositionBuilderApp {
                     if (!card) return;
                     const childIdx = int(btn.dataset.childIdx);
                     card.viewPath = [...(card.viewPath || []), childIdx];
-                    break;
+                    // 仅切换编辑器视图，不改变 Composition 数据。
+                    // 不要落入 afterStructureMutate，否则会重建所有 PointsBuilder 并重播预览。
+                    this.renderCards();
+                    this.scheduleSave();
+                    return;
                 }
                 case "shape-tree-navigate-breadcrumb": {
                     const card = this.getCardById(cardId);
@@ -3121,7 +3165,10 @@ class CompositionBuilderApp {
                     const depth = int(btn.dataset.depth);
                     if (depth < 0) card.viewPath = [];
                     else card.viewPath = (card.viewPath || []).slice(0, depth + 1);
-                    break;
+                    // 面包屑导航同样只是视图状态变化，不需要重新计算预览。
+                    this.renderCards();
+                    this.scheduleSave();
+                    return;
                 }
                 case "shape-tree-move-child-up": {
                     const card = this.getCardById(cardId);
@@ -4591,12 +4638,19 @@ class CompositionBuilderApp {
     }
 
     scheduleSave() {
+        if (this.referenceSamplerMode) return;
         clearTimeout(this.saveTimer);
         this.saveTimer = setTimeout(() => this.saveStateNow(), 220);
     }
 
     saveStateNow() {
         try {
+            if (this.referenceSamplerMode) {
+                // The hidden sampler shares localStorage with the editor, but it
+                // must never persist its temporary Composition runtime state.
+                this.writeBuilderCompositionContext();
+                return;
+            }
             saveCompositionStateToStorage(localStorage, this.state);
             this.writeBuilderCompositionContext();
         } catch (e) {
@@ -4605,6 +4659,7 @@ class CompositionBuilderApp {
     }
 
     savePreferencesNow() {
+        if (this.referenceSamplerMode) return;
         try {
             saveCompositionPreferencesToStorage(localStorage, this.state);
         } catch (e) {
@@ -4670,6 +4725,7 @@ class CompositionBuilderApp {
         try {
             const projectName = String(this.state.projectName || "NewComposition");
             const projectClass = sanitizeKotlinClassName(projectName || "NewComposition");
+            const compositionRevision = compositionReferenceStateRevision(this.state);
             let previous = null;
             try {
                 const rawPrevious = localStorage.getItem(CPB_COMP_CONTEXT_KEY);
@@ -4699,12 +4755,28 @@ class CompositionBuilderApp {
                     : []
             }));
             const hasReferenceOverride = Object.prototype.hasOwnProperty.call(options || {}, "compositionReferenceOverride");
+            const previousReference = previous?.compositionReference && typeof previous.compositionReference === "object"
+                ? previous.compositionReference
+                : null;
+            const sameReferenceTarget = !!previousReference
+                && String(previous?.cardId || "") === String(contextCard?.id || "")
+                && normalizeBuilderTarget(previous?.target || "root") === contextTarget
+                && String(previous?.compositionReferenceRevision || "") === compositionRevision
+                && String(previousReference.currentCardId || contextCard?.id || "") === String(contextCard?.id || "")
+                && normalizeBuilderTarget(previousReference.currentTarget || contextTarget) === contextTarget;
+            const preservePendingReference = hasReferenceOverride
+                && !options.compositionReferenceOverride
+                && previous?.compositionReferenceStatus === "pending"
+                && sameReferenceTarget
+                && String(previousReference?.compositionRevision || previous?.compositionReferenceRevision || "") === compositionRevision;
             const compositionReference = hasReferenceOverride
-                ? (options.compositionReferenceOverride || null)
-                : (previous?.compositionReference || null);
+                ? (preservePendingReference ? previousReference : (options.compositionReferenceOverride || null))
+                : (sameReferenceTarget ? previousReference : null);
             const compositionReferenceStatus = hasReferenceOverride
                 ? String(options.compositionReferenceStatus || (compositionReference ? "ready" : "unavailable"))
-                : String(previous?.compositionReferenceStatus || (compositionReference ? "ready" : "unavailable"));
+                : (sameReferenceTarget
+                    ? String(previous?.compositionReferenceStatus || (compositionReference ? "ready" : "unavailable"))
+                    : "pending");
             const contextPayload = {
                 source: "composition_builder",
                 ts: Date.now(),
@@ -4718,8 +4790,10 @@ class CompositionBuilderApp {
                 numericMap: this.getBuilderNumericContextMap(),
                 compositionState: {
                     projectName,
-                    cards: compositionCards
+                    cards: compositionCards,
+                    revision: compositionRevision
                 },
+                compositionReferenceRevision: compositionRevision,
                 compositionReference,
                 compositionReferenceStatus
             };
@@ -4783,8 +4857,7 @@ class CompositionBuilderApp {
         }
         if (this.builderCompositionReferenceHandle) {
             try {
-                if (typeof cancelIdleCallback === "function") cancelIdleCallback(this.builderCompositionReferenceHandle);
-                else clearTimeout(this.builderCompositionReferenceHandle);
+                clearTimeout(this.builderCompositionReferenceHandle);
             } catch {
             }
         }
@@ -4802,48 +4875,216 @@ class CompositionBuilderApp {
             || this.getCardById?.(previousContext?.cardId)
             || null;
         const contextTarget = normalizeBuilderTarget(target || this.builderModalTarget || previousContext?.target || "root");
+        const compositionRevision = compositionReferenceStateRevision(this.state);
+        const storageKey = `${COMPOSITION_REFERENCE_STORAGE_PREFIX}${String(this.state.projectName || "NewComposition")}:${compositionRevision}:${String(contextCard?.id || "")}:${normalizeBuilderTarget(contextTarget)}`;
+        const contextStillOwned = () => {
+            try {
+                const raw = localStorage.getItem(CPB_COMP_CONTEXT_KEY);
+                const current = raw ? JSON.parse(raw) : null;
+                return String(current?.cardId || "") === String(contextCard?.id || "")
+                    && normalizeBuilderTarget(current?.target || "root") === contextTarget
+                    && String(current?.compositionReferenceRevision || "") === compositionRevision;
+            } catch {
+                return false;
+            }
+        };
         const run = async () => {
             this.builderCompositionReferenceHandle = 0;
             if (requestId !== this.builderCompositionReferenceRequestId) return;
+            // Preview geometry is built during idle time. Do not sample against the
+            // empty arrays exposed during that rebuild; wait without blocking the
+            // Composition render loop, then capture the ready preview state.
+            const waitStartedAt = performance.now();
+            while (requestId === this.builderCompositionReferenceRequestId
+                && (this.previewBuildInProgress === true
+                    || this.previewBuildQueued === true
+                    || !Array.isArray(this.previewBasePoints)
+                    || !this.previewBasePoints.length)
+                && performance.now() - waitStartedAt < 5000) {
+                await new Promise((resolve) => setTimeout(resolve, 16));
+            }
+            if (requestId !== this.builderCompositionReferenceRequestId) return;
+            let pendingProgress = null;
+            let progressWritePromise = null;
+            let lastPersistedProgressFrameCount = 0;
+            const progressCheckpointStride = 32;
+            const writeProgressSnapshot = async (progress) => {
+                if (requestId !== this.builderCompositionReferenceRequestId || !progress) return;
+                try {
+                    const totalTicks = Math.max(1, Math.trunc(Number(progress.totalTicks) || 1));
+                    const availableFrameCount = progress.gpu?.enabled === true
+                        ? Math.max(0, Math.trunc(Number(progress.gpu.timeline?.length) || 0))
+                        : (Array.isArray(progress.frames) ? progress.frames.length : 0);
+                    const frameCount = Math.max(totalTicks, availableFrameCount);
+                    await putCompositionReferenceSnapshot(storageKey, {
+                        version: progress.version,
+                        encoding: progress.encoding,
+                        frameTicks: progress.frameTicks,
+                        owners: progress.owners,
+                        visibleMasks: progress.visibleMasks,
+                        currentAnchorRefs: progress.currentAnchorRefs,
+                        currentSourcePoints: progress.currentSourcePoints,
+                        groups: progress.groups,
+                        frames: progress.frames,
+                        currentCardId: progress.currentCardId,
+                        currentTarget: progress.currentTarget,
+                        currentOwnerId: progress.currentOwnerId,
+                        compositionRevision,
+                        sourcePointTotal: progress.sourcePointTotal,
+                        sampled: progress.sampled,
+                        frameSampled: progress.frameSampled,
+                        totalTicks: progress.totalTicks,
+                        gpu: progress.gpu,
+                        frameCount,
+                        availableFrameCount,
+                        referenceVersion: COMPOSITION_REFERENCE_BUILD_VERSION,
+                        complete: false
+                    });
+                    const metadata = {
+                        ...progress,
+                        gpu: progress.gpu?.enabled === true
+                            ? {
+                                enabled: true,
+                                version: progress.gpu.version || 1,
+                                pointCount: progress.gpu.pointCount || 0,
+                                timelineCount: availableFrameCount
+                            }
+                            : null,
+                        storage: "indexeddb",
+                        storageKey,
+                        frameCount,
+                        availableFrameCount,
+                        frames: [],
+                        visibleMasks: [],
+                        referenceVersion: COMPOSITION_REFERENCE_BUILD_VERSION,
+                        compositionRevision,
+                        complete: false
+                    };
+                    if (contextStillOwned()) {
+                        this.writeBuilderCompositionContext(contextCard, contextTarget, {
+                            compositionReferenceOverride: metadata,
+                            compositionReferenceStatus: "pending"
+                        });
+                    }
+                } catch (error) {
+                    console.warn("write partial builder composition reference snapshot failed:", error);
+                }
+            };
+            const drainProgressWrites = async () => {
+                while (pendingProgress && requestId === this.builderCompositionReferenceRequestId) {
+                    const progress = pendingProgress;
+                    pendingProgress = null;
+                    await writeProgressSnapshot(progress);
+                }
+                progressWritePromise = null;
+            };
+            const persistProgress = (progress) => {
+                if (requestId !== this.builderCompositionReferenceRequestId || !progress) return;
+                const frameCount = progress.gpu?.enabled === true
+                    ? Math.max(0, Math.trunc(Number(progress.gpu.timeline?.length) || 0))
+                    : (Array.isArray(progress.frames) ? progress.frames.length : 0);
+                const totalTicks = Math.max(1, Math.trunc(Number(progress.totalTicks) || 1));
+                const isFirst = frameCount <= 1;
+                const isComplete = frameCount >= totalTicks;
+                if (!isFirst && !isComplete && frameCount - lastPersistedProgressFrameCount < progressCheckpointStride) return;
+                lastPersistedProgressFrameCount = frameCount;
+                pendingProgress = progress;
+                if (!progressWritePromise) {
+                    progressWritePromise = drainProgressWrites();
+                }
+            };
             const snapshot = await Promise.resolve(this.buildBuilderCompositionReferenceSnapshot?.(
                 contextCard?.id || "",
                 contextTarget,
-                requestId
+                requestId,
+                { onProgress: persistProgress }
             ) || null);
             if (requestId !== this.builderCompositionReferenceRequestId) return;
             if (!snapshot) {
-                this.writeBuilderCompositionContext(contextCard, contextTarget, {
-                    compositionReferenceOverride: null,
-                    compositionReferenceStatus: "unavailable"
-                });
+                if (contextStillOwned()) {
+                    this.writeBuilderCompositionContext(contextCard, contextTarget, {
+                        compositionReferenceOverride: null,
+                        compositionReferenceStatus: "unavailable"
+                    });
+                }
                 return;
             }
-            const storageKey = `composition-reference-v2:${String(this.state.projectName || "NewComposition")}:${String(contextCard?.id || "")}:${normalizeBuilderTarget(contextTarget)}`;
+            // Worker sampling publishes partial checkpoints asynchronously. Drain
+            // the last checkpoint before writing the complete snapshot so an older
+            // IndexedDB transaction cannot finish after the final one and roll the
+            // PointsBuilder back to a partial timeline.
+            while (progressWritePromise && requestId === this.builderCompositionReferenceRequestId) {
+                await progressWritePromise;
+            }
+            if (requestId !== this.builderCompositionReferenceRequestId) return;
             try {
                 await putCompositionReferenceSnapshot(storageKey, {
                     version: snapshot.version,
                     encoding: snapshot.encoding,
                     frames: snapshot.frames,
-                    visibleMasks: snapshot.visibleMasks
+                    visibleMasks: snapshot.visibleMasks,
+                    frameTicks: snapshot.frameTicks,
+                    owners: snapshot.owners,
+                    currentAnchorRefs: snapshot.currentAnchorRefs,
+                    currentSourcePoints: snapshot.currentSourcePoints,
+                    groups: snapshot.groups,
+                    currentCardId: snapshot.currentCardId,
+                    currentTarget: snapshot.currentTarget,
+                    currentOwnerId: snapshot.currentOwnerId,
+                    sourcePointTotal: snapshot.sourcePointTotal,
+                    sampled: snapshot.sampled,
+                    frameSampled: snapshot.frameSampled,
+                    totalTicks: snapshot.totalTicks,
+                    gpu: snapshot.gpu,
+                    frameCount: Math.max(
+                        snapshot.gpu?.enabled === true
+                            ? Math.trunc(Number(snapshot.gpu.timeline?.length) || 0)
+                            : snapshot.frames.length,
+                        Math.max(1, Math.trunc(Number(snapshot.totalTicks) || 1))
+                    ),
+                    referenceVersion: COMPOSITION_REFERENCE_BUILD_VERSION,
+                    compositionRevision,
+                    complete: true
                 });
                 const metadata = {
                     ...snapshot,
+                    gpu: snapshot.gpu?.enabled === true
+                        ? {
+                            enabled: true,
+                            version: snapshot.gpu.version || 1,
+                            pointCount: snapshot.gpu.pointCount || 0,
+                            timelineCount: Math.max(0, Math.trunc(Number(snapshot.gpu.timeline?.length) || 0))
+                        }
+                        : null,
                     storage: "indexeddb",
                     storageKey,
-                    frameCount: snapshot.frames.length,
+                    frameCount: Math.max(
+                        snapshot.frames.length,
+                        Math.max(1, Math.trunc(Number(snapshot.totalTicks) || 1))
+                    ),
+                    availableFrameCount: snapshot.gpu?.enabled === true
+                        ? Math.max(0, Math.trunc(Number(snapshot.gpu.timeline?.length) || 0))
+                        : snapshot.frames.length,
                     frames: [],
-                    visibleMasks: []
+                    visibleMasks: [],
+                    referenceVersion: COMPOSITION_REFERENCE_BUILD_VERSION,
+                    compositionRevision,
+                    complete: true
                 };
-                this.writeBuilderCompositionContext(contextCard, contextTarget, {
-                    compositionReferenceOverride: metadata,
-                    compositionReferenceStatus: "ready"
-                });
+                if (contextStillOwned()) {
+                    this.writeBuilderCompositionContext(contextCard, contextTarget, {
+                        compositionReferenceOverride: metadata,
+                        compositionReferenceStatus: "ready"
+                    });
+                }
             } catch (error) {
                 console.warn("write builder composition reference snapshot failed:", error);
-                this.writeBuilderCompositionContext(contextCard, contextTarget, {
-                    compositionReferenceOverride: null,
-                    compositionReferenceStatus: "storage_unavailable"
-                });
+                if (contextStillOwned()) {
+                    this.writeBuilderCompositionContext(contextCard, contextTarget, {
+                        compositionReferenceOverride: null,
+                        compositionReferenceStatus: "storage_unavailable"
+                    });
+                }
             }
         };
         const generation = new Promise((resolve) => {
@@ -4851,16 +5092,19 @@ class CompositionBuilderApp {
             const invoke = () => Promise.resolve().then(run).catch((error) => {
                 if (requestId === this.builderCompositionReferenceRequestId) {
                     console.warn("build builder composition reference snapshot failed:", error);
-                    this.writeBuilderCompositionContext(contextCard, contextTarget, {
-                        compositionReferenceOverride: null,
-                        compositionReferenceStatus: "unavailable"
-                    });
+                    if (contextStillOwned()) {
+                        this.writeBuilderCompositionContext(contextCard, contextTarget, {
+                            compositionReferenceOverride: null,
+                            compositionReferenceStatus: "unavailable"
+                        });
+                    }
                 }
                 return null;
             }).then(resolve);
-            this.builderCompositionReferenceHandle = typeof requestIdleCallback === "function"
-                ? requestIdleCallback(invoke, { timeout: 2000 })
-                : setTimeout(invoke, 200);
+            // requestIdleCallback is throttled indefinitely in a background
+            // CompositionBuilder tab. A short timer keeps entry lazy while
+            // allowing the Worker sampler to start when PointsBuilder is open.
+            this.builderCompositionReferenceHandle = setTimeout(invoke, 40);
         });
         this.builderCompositionReferencePromise = generation;
         generation.finally(() => {
@@ -4872,22 +5116,17 @@ class CompositionBuilderApp {
         return generation;
     }
 
-    async buildBuilderCompositionReferenceSnapshot(currentCardId = "", currentTarget = "root", requestId = 0) {
-        const cards = Array.isArray(this.state?.cards) ? this.state.cards : [];
-        const previewOwners = Array.isArray(this.previewReferenceOwners) && this.previewReferenceOwners.length
-            ? this.previewReferenceOwners
-            : (Array.isArray(this.previewOwners) ? this.previewOwners : []);
-        const basePoints = Array.isArray(this.previewBasePoints) ? this.previewBasePoints : [];
+    getBuilderCompositionReferenceCurrentSourceRefs(owners = [], currentCardId = "", currentTarget = "root") {
+        const list = Array.isArray(owners) ? owners : [];
+        const currentId = String(currentCardId || "");
+        const currentTargetPath = getBuilderTargetShapePath(currentTarget);
+        const currentTargetPathKey = currentTargetPath.join(".");
         const anchorRefs = Array.isArray(this.previewAnchorRef) ? this.previewAnchorRef : [];
         const levelRefs = Array.isArray(this.previewLevelRefs) ? this.previewLevelRefs : [];
         const levelPaths = Array.isArray(this.previewLevelPaths) ? this.previewLevelPaths : [];
-        if (!previewOwners.length || !basePoints.length) return null;
-        const currentId = String(currentCardId || "");
-        const owners = previewOwners.map((owner) => String(owner || ""));
-        const currentTargetPath = getBuilderTargetShapePath(currentTarget);
-        const currentTargetPathKey = currentTargetPath.join(".");
-        const currentSourceRefs = owners.map((owner, pointIndex) => {
-            const currentCardOwner = owner === currentId || owner.startsWith(`${currentId}::shape:`);
+        return list.map((owner, pointIndex) => {
+            const ownerId = String(owner || "");
+            const currentCardOwner = ownerId === currentId || ownerId.startsWith(`${currentId}::shape:`);
             if (!currentCardOwner) return -1;
             if (!currentTargetPath.length) {
                 return Math.max(0, Math.trunc(Number(anchorRefs[pointIndex]) || 0));
@@ -4896,13 +5135,374 @@ class CompositionBuilderApp {
             const paths = Array.isArray(levelPaths[pointIndex]) ? levelPaths[pointIndex] : [];
             for (let levelIndex = 0; levelIndex < paths.length; levelIndex++) {
                 const path = Array.isArray(paths[levelIndex]) ? paths[levelIndex] : [];
-                if (path.join(".") === currentTargetPathKey) {
-                    const ref = Number(refs[levelIndex]);
-                    return Number.isFinite(ref) ? Math.max(0, Math.trunc(ref)) : -1;
-                }
+                if (path.join(".") !== currentTargetPathKey) continue;
+                const ref = Number(refs[levelIndex]);
+                return Number.isFinite(ref) ? Math.max(0, Math.trunc(ref)) : -1;
             }
             return -1;
         });
+    }
+
+    async sampleBuilderCompositionReferenceFramesWithWorker({
+        cycleCfg,
+        frameCount,
+        frameTicks = [],
+        totalTicks = 1,
+        totalCount,
+        owners,
+        groups,
+        currentCardId,
+        currentTarget,
+        currentSourceRefs,
+        currentSourcePoints,
+        sourcePointTotal,
+        progressChunkSize,
+        requestId,
+        onProgress
+    } = {}) {
+        if (typeof Worker !== "function" || typeof this.makePreviewRenderWorkerSnapshot !== "function") return null;
+        const count = Math.max(0, Math.trunc(Number(totalCount) || 0));
+        const total = Math.max(1, Math.trunc(Number(frameCount) || 0));
+        const ticks = Array.isArray(frameTicks) && frameTicks.length === total
+            ? frameTicks.map((tick) => Math.max(0, Math.trunc(Number(tick) || 0)))
+            : Array.from({ length: total }, (_, index) => index);
+        const timelineTicks = Math.max(1, Math.trunc(Number(totalTicks) || total));
+        if (!count || !total) return null;
+        let snapshot = null;
+        try {
+            snapshot = this.makePreviewRenderWorkerSnapshot(count, cycleCfg);
+        } catch {
+            snapshot = null;
+        }
+        if (!snapshot?.snapshotSignature) return null;
+        snapshot.previewReferenceAllCards = true;
+        // Large Composition snapshots are expensive to clone into multiple
+        // workers. One worker avoids duplicating the full point graph while
+        // keeping the renderer responsive during long reference cycles.
+        const workerCount = count >= 5000
+            ? 1
+            : Math.max(1, Math.min(2, Math.max(1, Math.trunc(Number(globalThis.navigator?.hardwareConcurrency || 2) - 1))));
+        const workerUrl = new URL("./preview_render_cache_worker.js?v=20260826_1", import.meta.url);
+        const workers = [];
+        const frames = new Array(total);
+        const visibleMasks = new Array(total);
+        const pending = new Map();
+        let nextFrame = 0;
+        let completed = 0;
+        let ready = 0;
+        let settled = false;
+        let startupTimeout = 0;
+        const dispose = () => {
+            if (startupTimeout) {
+                clearTimeout(startupTimeout);
+                startupTimeout = 0;
+            }
+            for (const worker of workers) {
+                try {
+                    worker.onmessage = null;
+                    worker.onerror = null;
+                    worker.terminate();
+                } catch {
+                }
+            }
+            workers.length = 0;
+            pending.clear();
+        };
+        const contiguousCount = () => {
+            let length = 0;
+            while (length < total && frames[length]) length += 1;
+            return length;
+        };
+        const publishProgress = () => {
+            if (typeof onProgress !== "function") return;
+            const countReady = contiguousCount();
+            if (!countReady || (countReady !== 1 && countReady < total && countReady % Math.max(1, progressChunkSize) !== 0)) return;
+            onProgress({
+                version: 3,
+                encoding: "float32-typed-array",
+                frameTicks: ticks.slice(0, countReady),
+                owners: owners.map((owner) => String(owner || "")),
+                visibleMasks: visibleMasks.slice(0, countReady),
+                currentAnchorRefs: currentSourceRefs,
+                currentSourcePoints: currentSourcePoints?.length ? currentSourcePoints : null,
+                groups: groups.filter((group) => group.pointCount > 0),
+                frames: frames.slice(0, countReady),
+                currentCardId: String(currentCardId || ""),
+                currentTarget: normalizeBuilderTarget(currentTarget),
+                currentOwnerId: compositionReferenceNodeId(String(currentCardId || ""), getBuilderTargetShapePath(currentTarget)),
+                sourcePointTotal,
+                sampled: sourcePointTotal > count,
+                frameSampled: total < timelineTicks,
+                totalTicks: timelineTicks
+            });
+        };
+        return new Promise((resolve) => {
+            const finish = (result) => {
+                if (settled) return;
+                settled = true;
+                dispose();
+                resolve(result);
+            };
+            const fail = (reason = "unknown") => {
+                console.warn("Composition reference Worker sampling failed:", reason);
+                finish(null);
+            };
+            const dispatchNext = (worker) => {
+                if (settled || (requestId && requestId !== this.builderCompositionReferenceRequestId)) return fail("request-cancelled");
+                if (nextFrame >= total) return;
+                const index = nextFrame++;
+                const id = `composition-reference:${Date.now().toString(36)}:${index}`;
+                pending.set(id, index);
+                try {
+                    worker.postMessage({
+                        type: "renderFrame",
+                        id,
+                        generation: 1,
+                        snapshotSignature: snapshot.snapshotSignature,
+                        cycleCfg,
+                        totalCount: count,
+                        frameTime: {
+                            totalCount: count,
+                            elapsedTick: ticks[index],
+                            globalCycleAge: ticks[index],
+                            cycleIndex: 0,
+                            cycleCfg
+                        }
+                    });
+                } catch {
+                    fail("post-render-frame");
+                }
+            };
+            const onMessage = (worker, event) => {
+                const data = event?.data || {};
+                if (data.type === "snapshotReady") {
+                    ready += 1;
+                    if (ready === workers.length) {
+                        if (startupTimeout) {
+                            clearTimeout(startupTimeout);
+                            startupTimeout = 0;
+                        }
+                        for (const item of workers) dispatchNext(item);
+                    }
+                    return;
+                }
+                if (data.type === "snapshotError" || data.type === "renderFrameError") return fail(data.message || data.type);
+                if (data.type !== "renderFrameReady") return;
+                const index = pending.get(data.id);
+                pending.delete(data.id);
+                if (!Number.isFinite(index) || !data.frame) return fail("missing-frame");
+                const positions = data.frame.positions;
+                if (!(positions instanceof Float32Array) || positions.length !== count * 3) return fail("invalid-positions");
+                frames[index] = Float32Array.from(positions);
+                const mask = data.frame.visibleMask;
+                visibleMasks[index] = mask instanceof Uint8Array
+                    ? Uint8Array.from(mask)
+                    : Uint8Array.from({ length: count }, (_, pointIndex) => mask?.[pointIndex] === false || mask?.[pointIndex] === 0 ? 0 : 1);
+                completed += 1;
+                publishProgress();
+                if (completed >= total) return finish({ frames, visibleMasks });
+                dispatchNext(worker);
+            };
+            try {
+                for (let index = 0; index < workerCount; index++) {
+                    const worker = new Worker(workerUrl, {
+                        type: "module",
+                        name: `composition-reference-sampler-${index + 1}`
+                    });
+                    worker.onmessage = (event) => onMessage(worker, event);
+                    worker.onerror = (event) => fail(event?.message || "worker-error");
+                    workers.push(worker);
+                }
+                for (const worker of workers) {
+                    worker.postMessage({ type: "setSnapshot", generation: 1, snapshot });
+                }
+                startupTimeout = setTimeout(() => fail("worker-start-timeout"), count >= 5000 ? 15000 : 5000);
+            } catch {
+                fail("worker-create-or-snapshot-post");
+            }
+        });
+    }
+
+    buildBuilderCompositionReferenceGpuSnapshot({
+        frameTicks = [],
+        cycleCfg = null,
+        owners = [],
+        groups = [],
+        currentCardId = "",
+        currentTarget = "root",
+        currentSourceRefs = [],
+        currentSourcePoints = [],
+        sourcePointTotal = 0,
+        totalTicks = 1
+    } = {}) {
+        if (!this.pointsGeom) return null;
+        const basePoints = Array.isArray(this.previewBasePoints) ? this.previewBasePoints : [];
+        if (!basePoints.length || !Array.isArray(frameTicks) || !frameTicks.length) return null;
+        const livePointsGeom = this.pointsGeom;
+        const referencePointsGeom = typeof livePointsGeom.clone === "function"
+            ? livePointsGeom.clone()
+            : null;
+        if (!referencePointsGeom) return null;
+        const originalReferenceAllCards = this.previewReferenceAllCards === true;
+        const transientKeys = Object.keys(this).filter((key) => (
+            key === "previewReferenceAllCards"
+            || key === "previewVisibleMask"
+            || key === "previewInteractionVisibleMask"
+            || key === "previewSceneDirty"
+            || key === "previewRuntimeGlobals"
+            || key === "previewRuntimeAppliedTick"
+            || key === "previewRuntimeCycleIndex"
+            || key === "previewManualProjectScaleTick"
+            || key.startsWith("previewGpu")
+        ));
+        const transientValues = new Map(transientKeys.map((key) => [key, this[key]]));
+        const livePointsMesh = this.pointsMesh;
+        const liveShaderRef = this._pointsShaderRef;
+        const liveClearPreviewRenderCache = this.clearPreviewRenderCache;
+        const liveDisposePreviewRenderCacheWorkerPool = this.disposePreviewRenderCacheWorkerPool;
+        const liveSyncPreviewGpuParticleStatus = this.syncPreviewGpuParticleStatus;
+        try {
+            // Build the all-card metadata on a detached geometry. The reference
+            // sampler must not reconfigure the live Composition geometry: doing so
+            // changes its visibility mask and can make the next Composition page
+            // render every point instead of the original preview state.
+            this.pointsGeom = referencePointsGeom;
+            this.pointsMesh = null;
+            this._pointsShaderRef = null;
+            this.clearPreviewRenderCache = () => {};
+            this.disposePreviewRenderCacheWorkerPool = () => {};
+            this.syncPreviewGpuParticleStatus = () => {};
+            this.previewReferenceAllCards = true;
+            this.configurePreviewGpuParticlePath?.();
+            // All-card mode can reveal a CPU-only or otherwise incompatible
+            // card that was hidden by the normal Composition preview.
+            // Per-point transforms are updated in an attribute every tick; the
+            // reference cache stores static attributes plus uniform timelines,
+            // so those cases must use the CPU sampler instead of stale data.
+            if (this.previewGpuParticlePathEnabled !== true
+                || this.previewGpuPerPointTransformEnabled === true) return null;
+            const positionAttr = this.pointsGeom.getAttribute?.("position");
+            if (!positionAttr?.array || positionAttr.array.length !== basePoints.length * 3) return null;
+            const attributeNames = [
+                "position", "color", "aSize", "aAlpha", "aGpuMeta", "aGpuFadeIn",
+                "aGpuFadeOut", "aGpuTransform", "aGpuTransformVector", "aGpuScale",
+                "aGpuLifecycle", "aGpuAlphaCurve", "aGpuScaleCurve", "aGpuColorCurve"
+            ];
+            const attributes = {};
+            for (const name of attributeNames) {
+                const array = this.pointsGeom.getAttribute?.(name)?.array;
+                if (array && typeof array.length === "number") {
+                    attributes[name] = Float32Array.from(array);
+                }
+            }
+            // Reuse the same lightweight global runtime progression as the live
+            // Composition preview. This is where manual project helpers (such as
+            // scaleHelper.doScale()) advance; skipping it leaves the GPU matrix
+            // at the initial scale and collapses the reference into the origin.
+            this.previewRuntimeGlobals = null;
+            this.previewRuntimeAppliedTick = -1;
+            this.previewRuntimeCycleIndex = -1;
+            this.previewManualProjectScaleTick = 0;
+            const timeline = [];
+            for (const tick of frameTicks) {
+                const elapsedTick = Math.max(0, Number(tick) || 0);
+                if (typeof this.updatePreviewGpuParticleAnimation === "function") {
+                    const animationBase = Number(this.previewAnimStart);
+                    const now = Number.isFinite(animationBase)
+                        ? animationBase + elapsedTick * 50
+                        : performance.now();
+                    this.updatePreviewGpuParticleAnimation(now);
+                } else {
+                    this.updatePreviewGpuParticleTransforms?.(elapsedTick, cycleCfg, { force: true });
+                    this.updatePreviewGpuParticleVisibility?.(elapsedTick, { force: true });
+                }
+                const groupTransforms = Array.isArray(this.previewGpuTransformGroups)
+                    ? this.previewGpuTransformGroups
+                    : [];
+                const sharedTransform = this.previewGpuSharedTransform || {};
+                const globalElements = this.previewGpuGlobalTransform?.elements;
+                const runtimeGlobals = this.previewRuntimeGlobals
+                    || this.buildPreviewRuntimeGlobals?.(elapsedTick, elapsedTick, 0)
+                    || {};
+                const timelineGroups = groupTransforms.slice(0, 24).map((group) => ({
+                    transform: [
+                        Number(group?.transform?.x) || 0,
+                        Number(group?.transform?.y) || 0,
+                        Number(group?.transform?.z) || 0,
+                        Number(group?.transform?.w) || 0
+                    ],
+                    scale: Math.max(0.0001, Number(group?.scale) || 1)
+                }));
+                timeline.push({
+                    tick: elapsedTick,
+                    globalAlpha: clamp(this.getProjectAlphaPreviewValue?.(runtimeGlobals, this.state?.projectAlpha) ?? 1, 0, 1),
+                    hasLifecycle: this.previewGpuHasLifecycleData === true,
+                    hasColorCurve: this.previewGpuAttributeUsage?.colorCurve === true,
+                    useSharedTransform: this.previewGpuSharedTransformEnabled === true,
+                    sharedTransform: [
+                        Number(sharedTransform.x) || 0,
+                        Number(sharedTransform.y) || 0,
+                        Number(sharedTransform.z) || 0,
+                        Number(sharedTransform.w) || 0
+                    ],
+                    sharedScale: Math.max(0.0001, Number(this.previewGpuSharedScale) || 1),
+                    groupTransforms: timelineGroups.map((group) => group.transform),
+                    groupScales: timelineGroups.map((group) => group.scale),
+                    globalTransform: globalElements && globalElements.length >= 16
+                        ? Array.from(globalElements, (value) => Number(value) || 0)
+                        : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+                });
+            }
+            return {
+                version: 3,
+                encoding: "float32-typed-array",
+                frameTicks: frameTicks.slice(),
+                owners: owners.map((owner) => String(owner || "")),
+                visibleMasks: [],
+                currentAnchorRefs: currentSourceRefs,
+                currentSourcePoints: currentSourcePoints.length ? currentSourcePoints : null,
+                groups: groups.filter((group) => group.pointCount > 0),
+                frames: [],
+                currentCardId: String(currentCardId || ""),
+                currentTarget: normalizeBuilderTarget(currentTarget),
+                currentOwnerId: compositionReferenceNodeId(String(currentCardId || ""), getBuilderTargetShapePath(currentTarget)),
+                sourcePointTotal,
+                sampled: sourcePointTotal > basePoints.length,
+                frameSampled: false,
+                totalTicks: Math.max(1, Math.trunc(Number(totalTicks) || 1)),
+                gpu: {
+                    enabled: true,
+                    version: 1,
+                    pointCount: basePoints.length,
+                    playTicks: Math.max(1, Math.trunc(Number(cycleCfg?.play) || 1)),
+                    attributes,
+                    timeline
+                }
+            };
+        } finally {
+            this.pointsGeom = livePointsGeom;
+            this.pointsMesh = livePointsMesh;
+            this._pointsShaderRef = liveShaderRef;
+            this.clearPreviewRenderCache = liveClearPreviewRenderCache;
+            this.disposePreviewRenderCacheWorkerPool = liveDisposePreviewRenderCacheWorkerPool;
+            this.syncPreviewGpuParticleStatus = liveSyncPreviewGpuParticleStatus;
+            for (const [key, value] of transientValues) this[key] = value;
+            this.previewReferenceAllCards = originalReferenceAllCards;
+            referencePointsGeom.dispose?.();
+        }
+    }
+
+    async buildBuilderCompositionReferenceSnapshot(currentCardId = "", currentTarget = "root", requestId = 0, options = {}) {
+        const onProgress = typeof options?.onProgress === "function" ? options.onProgress : null;
+        const cards = Array.isArray(this.state?.cards) ? this.state.cards : [];
+        const previewOwners = Array.isArray(this.previewReferenceOwners) && this.previewReferenceOwners.length
+            ? this.previewReferenceOwners
+            : (Array.isArray(this.previewOwners) ? this.previewOwners : []);
+        const basePoints = Array.isArray(this.previewBasePoints) ? this.previewBasePoints : [];
+        if (!previewOwners.length || !basePoints.length) return null;
+        const currentId = String(currentCardId || "");
+        const owners = previewOwners.map((owner) => String(owner || ""));
+        const currentSourceRefs = this.getBuilderCompositionReferenceCurrentSourceRefs(owners, currentId, currentTarget);
         const treeRows = [];
         cards.forEach((card, index) => {
             const cardId = String(card?.id || `card-${index}`);
@@ -4921,8 +5521,43 @@ class CompositionBuilderApp {
         }));
         const cycleCfg = this.getPreviewCycleConfig?.() || null;
         const totalTicks = Math.max(1, Math.trunc(Number(cycleCfg?.total) || 1));
-        const frameCount = totalTicks;
-        const frameTicks = Array.from({ length: frameCount }, (_, index) => index);
+        let gpuReferenceEnabled = this.previewGpuParticlePathEnabled === true;
+        const probeGeometry = typeof this.pointsGeom?.clone === "function" ? this.pointsGeom.clone() : null;
+        const liveProbeGeometry = this.pointsGeom;
+        const liveProbeMesh = this.pointsMesh;
+        const liveProbeShader = this._pointsShaderRef;
+        const probeKeys = Object.keys(this).filter((key) => key.startsWith("previewGpu") || key === "previewReferenceAllCards");
+        const probeValues = new Map(probeKeys.map((key) => [key, this[key]]));
+        if (probeGeometry) {
+            try {
+                this.pointsGeom = probeGeometry;
+                this.pointsMesh = null;
+                this._pointsShaderRef = null;
+                this.previewReferenceAllCards = true;
+                this.configurePreviewGpuParticlePath?.();
+                gpuReferenceEnabled = this.canUsePreviewGpuParticlePath?.() === true
+                    && this.previewGpuParticlePathEnabled === true
+                    && this.previewGpuPerPointTransformEnabled !== true;
+            } finally {
+                this.pointsGeom = liveProbeGeometry;
+                this.pointsMesh = liveProbeMesh;
+                this._pointsShaderRef = liveProbeShader;
+                for (const [key, value] of probeValues) this[key] = value;
+                probeGeometry.dispose?.();
+            }
+        }
+        const frameCount = gpuReferenceEnabled ? totalTicks : Math.min(15, totalTicks);
+        const frameTicks = gpuReferenceEnabled
+            ? Array.from({ length: frameCount }, (_, index) => index)
+            : Array.from({ length: frameCount }, (_, index) => {
+                if (frameCount <= 1 || totalTicks <= 1) return 0;
+                return Math.round(index * (totalTicks - 1) / (frameCount - 1));
+            });
+        const frameSampled = frameCount < totalTicks;
+        // Keep the editor responsive while a large reference cycle is sampled.
+        // Progress is persisted in bounded chunks; the sampler yields every frame.
+        const progressChunkSize = Math.max(8, Math.ceil(frameCount / 16));
+        const sourcePointTotal = Math.max(basePoints.length, Number(this.previewSourcePointTotal) || 0);
         const originalCompositionType = this.state.compositionType;
         const originalReferenceAllCards = this.previewReferenceAllCards === true;
         const originalTypes = [];
@@ -4941,6 +5576,64 @@ class CompositionBuilderApp {
                 currentSourcePoints = [];
             }
         }
+        // GPU particle compositions already have their complete lifecycle in
+        // GPU metadata. Build the cache from that path before starting the
+        // expensive CPU/Worker sampler.
+        const gpuSnapshot = this.buildBuilderCompositionReferenceGpuSnapshot?.({
+            frameTicks,
+            cycleCfg,
+            owners,
+            groups,
+            currentCardId: currentId,
+            currentTarget,
+            currentSourceRefs,
+            currentSourcePoints,
+            sourcePointTotal,
+            totalTicks
+        });
+        if (gpuSnapshot?.gpu?.enabled === true
+            && Array.isArray(gpuSnapshot.gpu.timeline)
+            && gpuSnapshot.gpu.timeline.length === frameCount) {
+            onProgress?.(gpuSnapshot);
+            return gpuSnapshot;
+        }
+        const workerResult = await this.sampleBuilderCompositionReferenceFramesWithWorker?.({
+            cycleCfg,
+            frameCount,
+            frameTicks,
+            totalTicks,
+            totalCount: basePoints.length,
+            owners,
+            groups,
+            currentCardId: currentId,
+            currentTarget,
+            currentSourceRefs,
+            currentSourcePoints,
+            sourcePointTotal,
+            progressChunkSize,
+            requestId,
+            onProgress
+        });
+        if (workerResult?.frames?.length === frameCount) {
+            return {
+                version: 3,
+                encoding: "float32-typed-array",
+                frameTicks,
+                owners: owners.map((owner) => String(owner || "")),
+                visibleMasks: workerResult.visibleMasks,
+                currentAnchorRefs: currentSourceRefs,
+                currentSourcePoints: currentSourcePoints.length ? currentSourcePoints : null,
+                groups: groups.filter((group) => group.pointCount > 0),
+                frames: workerResult.frames,
+                currentCardId: currentId,
+                currentTarget: normalizeBuilderTarget(currentTarget),
+                currentOwnerId: compositionReferenceNodeId(currentId, getBuilderTargetShapePath(currentTarget)),
+                sourcePointTotal,
+                sampled: sourcePointTotal > basePoints.length,
+                frameSampled,
+                totalTicks
+            };
+        }
         const collectSequenced = (node) => {
             if (!node || typeof node !== "object") return;
             originalTypes.push([node, node.type]);
@@ -4948,7 +5641,6 @@ class CompositionBuilderApp {
             for (const child of (Array.isArray(node.children) ? node.children : [])) collectSequenced(child);
         };
         const applyReferenceMode = () => {
-            this.state.compositionType = "particle";
             this.previewReferenceAllCards = true;
             for (const [card, originalType] of originalTypes) {
                 if (cards.includes(card) && originalType === "sequenced_shape") card.dataType = "particle_shape";
@@ -4963,24 +5655,69 @@ class CompositionBuilderApp {
                 else node.type = type;
             }
         };
+        const runtimeKeys = [
+            "previewRuntimeGlobals",
+            "previewRuntimeAppliedTick",
+            "previewRuntimeCycleIndex",
+            "previewCanResumeRuntimeState",
+            "previewVisibleMask",
+            "previewInteractionVisibleMask",
+            "previewFrameCurrentAges",
+            "previewFrameAutomaticAges",
+            "previewFrameLifetimes",
+            "previewPersistentCurrentAges",
+            "previewPersistentLifetimes",
+            "previewManualAgeFlags",
+            "previewInitializedLifetimeFlags",
+            "previewPersistentControllerStates",
+            "previewFrameGroupRuntimeCache",
+            "previewFrameAnchorCache",
+            "previewFrameLocalCache",
+            "previewFrameGroupVisualCache",
+            "previewFrameGroupPointVisualCache",
+            "previewCardVisualAgeDependentCache",
+            "previewFrameShapeRuntimeLevelsCache",
+            "previewFrameGrowthPlanCache",
+            "previewManualProjectScaleTick",
+            "previewRenderWorkerInitBaselineReady"
+        ];
+        const captureRuntime = () => {
+            const state = {};
+            for (const key of runtimeKeys) state[key] = this[key];
+            return state;
+        };
+        const installRuntime = (state) => {
+            if (!state) return;
+            for (const key of runtimeKeys) this[key] = state[key];
+        };
+        const liveRuntime = captureRuntime();
+        const sampledRuntime = { ...liveRuntime };
+        for (const key of runtimeKeys) sampledRuntime[key] = undefined;
+        sampledRuntime.previewRuntimeGlobals = null;
+        sampledRuntime.previewRuntimeAppliedTick = -1;
+        sampledRuntime.previewRuntimeCycleIndex = 0;
+        sampledRuntime.previewCanResumeRuntimeState = false;
+        sampledRuntime.previewManualProjectScaleTick = 0;
         try {
             // Reference mode shows the completed point layout. Sequenced growth is intentionally ignored.
             for (const card of cards) {
                 originalTypes.push([card, card.dataType]);
                 for (const child of (Array.isArray(card.shapeChildren) ? card.shapeChildren : [])) collectSequenced(child);
             }
-            applyReferenceMode();
             const frames = [];
             const visibleMasks = [];
             for (let frameIndex = 0; frameIndex < frameTicks.length; frameIndex++) {
                 if (requestId && requestId !== this.builderCompositionReferenceRequestId) return null;
                 if (frameIndex > 0) {
-                    restoreReferenceMode();
-                    await new Promise((resolve) => setTimeout(resolve, 0));
+                    // Keep the fallback sampler off the continuous task queue. A
+                    // full Composition cycle can contain hundreds of expensive
+                    // frames, so let the editor and preview paint between ticks.
+                    await new Promise((resolve) => setTimeout(resolve, 16));
                     if (requestId && requestId !== this.builderCompositionReferenceRequestId) return null;
-                    applyReferenceMode();
                 }
                 const tick = frameTicks[frameIndex];
+                installRuntime(sampledRuntime);
+                applyReferenceMode();
                 const frame = this.computePreviewFrame?.({
                     elapsedTick: tick,
                     globalCycleAge: tick,
@@ -4988,6 +5725,13 @@ class CompositionBuilderApp {
                     cycleCfg,
                     outputToGeometry: false
                 });
+                sampledRuntime.previewRuntimeGlobals = this.previewRuntimeGlobals;
+                sampledRuntime.previewRuntimeAppliedTick = this.previewRuntimeAppliedTick;
+                sampledRuntime.previewRuntimeCycleIndex = this.previewRuntimeCycleIndex;
+                sampledRuntime.previewCanResumeRuntimeState = this.previewCanResumeRuntimeState;
+                for (const key of runtimeKeys) sampledRuntime[key] = this[key];
+                restoreReferenceMode();
+                installRuntime(liveRuntime);
                 const positions = Array.isArray(frame?.positions) || frame?.positions instanceof Float32Array
                     ? frame.positions
                     : null;
@@ -5003,8 +5747,27 @@ class CompositionBuilderApp {
                 } else {
                     visibleMasks.push(null);
                 }
+                if (onProgress && (frames.length === 1 || (frames.length < frameCount && frames.length % progressChunkSize === 0))) {
+                    onProgress({
+                        version: 3,
+                        encoding: "float32-typed-array",
+                        frameTicks: frameTicks.slice(0, frames.length),
+                        owners: owners.map((owner) => String(owner || "")),
+                        visibleMasks: visibleMasks.slice(),
+                        currentAnchorRefs: currentSourceRefs,
+                        currentSourcePoints: currentSourcePoints.length ? currentSourcePoints : null,
+                        groups: groups.filter((group) => group.pointCount > 0),
+                        frames: frames.slice(),
+                        currentCardId: currentId,
+                        currentTarget: normalizeBuilderTarget(currentTarget),
+                        currentOwnerId: compositionReferenceNodeId(currentId, getBuilderTargetShapePath(currentTarget)),
+                        sourcePointTotal: Math.max(basePoints.length, Number(this.previewSourcePointTotal) || 0),
+                        sampled: Math.max(basePoints.length, Number(this.previewSourcePointTotal) || 0) > basePoints.length,
+                        frameSampled: frameTicks.length < totalTicks,
+                        totalTicks
+                    });
+                }
             }
-            const sourcePointTotal = Math.max(basePoints.length, Number(this.previewSourcePointTotal) || 0);
             return {
                 version: 3,
                 encoding: "float32-typed-array",
@@ -5020,13 +5783,14 @@ class CompositionBuilderApp {
                 currentOwnerId: compositionReferenceNodeId(currentId, getBuilderTargetShapePath(currentTarget)),
                 sourcePointTotal,
                 sampled: sourcePointTotal > basePoints.length,
-                frameSampled: false,
+                frameSampled: frameTicks.length < totalTicks,
                 totalTicks
             };
         } catch {
             return null;
         } finally {
             restoreReferenceMode();
+            installRuntime(liveRuntime);
         }
     }
 
@@ -5034,29 +5798,144 @@ class CompositionBuilderApp {
         const owners = Array.isArray(this.previewReferenceOwners) && this.previewReferenceOwners.length
             ? this.previewReferenceOwners
             : (Array.isArray(this.previewOwners) ? this.previewOwners : []);
-        const basePoints = Array.isArray(this.previewPoints) && this.previewPoints.length === owners.length
-            ? this.previewPoints
-            : (Array.isArray(this.previewBasePoints) ? this.previewBasePoints : []);
+        const basePoints = Array.isArray(this.previewBasePoints) ? this.previewBasePoints : [];
         if (!owners.length || !basePoints.length) return null;
-        const typed = new Float32Array(basePoints.length * 3);
-        for (let i = 0; i < basePoints.length; i++) {
-            typed[i * 3] = Number(basePoints[i]?.x) || 0;
-            typed[i * 3 + 1] = Number(basePoints[i]?.y) || 0;
-            typed[i * 3 + 2] = Number(basePoints[i]?.z) || 0;
+        const currentId = String(currentCardId || "");
+        const normalizedTarget = normalizeBuilderTarget(currentTarget);
+        const currentCard = Array.isArray(this.state?.cards)
+            ? this.state.cards.find((card) => String(card?.id || "") === currentId)
+            : null;
+        let currentSourcePoints = [];
+        if (currentCard) {
+            try {
+                const built = this.evaluateBuilderPoints?.(
+                    this.resolveCardBuilderState?.(currentCard, normalizedTarget)
+                );
+                currentSourcePoints = Array.isArray(built?.points)
+                    ? built.points.map((point) => ({
+                        x: Number(point?.x) || 0,
+                        y: Number(point?.y) || 0,
+                        z: Number(point?.z) || 0
+                    }))
+                    : [];
+            } catch {
+                currentSourcePoints = [];
+            }
         }
+        const originalCompositionType = this.state.compositionType;
+        const originalReferenceAllCards = this.previewReferenceAllCards === true;
+        const originalTypes = [];
+        const sequencedNodes = [];
+        const collectSequenced = (node) => {
+            if (!node || typeof node !== "object") return;
+            originalTypes.push([node, node.type]);
+            if (node.type === "sequenced_shape") sequencedNodes.push(node);
+            for (const child of (Array.isArray(node.children) ? node.children : [])) collectSequenced(child);
+        };
+        for (const card of (Array.isArray(this.state?.cards) ? this.state.cards : [])) {
+            originalTypes.push([card, card.dataType]);
+            for (const child of (Array.isArray(card.shapeChildren) ? card.shapeChildren : [])) collectSequenced(child);
+        }
+        const restoreReferenceMode = () => {
+            this.state.compositionType = originalCompositionType;
+            this.previewReferenceAllCards = originalReferenceAllCards;
+            for (const [node, type] of originalTypes) {
+                if (Array.isArray(this.state?.cards) && this.state.cards.includes(node)) node.dataType = type;
+                else node.type = type;
+            }
+        };
+        const runtimeKeys = [
+            "previewRuntimeGlobals",
+            "previewRuntimeAppliedTick",
+            "previewRuntimeCycleIndex",
+            "previewCanResumeRuntimeState",
+            "previewVisibleMask",
+            "previewInteractionVisibleMask",
+            "previewFrameCurrentAges",
+            "previewFrameAutomaticAges",
+            "previewFrameLifetimes",
+            "previewPersistentCurrentAges",
+            "previewPersistentLifetimes",
+            "previewManualAgeFlags",
+            "previewInitializedLifetimeFlags",
+            "previewPersistentControllerStates",
+            "previewFrameGroupRuntimeCache",
+            "previewFrameAnchorCache",
+            "previewFrameLocalCache",
+            "previewFrameGroupVisualCache",
+            "previewFrameGroupPointVisualCache",
+            "previewCardVisualAgeDependentCache",
+            "previewFrameShapeRuntimeLevelsCache",
+            "previewFrameGrowthPlanCache",
+            "previewManualProjectScaleTick",
+            "previewRenderWorkerInitBaselineReady"
+        ];
+        const captureRuntime = () => {
+            const state = {};
+            for (const key of runtimeKeys) state[key] = this[key];
+            return state;
+        };
+        const installRuntime = (state) => {
+            if (!state) return;
+            for (const key of runtimeKeys) this[key] = state[key];
+        };
+        const liveRuntime = captureRuntime();
+        const sampledRuntime = { ...liveRuntime };
+        for (const key of runtimeKeys) sampledRuntime[key] = undefined;
+        sampledRuntime.previewRuntimeGlobals = null;
+        sampledRuntime.previewRuntimeAppliedTick = -1;
+        sampledRuntime.previewRuntimeCycleIndex = 0;
+        sampledRuntime.previewCanResumeRuntimeState = false;
+        sampledRuntime.previewManualProjectScaleTick = 0;
+        let typed = null;
+        let maskSource = null;
+        try {
+            this.previewReferenceAllCards = true;
+            for (const [card, originalType] of originalTypes) {
+                if (Array.isArray(this.state?.cards) && this.state.cards.includes(card) && originalType === "sequenced_shape") {
+                    card.dataType = "particle_shape";
+                }
+            }
+            for (const node of sequencedNodes) node.type = "particle_shape";
+            installRuntime(sampledRuntime);
+            const cycleCfg = this.getPreviewCycleConfig?.() || null;
+            const frame = this.computePreviewFrame?.({
+                elapsedTick: 0,
+                globalCycleAge: 0,
+                cycleIndex: 0,
+                cycleCfg,
+                outputToGeometry: false
+            });
+            const positions = Array.isArray(frame?.positions) || frame?.positions instanceof Float32Array
+                ? frame.positions
+                : null;
+            typed = positions && positions.length === basePoints.length * 3
+                ? Float32Array.from(positions)
+                : new Float32Array(basePoints.length * 3);
+            if (!positions || positions.length !== basePoints.length * 3) {
+                for (let i = 0; i < basePoints.length; i++) {
+                    typed[i * 3] = Number(basePoints[i]?.x) || 0;
+                    typed[i * 3 + 1] = Number(basePoints[i]?.y) || 0;
+                    typed[i * 3 + 2] = Number(basePoints[i]?.z) || 0;
+                }
+            }
+            maskSource = frame?.visibleMask || this.previewVisibleMask;
+        } finally {
+            restoreReferenceMode();
+            installRuntime(liveRuntime);
+        }
+        if (!typed) return null;
         const bytes = new Uint8Array(typed.buffer);
         let binary = "";
         for (let offset = 0; offset < bytes.length; offset += 0x8000) {
             binary += String.fromCharCode(...bytes.subarray(offset, Math.min(bytes.length, offset + 0x8000)));
         }
-        const maskSource = this.previewVisibleMask;
         const mask = Uint8Array.from({ length: owners.length }, (_, index) => maskSource?.[index] === false ? 0 : 1);
         let maskBinary = "";
         for (let offset = 0; offset < mask.length; offset += 0x8000) {
             maskBinary += String.fromCharCode(...mask.subarray(offset, Math.min(mask.length, offset + 0x8000)));
         }
         const cards = Array.isArray(this.state?.cards) ? this.state.cards : [];
-        const currentId = String(currentCardId || "");
         const normalizedOwners = owners.map((owner) => String(owner || ""));
         const ownerCounts = new Map();
         for (const owner of normalizedOwners) ownerCounts.set(owner, (ownerCounts.get(owner) || 0) + 1);
@@ -5079,15 +5958,15 @@ class CompositionBuilderApp {
             frameTicks: [0],
             owners: normalizedOwners,
             visibleMasks: [btoa(maskBinary)],
-            currentAnchorRefs: (Array.isArray(this.previewAnchorRef) ? this.previewAnchorRef : []).map((index) => Math.max(0, Math.trunc(Number(index) || 0))),
-            currentSourcePoints: null,
+            currentAnchorRefs: this.getBuilderCompositionReferenceCurrentSourceRefs(normalizedOwners, currentId, normalizedTarget),
+            currentSourcePoints: currentSourcePoints.length ? currentSourcePoints : null,
             groups: groupRows,
             frames: [btoa(binary)],
             currentCardId: currentId,
             currentTarget: normalizeBuilderTarget(currentTarget),
             currentOwnerId: compositionReferenceNodeId(currentId, getBuilderTargetShapePath(currentTarget)),
             sourcePointTotal: Math.max(owners.length, Number(this.previewSourcePointTotal) || 0),
-            sampled: true,
+            sampled: Math.max(owners.length, Number(this.previewSourcePointTotal) || 0) > owners.length,
             frameSampled: true,
             totalTicks
         };
@@ -8258,7 +9137,8 @@ class CompositionBuilderApp {
         const nodeChildren = node.children || [];
         if (!nodeChildren.length) return [];
         let allTuples = [];
-        for (const p of src) {
+        for (let si = 0; si < src.length; si++) {
+            const p = src[si];
             const sv = U.v(num(p?.x), num(p?.y), num(p?.z));
             const newSum = U.v(num(parentSum?.x) + sv.x, num(parentSum?.y) + sv.y, num(parentSum?.z) + sv.z);
             const newLevels = parentLevels.map((lv) => ({
@@ -10440,23 +11320,71 @@ class CompositionBuilderApp {
         });
     }
 
+    startCompositionReferenceSamplerFromQuery() {
+        let params = null;
+        try {
+            params = new URLSearchParams(globalThis.location?.search || "");
+        } catch {
+            return;
+        }
+        if (params.get("referenceSampler") !== "1") return;
+        const cardId = String(params.get("card") || "").trim();
+        const card = this.getCardById(cardId);
+        if (!card) {
+            try { globalThis.frameElement?.remove?.(); } catch {}
+            try { globalThis.close?.(); } catch {}
+            return;
+        }
+        const target = normalizeBuilderTarget(params.get("target") || "root");
+        this.builderModalCardId = card.id;
+        this.builderModalTarget = target;
+        const pending = this.scheduleBuilderCompositionReferenceSnapshot(card, target);
+        pending?.finally?.(() => {
+            try {
+                const shell = globalThis.cooParticlesShell || globalThis.parent?.cooParticlesShell || globalThis.top?.cooParticlesShell;
+                if (shell?.isElectron === true) {
+                    void shell.closeWindow?.();
+                } else {
+                    try {
+                        const frame = globalThis.frameElement;
+                        const host = globalThis.parent;
+                        frame?.remove?.();
+                        if (host?.__cooCompositionReferenceSamplerFrame === frame) {
+                            delete host.__cooCompositionReferenceSamplerFrame;
+                        }
+                    } catch {}
+                    globalThis.close?.();
+                }
+            } catch {}
+        });
+    }
+
     openBuilderEditor(cardId, target = "root") {
         const card = this.getCardById(cardId || this.focusedCardId);
         if (!card) return;
         const normalizedTarget = normalizeBuilderTarget(target);
+        const compositionRevision = compositionReferenceStateRevision(this.state);
         this.builderModalCardId = card.id;
         this.builderModalTarget = normalizedTarget;
-        // 进入 PointsBuilder 不强制同步重建 Composition；在空闲任务中准备参考快照，期间不阻塞 Composition 控件。
+        // 进入 PointsBuilder 不强制同步重建 Composition；在空闲任务中准备参考快照，完成后再切换页面。
         this.seedBuilderSandbox(card, normalizedTarget);
         this.saveStateNow();
         let contextSnapshot = null;
+        let contextSnapshotStatus = "";
         try {
             const raw = localStorage.getItem(CPB_COMP_CONTEXT_KEY);
-            contextSnapshot = raw ? JSON.parse(raw)?.compositionReference : null;
+            const contextPayload = raw ? JSON.parse(raw) : null;
+            contextSnapshot = contextPayload?.compositionReference || null;
+            contextSnapshotStatus = String(contextPayload?.compositionReferenceStatus || "");
         } catch {
             contextSnapshot = null;
+            contextSnapshotStatus = "";
         }
         const snapshotReady = !!contextSnapshot
+            && String(contextSnapshot.referenceVersion || "") === COMPOSITION_REFERENCE_BUILD_VERSION
+            && String(contextSnapshot.compositionRevision || "") === compositionRevision
+            && contextSnapshot.complete !== false
+            && contextSnapshotStatus === "ready"
             && ((Array.isArray(contextSnapshot.frames) && contextSnapshot.frames.length > 0)
                 || (contextSnapshot.storage === "indexeddb" && String(contextSnapshot.storageKey || "").trim()))
             && String(contextSnapshot.currentCardId || "") === String(card.id || "")
@@ -10468,24 +11396,86 @@ class CompositionBuilderApp {
                 target: normalizedTarget,
                 t: String(Date.now())
             });
+            try {
+                const current = new URLSearchParams(globalThis.location?.search || "");
+                for (const key of ["projectId", "projectType", "shellOpen", "shellNew"]) {
+                    const value = current.get(key);
+                    if (value) q.set(key, value);
+                }
+            } catch {
+            }
             return `./composition_pointsbuilder.html?${q.toString()}`;
         };
         const navigate = () => {
-            window.location.href = buildEditorHref();
+            const href = buildEditorHref();
+            // Let the host SPA change route. Navigating only this iframe leaves
+            // Composition mounted and makes the editor appear as a second page.
+            if (typeof window.__legacyNavigate === "function") {
+                window.__legacyNavigate(href);
+                return;
+            }
+            window.location.href = href;
         };
         if (snapshotReady) {
             navigate();
             return;
         }
-        const pending = this.scheduleBuilderCompositionReferenceSnapshot(card, normalizedTarget);
-        const editorWindow = typeof window.open === "function"
-            ? window.open(buildEditorHref(), "coo-particles-pointsbuilder")
-            : null;
-        if (editorWindow) return;
-        pending?.finally?.(() => {
-            if (this.builderModalCardId !== card.id || this.builderModalTarget !== normalizedTarget) return;
-            navigate();
+        const samplerQuery = new URLSearchParams({
+            referenceSampler: "1",
+            card: card.id,
+            target: normalizedTarget,
+            t: String(Date.now())
         });
+        try {
+            const current = new URLSearchParams(globalThis.location?.search || "");
+            for (const key of ["projectId", "projectType", "shellOpen", "shellNew"]) {
+                const value = current.get(key);
+                if (value) samplerQuery.set(key, value);
+            }
+        } catch {
+        }
+        const samplerHref = (() => {
+            try {
+                const url = new URL("./composition_builder.html", globalThis.location?.href || "");
+                url.search = samplerQuery.toString();
+                return url.href;
+            } catch {
+                return `./composition_builder.html?${samplerQuery.toString()}`;
+            }
+        })();
+        const shell = globalThis.cooParticlesShell || globalThis.parent?.cooParticlesShell || globalThis.top?.cooParticlesShell;
+        if (shell?.isElectron === true) {
+            if (typeof window.open === "function") {
+                window.open(`./composition_builder.html?${samplerQuery.toString()}`, "coo-particles-composition-reference-sampler");
+            }
+            navigate();
+            return;
+        }
+        // Keep the editor in the SPA while a host-level hidden iframe owns the
+        // sampler document. The host survives the route change, so the full
+        // snapshot can finish without opening a visible second page.
+        try {
+            const host = globalThis.top && globalThis.top !== globalThis
+                ? globalThis.top
+                : globalThis.parent && globalThis.parent !== globalThis
+                    ? globalThis.parent
+                    : null;
+            const hostDocument = host?.document;
+            if (hostDocument?.body && typeof hostDocument.createElement === "function") {
+                const previous = host.__cooCompositionReferenceSamplerFrame;
+                if (previous?.isConnected) previous.remove();
+                const frame = hostDocument.createElement("iframe");
+                frame.src = samplerHref;
+                frame.title = "";
+                frame.setAttribute("aria-hidden", "true");
+                frame.tabIndex = -1;
+                frame.style.cssText = "position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;border:0;opacity:0;pointer-events:none;";
+                host.__cooCompositionReferenceSamplerFrame = frame;
+                hostDocument.body.appendChild(frame);
+            }
+        } catch {
+        }
+        navigate();
     }
 
     consumeBuilderReturnState() {
@@ -10501,13 +11491,24 @@ class CompositionBuilderApp {
             return;
         }
         const card = this.getCardById(cardId) || this.getFocusedCard() || this.state.cards[0];
-        const state = this.readBuilderSandboxState();
-        if (!card || !state) return;
-        this.setCardBuilderState(card, target, state);
+        const state = card
+            ? this.readBuilderSandboxState(card.id, target, compositionReferenceStateRevision(this.state))
+            : null;
+        if (!card || !state) {
+            this.showToast("Builder 返回状态与当前卡片不匹配，已忽略", "error");
+            return;
+        }
+        // Returning from PointsBuilder only transfers the edited point model.
+        // Do not silently change a card that was using manual point semantics.
+        this.setCardBuilderState(card, target, state, { activateBinding: false });
         this.focusedCardId = card.id;
         this.selectedCardIds = new Set([card.id]);
         this.selectionAnchorCardId = card.id;
-        this.saveStateNow();
+        if (this.renderer && this.pointsGeom) {
+            this.afterStructureMutate({ rerenderProject: false, rerenderCards: true, rebuildPreview: true });
+        } else {
+            this.saveStateNow();
+        }
         let msg = "已返回 PointsBuilder 并加载根 Builder";
         if (target === "shape") msg = "已返回并加载 Shape Builder";
         if (/^tree_node:/.test(target)) {
@@ -10522,6 +11523,11 @@ class CompositionBuilderApp {
             const builderState = this.resolveCardBuilderState(card, normalizedTarget);
             localStorage.setItem(CPB_STATE_KEY, JSON.stringify({
                 state: normalizeBuilderState(builderState),
+                context: {
+                    cardId: String(card.id || ""),
+                    target: normalizedTarget,
+                    compositionRevision: compositionReferenceStateRevision(this.state)
+                },
                 ts: Date.now()
             }));
             localStorage.setItem(CPB_PROJECT_KEY, sanitizeFileBase(card.name || this.state.projectName || "Builder"));
@@ -10538,18 +11544,34 @@ class CompositionBuilderApp {
                 previous = null;
             }
             const snapshot = previous?.compositionReference;
+            const compositionRevision = compositionReferenceStateRevision(this.state);
             const snapshotMatchesTarget = !!snapshot
+                && String(snapshot.referenceVersion || "") === COMPOSITION_REFERENCE_BUILD_VERSION
+                && String(snapshot.compositionRevision || previous?.compositionReferenceRevision || "") === compositionRevision
                 && String(snapshot.currentCardId || "") === String(card.id || "")
                 && normalizeBuilderTarget(snapshot.currentTarget || "root") === normalizedTarget
+                && compositionReferenceSnapshotHasPoints(snapshot)
                 && ((Array.isArray(snapshot.frames) && snapshot.frames.length > 0)
                     || (snapshot.storage === "indexeddb" && String(snapshot.storageKey || "").trim()));
+            // Publish a real static Tick 0 fallback before navigation. The full
+            // sampler may finish later, but the editor must never open empty.
             const fallbackSnapshot = snapshotMatchesTarget
                 ? snapshot
-                : (this.buildBuilderCompositionReferenceFallbackSnapshot?.(card.id, normalizedTarget) || null);
+                : (() => {
+                    const fallback = this.buildBuilderCompositionReferenceFallbackSnapshot?.(card.id, normalizedTarget);
+                    return fallback
+                        ? {
+                            ...fallback,
+                            referenceVersion: COMPOSITION_REFERENCE_BUILD_VERSION,
+                            compositionRevision,
+                            complete: true
+                        }
+                        : null;
+                })();
             const hasSnapshot = previous?.compositionReferenceStatus === "ready" && snapshotMatchesTarget;
             this.writeBuilderCompositionContext(card, normalizedTarget, hasSnapshot ? {} : {
                 compositionReferenceOverride: fallbackSnapshot,
-                compositionReferenceStatus: fallbackSnapshot ? "pending" : "unavailable"
+                compositionReferenceStatus: "pending"
             });
         } catch (e) {
             console.warn("seed builder sandbox failed:", e);
@@ -10568,24 +11590,25 @@ class CompositionBuilderApp {
         return normalizeBuilderState(card.builderState);
     }
 
-    setCardBuilderState(card, target = "root", state = null) {
+    setCardBuilderState(card, target = "root", state = null, options = {}) {
         if (!card) return;
         const next = normalizeBuilderState(state);
         const normalizedTarget = normalizeBuilderTarget(target);
+        const activateBinding = options?.activateBinding !== false;
         if (/^tree_node:/.test(normalizedTarget)) {
             const treePath = JSON.parse(normalizedTarget.split("tree_node:")[1] || "[]");
             const node = this.getShapeNodeByPath(card, treePath);
             if (!node) return;
-            node.bindMode = "builder";
+            if (activateBinding) node.bindMode = "builder";
             node.builderState = next;
             return;
         }
         if (normalizedTarget === "shape") {
-            card.shapeBindMode = "builder";
+            if (activateBinding) card.shapeBindMode = "builder";
             card.shapeBuilderState = next;
             return;
         }
-        card.bindMode = "builder";
+        if (activateBinding) card.bindMode = "builder";
         card.builderState = next;
     }
 
@@ -11035,11 +12058,20 @@ class CompositionBuilderApp {
         this.showToast("Builder 已读取", "success");
     }
 
-    readBuilderSandboxState() {
+    readBuilderSandboxState(expectedCardId = "", expectedTarget = "root", expectedRevision = "") {
         try {
             const raw = localStorage.getItem(CPB_STATE_KEY);
             if (!raw) return null;
             const parsed = JSON.parse(raw);
+            if (expectedCardId) {
+                const context = parsed?.context;
+                if (String(context?.cardId || "") !== String(expectedCardId || "")
+                    || normalizeBuilderTarget(context?.target || "root") !== normalizeBuilderTarget(expectedTarget || "root")) {
+                    return null;
+                }
+                if (expectedRevision && context?.compositionRevision
+                    && String(context.compositionRevision) !== String(expectedRevision)) return null;
+            }
             return normalizeBuilderState(parsed?.state || parsed);
         } catch (e) {
             console.warn("read builder state failed:", e);

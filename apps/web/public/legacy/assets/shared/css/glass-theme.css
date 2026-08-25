@@ -1,0 +1,1067 @@
+/*
+ * Glassmorphism theme — 2 modes x 4 hues = 8 variants.
+ *
+ *   glass-dark-blue    glass-light-blue
+ *   glass-dark-green   glass-light-green
+ *   glass-dark-violet  glass-light-violet
+ *   glass-dark-neutral glass-light-neutral   <- neutral = black glass / white glass
+ *
+ * Rather than writing eight full token blocks, the variants are composed from
+ * primitives:
+ *   1. a mode block  (matching glass-dark-* / glass-light-*) supplies base,
+ *      text, hairline, fill, rim and accent derivation
+ *   2. a hue block   (matching *-blue etc.) supplies --glass-hue
+ *   3. one derived block maps those onto the canonical tokens the app already
+ *      consumes (--bg/--panel/--card/--line/--accent/...) plus the legacy
+ *      aliases (--bg-panel/--border/--brand/...)
+ *
+ * The selector base is [data-theme^="glass-"] rather than body[...] so the same
+ * file works for the legacy builders (attribute on <body>) and for the Vue
+ * generator page (attribute on .generator-page).
+ *
+ * ---------------------------------------------------------------------------
+ * The material: a lens, not a frosted sheet
+ *
+ * Real glass reads as glass because of its EDGE. Light entering a curved bevel
+ * is refracted, so the rim is not a uniform hairline — it flares where the light
+ * catches (upper-left), falls away around the sides, and picks up a weaker
+ * bounce on the opposite corner. A single flat inset highlight, which is what
+ * this file used to draw, reads as matte plastic instead.
+ *
+ * That variable rim is painted as a real gradient border rather than a
+ * pseudo-element:
+ *
+ *     border: 1px solid transparent;
+ *     background: <fill layers> padding-box, <rim gradient> border-box;
+ *
+ * The fill layers clip to the padding box, so they cover everything except the
+ * 1px border ring; the rim gradient clips to the border box and is therefore
+ * only visible inside that ring. No ::before/::after, no `position: relative`,
+ * no z-index games — which matters here, because these class names are shared
+ * with a large legacy stylesheet full of absolutely-positioned descendants and
+ * `overflow: hidden` containers.
+ *
+ * ---------------------------------------------------------------------------
+ * Two things are tunable at runtime, from the tools' own settings panels:
+ *
+ *   --cp-glass-blur   backdrop blur radius   (模糊度)
+ *   --cp-glass-frost  material opacity       (磨砂度)
+ *
+ * ...and two are written by the pointer-reveal script, per hovered surface:
+ *
+ *   --cp-glass-mx / --cp-glass-my   pointer position, for the accent rim light
+ *
+ * They are --cp-* rather than --glass-* on purpose. The --glass-* namespace is
+ * the theme's own vocabulary, and tests/theme-options.test.mjs asserts that
+ * every var(--glass-*) reference resolves to a declaration inside a mode or hue
+ * block. These four are declared elsewhere (on documentElement, or per-element
+ * from JS), so a separate namespace keeps that invariant true rather than
+ * forcing a hole in it.
+ *
+ * See shared/js/glass-surface.js — SURFACE_SELECTOR there must stay in step with
+ * the surface selector lists below.
+ */
+
+/*
+ * Registered so the pointer coordinates do NOT inherit. Writing an inherited
+ * custom property on a panel invalidates style for that panel's entire subtree
+ * on every pointermove; `inherits: false` scopes the invalidation to the one
+ * element that actually paints with it. The initial value parks the light
+ * off-screen, which is how "not hovered" is expressed — so the effect needs no
+ * separate opacity channel and JS never has to add or remove a class.
+ */
+@property --cp-glass-mx {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: -9999px;
+}
+
+@property --cp-glass-my {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: -9999px;
+}
+
+/*
+ * These two DO inherit: set once on <html>, read by every surface. The initial
+ * values are the shipped defaults, so the stylesheet is complete on its own and
+ * the settings script only has to write a property when the user actually moves
+ * a slider.
+ */
+@property --cp-glass-blur {
+    syntax: "<length>";
+    inherits: true;
+    initial-value: 26px;
+}
+
+@property --cp-glass-frost {
+    syntax: "<number>";
+    inherits: true;
+    initial-value: 0.62;
+}
+
+/* ------------------------------------------------------------------ mode: dark */
+[data-theme^="glass-dark-"] {
+    --glass-neutral: #8e9aa8;
+
+    --glass-base: #070a10;
+    --glass-text: rgba(237, 242, 248, 0.95);
+    /* Solved against the darkest measured panel substrate: 4.78 AA. */
+    --glass-muted: #b7c4d3;
+    --glass-muted2: rgba(190, 205, 220, 0.46);
+
+    --glass-line: rgba(255, 255, 255, 0.14);
+    --glass-line2: rgba(255, 255, 255, 0.24);
+    --glass-highlight: rgba(255, 255, 255, 0.16);
+
+    --glass-frost: var(--cp-glass-frost);
+    --glass-blur-radius: var(--cp-glass-blur);
+
+    /*
+     * Dark glass is a DARK material, not a white veil.
+     *
+     * The fills here used to be rgba(255,255,255,0.10) — white lifted off
+     * whatever happened to be behind it. Over a saturated colour field that
+     * produces a text substrate whose luminance swings with the blobs
+     * underneath, which is why the theme read as washed out and why secondary
+     * labels were so hard to hold onto. A dark tinted fill has the opposite
+     * behaviour: it *absorbs* the field, so the substrate is stable and the hue
+     * arrives as a tint rather than as noise. Glass character then comes from
+     * the field visible around the panels, the refracted rim, and the blur halo
+     * — not from making the panel itself disappear.
+     */
+    --glass-fill: rgba(16, 21, 30, calc(0.30 + var(--glass-frost) * 0.34));
+    --glass-fill-2: rgba(16, 21, 30, calc(0.40 + var(--glass-frost) * 0.36));
+    --glass-fill-3: rgba(18, 23, 33, calc(0.50 + var(--glass-frost) * 0.34));
+    --glass-sunken: rgba(6, 9, 14, calc(0.30 + var(--glass-frost) * 0.30));
+    /*
+     * --glass-field-bg is the fill for text inputs and selects. It is a solid
+     * opaque colour rather than the translucent --glass-sunken. A translucent
+     * field lets the pointer light behind it show through, which is exactly
+     * what produced the "unreadable blob on hover" report: the caret gradient
+     * of a native <select> painted across the transparent fill.
+     *
+     * The rgb components match --glass-fill-3 at its maximum frost; the alpha
+     * is 1. The result is a field that reads as the same material family as the
+     * panel it sits on, but is never see-through.
+     */
+    --glass-field-bg: rgb(18, 23, 33);
+
+    /*
+     * The refracted rim, in three stops. hi = where light catches the bevel,
+     * lo = the shadowed run around the sides, mid = the weaker bounce on the
+     * far corner. The asymmetry is the whole effect.
+     */
+    --glass-rim-hi: rgba(255, 255, 255, 0.60);
+    --glass-rim-lo: rgba(255, 255, 255, 0.07);
+    --glass-rim-mid: rgba(255, 255, 255, 0.24);
+
+    /* Sheen across the surface, as if a light source were raking it. */
+    --glass-sheen-1: rgba(255, 255, 255, 0.10);
+    --glass-sheen-2: rgba(255, 255, 255, 0.026);
+
+    /* Inner shading: a bright top lip and soft pooling at the bottom give the
+     * material thickness without drawing a visible line. */
+    --glass-inner-hi: rgba(255, 255, 255, 0.13);
+    --glass-inner-lo: rgba(0, 0, 0, 0.44);
+
+    /*
+     * The accent light that follows the pointer. Complete colours rather than a
+     * strength scalar: a calc() inside a color-mix() percentage that any engine
+     * failed to parse would make the whole `background` invalid at
+     * computed-value time, and a surface would lose its fill entirely rather
+     * than just its glow. Per-surface intensity is varied with gradient radius
+     * instead, which cannot fail that way.
+     *
+     * The rim reads at almost full accent while the face stays a hint: it is the
+     * lit *edge* that says "light is falling on glass". A strong face glow just
+     * looks like a smudge following the cursor.
+     *
+     * Four stops, not two. A two-stop radial ramps at a constant rate and the eye
+     * reads the end stop as an edge — a visible disc tracking the cursor. The
+     * -soft and -faint stops bend that ramp into something closer to a gaussian
+     * falloff, which is what makes the light look soft rather than projected.
+     */
+    --glass-reveal-face: color-mix(in srgb, var(--accent) 9%, transparent);
+    --glass-reveal-soft: color-mix(in srgb, var(--accent) 4.5%, transparent);
+    --glass-reveal-faint: color-mix(in srgb, var(--accent) 1.6%, transparent);
+    --glass-reveal-rim: color-mix(in srgb, var(--accent) 92%, white 8%);
+
+    /* Tight contact shadow + soft ambient, rather than one diffuse blob. */
+    /* Three tiers: modal (nearest) > panel > card (flattest). */
+    --glass-shadow-modal: 0 2px 6px rgba(2, 5, 12, 0.44), 0 30px 84px rgba(2, 5, 12, 0.54);
+    --glass-shadow: 0 1px 2px rgba(2, 5, 12, 0.34), 0 14px 44px rgba(2, 5, 12, 0.40);
+    --glass-shadow-2: 0 1px 2px rgba(2, 5, 12, 0.22);
+    --glass-veil: rgba(255, 255, 255, 0.06);
+
+    /* Dims the colour field so bare text on it stays legible, the way the
+     * OS dims a wallpaper behind desktop text. Hue survives; range compresses. */
+    --glass-field-veil: rgba(7, 10, 16, 0.58);
+    --glass-field-bg: rgba(18, 23, 33, 0.92);
+
+    /* Strength of the three colour fields behind the glass. */
+    --glass-blob-1: 34%;
+    --glass-blob-2: 28%;
+    --glass-blob-3: 22%;
+
+    --glass-blur: blur(var(--glass-blur-radius)) saturate(185%);
+    --glass-blur-2: blur(calc(var(--glass-blur-radius) * 0.55)) saturate(160%);
+
+    --accent: color-mix(in srgb, var(--glass-hue) 84%, white 16%);
+    --accent-ink: #10141a;
+    --scrim: rgba(4, 7, 12, 0.58);
+    --ok: #6fd3a8;
+    --danger: #f0776b;
+
+    --grid-color: #56606e;
+    --point-color: #ffffff;
+    --point-focus: #ffd479;
+    --point-sync: #b0b8c2;
+    --point-offset: #f0776b;
+    --wb-preview-scene: #171b22;
+
+    /* Native <select> popups render in their own compositing context, where a
+     * translucent or color-mix() background is unreliable — that is what made
+     * the theme dropdown paint as an empty black slab. Literal and opaque. */
+    --input-option-bg: #141922;
+    --input-option-text: #edf2f8;
+
+    --code-kw: color-mix(in srgb, var(--glass-hue) 60%, #d7c6a0);
+    --code-str: #93d3a2;
+    --code-com: rgba(190, 205, 220, 0.5);
+    --code-num: #9fc6e0;
+    --code-fn: #e5a58f;
+    --code-type: #a8d8d0;
+
+    color-scheme: dark;
+}
+
+/* ----------------------------------------------------------------- mode: light */
+[data-theme^="glass-light-"] {
+    --glass-neutral: #6c7a89;
+
+    --glass-base: #dde6f2;
+    --glass-text: rgba(26, 34, 44, 0.92);
+    /* Solved against the lightest measured panel substrate: 4.79 AA. */
+    --glass-muted: #4a4f57;
+    --glass-muted2: rgba(72, 86, 103, 0.5);
+
+    --glass-line: rgba(255, 255, 255, 0.62);
+    --glass-line2: rgba(112, 134, 160, 0.3);
+    --glass-highlight: rgba(255, 255, 255, 0.9);
+
+    --glass-frost: var(--cp-glass-frost);
+    --glass-blur-radius: var(--cp-glass-blur);
+
+    /* See the dark block: substrate first, transmitted tint second. Light glass
+     * genuinely is a white material, so a white fill is right here — it was only
+     * the dark mode that had the sign wrong. */
+    --glass-fill: rgba(255, 255, 255, calc(0.38 + var(--glass-frost) * 0.34));
+    --glass-fill-2: rgba(255, 255, 255, calc(0.48 + var(--glass-frost) * 0.34));
+    --glass-fill-3: rgba(255, 255, 255, calc(0.58 + var(--glass-frost) * 0.32));
+    --glass-sunken: rgba(255, 255, 255, calc(0.22 + var(--glass-frost) * 0.26));
+    /* Opaque, for the reason given in the dark block. */
+    --glass-field-bg: rgb(250, 252, 255);
+
+    /* 0.92 not 1.0: a pure white edge reads as a drawn 1px line rather than
+     * light catching a bevel. The lo stop carries some of the scene's blue so
+     * the shadowed run looks refracted rather than merely grey. */
+    --glass-rim-hi: rgba(255, 255, 255, 0.92);
+    --glass-rim-lo: rgba(126, 148, 176, 0.26);
+    --glass-rim-mid: rgba(255, 255, 255, 0.60);
+
+    --glass-sheen-1: rgba(255, 255, 255, 0.55);
+    --glass-sheen-2: rgba(255, 255, 255, 0.13);
+
+    --glass-inner-hi: rgba(255, 255, 255, 0.85);
+    --glass-inner-lo: rgba(88, 108, 134, 0.24);
+
+    --glass-reveal-face: color-mix(in srgb, var(--accent) 8%, transparent);
+    --glass-reveal-soft: color-mix(in srgb, var(--accent) 4%, transparent);
+    --glass-reveal-faint: color-mix(in srgb, var(--accent) 1.4%, transparent);
+    --glass-reveal-rim: color-mix(in srgb, var(--accent) 86%, white 14%);
+
+    --glass-shadow-modal: 0 2px 6px rgba(43, 62, 88, 0.18), 0 30px 84px rgba(43, 62, 88, 0.22);
+    --glass-shadow: 0 1px 2px rgba(43, 62, 88, 0.14), 0 14px 44px rgba(43, 62, 88, 0.16);
+    --glass-shadow-2: 0 1px 2px rgba(43, 62, 88, 0.09);
+    --glass-veil: rgba(255, 255, 255, 0.5);
+
+    --glass-field-veil: rgba(232, 238, 246, 0.55);
+    --glass-field-bg: rgba(248, 251, 255, 0.94);
+
+    /* Stronger than dark: over a light base a translucent hue field is diluted
+     * to almost nothing (measured 0.03 saturation at dark's strengths). */
+    --glass-blob-1: 56%;
+    --glass-blob-2: 48%;
+    --glass-blob-3: 38%;
+
+    --glass-blur: blur(var(--glass-blur-radius)) saturate(175%);
+    --glass-blur-2: blur(calc(var(--glass-blur-radius) * 0.55)) saturate(150%);
+
+    /*
+     * 66% (not a lighter mix) is deliberate: --accent-ink is white in light mode
+     * and green is the most luminous hue, so anything above ~70% drops white
+     * text on a primary button below WCAG AA 4.5. At 66% the worst hue (green)
+     * measures 4.96.
+     */
+    --accent: color-mix(in srgb, var(--glass-hue) 66%, black 34%);
+    /* The light accent is a saturated mid-tone; dark ink on it fails AA. */
+    --accent-ink: #ffffff;
+    --scrim: rgba(46, 62, 84, 0.34);
+    --ok: #1f9a6d;
+    --danger: #c2564a;
+
+    --grid-color: #7c8c9f;
+    --point-color: #1d2733;
+    --point-focus: #b07d1f;
+    --point-sync: #505a65;
+    --point-offset: #c2564a;
+    --wb-preview-scene: #d9e0e9;
+
+    --input-option-bg: #f2f6fb;
+    --input-option-text: #1a222c;
+
+    --code-kw: color-mix(in srgb, var(--glass-hue) 62%, #6b5334);
+    --code-str: #3f7a55;
+    --code-com: rgba(72, 86, 103, 0.56);
+    --code-num: #3d6b8c;
+    --code-fn: #9a5344;
+    --code-type: #3f7a72;
+
+    color-scheme: light;
+}
+
+/* ---------------------------------------------------------------------- hues */
+/*
+ * --glass-hue drives everything the browser evaluates itself (accent, blobs,
+ * borders) via color-mix.
+ *
+ * The three scene tokens below are deliberately NOT derived with color-mix:
+ * --grid-color / --point-sync / --wb-preview-scene are read out of
+ * getComputedStyle() by the builders' JS and handed to THREE.Color, and the
+ * computed value of a custom property keeps color-mix() unevaluated, so
+ * THREE.Color would receive the literal string "color-mix(in srgb, ...)" and
+ * reject it. They are pre-mixed to hex here instead — same colours, parseable.
+ * Values were computed as a linear blend of gamma-encoded sRGB, which is what
+ * color-mix(in srgb, ...) does.
+ */
+[data-theme^="glass-"][data-theme$="-blue"] {
+    --glass-hue: #4f8ff7;
+    --glass-hue-2: #56d4e8;
+}
+
+[data-theme^="glass-dark-"][data-theme$="-blue"] {
+    --grid-color: #3a5b91;
+    --point-sync: #84b1f9;
+    --wb-preview-scene: #101a2c;
+}
+
+[data-theme^="glass-light-"][data-theme$="-blue"] {
+    --grid-color: #7294c5;
+    --point-sync: #3a6ab7;
+    --wb-preview-scene: #d6e3f6;
+}
+
+[data-theme^="glass-"][data-theme$="-green"] {
+    --glass-hue: #3cbf8c;
+    --glass-hue-2: #9ad560;
+}
+
+[data-theme^="glass-dark-"][data-theme$="-green"] {
+    --grid-color: #327161;
+    --point-sync: #77d2ae;
+    --wb-preview-scene: #0d201f;
+}
+
+[data-theme^="glass-light-"][data-theme$="-green"] {
+    --grid-color: #6ca4a0;
+    --point-sync: #2c8d68;
+    --wb-preview-scene: #d3e8e9;
+}
+
+[data-theme^="glass-"][data-theme$="-violet"] {
+    --glass-hue: #8b6cf0;
+    --glass-hue-2: #e070c8;
+}
+
+[data-theme^="glass-dark-"][data-theme$="-violet"] {
+    --grid-color: #554c8d;
+    --point-sync: #ae98f4;
+    --wb-preview-scene: #17162b;
+}
+
+[data-theme^="glass-light-"][data-theme$="-violet"] {
+    --grid-color: #8688c2;
+    --point-sync: #6750b2;
+    --wb-preview-scene: #dddef5;
+}
+
+/* Neutral resolves through the mode block: near-black glass in dark, white in light. */
+[data-theme^="glass-"][data-theme$="-neutral"] {
+    --glass-hue: var(--glass-neutral);
+    --glass-hue-2: var(--glass-neutral);
+}
+
+/* The -neutral scene tokens are the mode-block defaults, so no override here. */
+
+/* ---------------------------------------------------- derived canonical tokens */
+[data-theme^="glass-"] {
+    --bg: var(--glass-base);
+    --panel: var(--glass-fill-2);
+    --panel2: var(--glass-fill);
+    --panel-soft: var(--glass-fill);
+    --panel-head: var(--glass-fill-3);
+    --card: var(--glass-fill-2);
+    --card2: var(--glass-fill);
+
+    --line: var(--glass-line);
+    --line2: var(--glass-line2);
+
+    --text: var(--glass-text);
+    --muted: var(--glass-muted);
+    --muted2: var(--glass-muted2);
+
+    --input-bg: var(--glass-sunken);
+    --input-bg-focus: var(--glass-fill);
+    --input-arrow: var(--glass-text);
+    --btn-bg: var(--glass-fill-2);
+    --btn-bg-hover: var(--glass-fill-3);
+
+    --radius: 16px;
+    --radius2: 12px;
+    --radius3: 9px;
+
+    --shadow: var(--glass-shadow);
+    --shadow2: var(--glass-shadow-2);
+    --elev-1: var(--glass-shadow-2);
+    --elev-2: var(--glass-shadow);
+    --hover-veil: var(--glass-veil);
+    --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent);
+
+    /* Aliases consumed by the Vue shell's layout.css and component styles. */
+    --bg-panel: var(--panel);
+    --bg-panel-strong: var(--panel2);
+    --bg-soft: var(--card2);
+    --border: var(--line);
+    --text-soft: var(--muted);
+    --brand: var(--accent);
+    --brand-2: var(--ok);
+    --success: var(--ok);
+    --warning: var(--ok);
+
+    /* Legacy builders read these for their own preview/scene chrome. */
+    --wb-border-soft: var(--glass-line);
+    --wb-border-strong: var(--glass-line2);
+    --wb-panel-fill: var(--glass-fill-2);
+    --wb-panel-fill-strong: var(--glass-fill);
+    --wb-topbar-fill: var(--glass-fill);
+    --wb-chip-fill: var(--glass-fill);
+    --wb-shadow-xl: var(--glass-shadow);
+    --wb-shadow-md: var(--glass-shadow-2);
+
+    color: var(--glass-text);
+}
+
+/* ------------------------------------------------------------- the backdrop */
+/*
+ * Glass needs something behind it to refract, and it needs to be *saturated* —
+ * a near-monochrome backdrop makes even a correct material read as grey plastic.
+ * Static fields only (no animation): these pages run three.js previews and
+ * cannot afford a repainting layer underneath a blurred surface.
+ *
+ * No `background-attachment: fixed` any more. These pages set
+ * `overflow: hidden` on <body>, so there was nothing to scroll and the fixed
+ * attachment bought no visual difference at all — while pushing Chromium onto a
+ * viewport-sized re-rasterisation path underneath every backdrop-filter above it.
+ */
+body[data-theme^="glass-"],
+.generator-page[data-theme^="glass-"] {
+    background:
+        linear-gradient(var(--glass-field-veil), var(--glass-field-veil)),
+        radial-gradient(1500px 1200px at 4% 2%, color-mix(in srgb, var(--glass-hue) var(--glass-blob-1), transparent), transparent 66%),
+        radial-gradient(1300px 1100px at 98% 10%, color-mix(in srgb, var(--glass-hue-2) var(--glass-blob-2), transparent), transparent 64%),
+        radial-gradient(1200px 1100px at 36% 98%, color-mix(in srgb, var(--glass-hue) var(--glass-blob-2), transparent), transparent 68%),
+        radial-gradient(1000px 950px at 82% 66%, color-mix(in srgb, var(--glass-hue-2) var(--glass-blob-3), transparent), transparent 70%),
+        var(--glass-base);
+    background-repeat: no-repeat;
+}
+
+/*
+ * No surface texture. A repeating hatch here is exactly what made this look
+ * frosted rather than like glass — real glass is smooth and only shows the
+ * blurred, saturated scene behind it.
+ */
+
+/* ---------------------------------------------------------- glass surfaces */
+/*
+ * The material, in three parts:
+ *   1. a raking sheen gradient over a tinted fill (a curved, lit surface)
+ *   2. backdrop-filter that blurs AND saturates, so the hue field reads through
+ *   3. the refracted rim, as a border-box gradient inside the transparent border
+ *
+ * Layer order matters: everything clipped to padding-box paints above the
+ * border-box layers, so the rim is only ever visible in the 1px ring.
+ *
+ * ---------------------------------------------------------------------------
+ * The pointer light is deliberately NOT in this background.
+ *
+ * A custom property that participates in `background` invalidates the element's
+ * paint when it changes, and re-painting an element that carries a
+ * backdrop-filter forces the filter to be re-evaluated for that region. At the
+ * 48px the slider allows, over a panel this size, once per pointermove, that is
+ * tens of milliseconds a frame — measured p95 4.3ms -> 8.5ms on an otherwise
+ * idle page, and far worse with the three.js preview already using the GPU.
+ * That was the reported stutter.
+ *
+ * Blurred surfaces therefore keep only static paint. The moving light lives on
+ * a ::after layer that is *transformed* rather than repainted (see below), and on
+ * the unblurred tiers where painting a gradient costs nothing extra.
+ */
+[data-theme^="glass-"] .topbar,
+[data-theme^="glass-"] .panel,
+[data-theme^="glass-"] .surface,
+[data-theme^="glass-"] .settings-panel,
+[data-theme^="glass-"] .code-panel,
+[data-theme^="glass-"] .modal,
+[data-theme^="glass-"] .topbar-submenu,
+[data-theme^="glass-"] .snap-render-popover {
+    border: 1px solid transparent;
+    background:
+        linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 30%, transparent 68%, var(--glass-sheen-2) 100%) padding-box,
+        linear-gradient(var(--glass-fill-2), var(--glass-fill-2)) padding-box,
+        linear-gradient(148deg,
+            var(--glass-rim-hi) 0%,
+            var(--glass-rim-lo) 24%,
+            var(--glass-rim-lo) 56%,
+            var(--glass-rim-mid) 78%,
+            var(--glass-rim-hi) 100%) border-box;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    box-shadow:
+        inset 0 1px 0 0 var(--glass-inner-hi),
+        inset 0 -24px 36px -30px var(--glass-inner-lo),
+        var(--glass-shadow);
+}
+
+/*
+ * There is deliberately no moving light on the blurred surfaces.
+ *
+ * Two approaches were tried and rejected:
+ *
+ *   In the background. A custom property used in `background` invalidates paint,
+ *   and re-painting an element that carries a backdrop-filter re-runs the filter.
+ *   At the 48px the slider allows, once per pointermove, that measured p95
+ *   4.3ms -> 8.5ms on an *idle* page and was far worse with the three.js preview
+ *   already using the GPU.
+ *
+ *   On a transformed ::after layer. Compositor-only movement would have been
+ *   free, but --cp-glass-mx/my are registered `inherits: false` — which they must
+ *   be, or a card would inherit its panel's coordinate and light up in the wrong
+ *   place — and a pseudo-element does not inherit a non-inheriting property from
+ *   its originating element. It resolves to the initial value, so the layer never
+ *   moved.
+ *
+ * The light therefore lives on the unblurred tiers only: cards, rows, buttons,
+ * .settings-panel and .code-panel. Those are the surfaces the pointer is actually
+ * over when reading or clicking something, they carry no filter to re-run, and
+ * the big panels keep their static refracted rim.
+ */
+
+/* Nearest layer: most opaque, deepest shadow. */
+[data-theme^="glass-"] .modal {
+    background:
+        linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 32%, transparent 66%, var(--glass-sheen-2) 100%) padding-box,
+        linear-gradient(var(--glass-fill-3), var(--glass-fill-3)) padding-box,
+        linear-gradient(148deg,
+            var(--glass-rim-hi) 0%,
+            var(--glass-rim-lo) 24%,
+            var(--glass-rim-lo) 56%,
+            var(--glass-rim-mid) 78%,
+            var(--glass-rim-hi) 100%) border-box;
+    box-shadow:
+        inset 0 1px 0 0 var(--glass-inner-hi),
+        inset 0 -30px 44px -34px var(--glass-inner-lo),
+        var(--glass-shadow-modal);
+}
+
+/*
+ * .settings-panel and .code-panel sit INSIDE an already-blurred .modal / .panel.
+ * Stacking a second backdrop-filter costs a full extra blur pass and only
+ * muddies the result — the parent has already destroyed the detail this would
+ * sample. Rim and fill only.
+ */
+[data-theme^="glass-"] .settings-panel,
+[data-theme^="glass-"] .code-panel {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background:
+        radial-gradient(380px circle at var(--cp-glass-mx) var(--cp-glass-my),
+            var(--glass-reveal-face) 0%,
+            var(--glass-reveal-soft) 32%,
+            var(--glass-reveal-faint) 58%,
+            transparent 100%) padding-box,
+        linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 46%) padding-box,
+        linear-gradient(var(--glass-fill), var(--glass-fill)) padding-box,
+        radial-gradient(240px circle at var(--cp-glass-mx) var(--cp-glass-my),
+            var(--glass-reveal-rim) 0%,
+            color-mix(in srgb, var(--glass-reveal-rim) 32%, transparent) 46%,
+            transparent 100%) border-box,
+        linear-gradient(148deg,
+            var(--glass-rim-mid) 0%,
+            var(--glass-rim-lo) 26%,
+            var(--glass-rim-lo) 60%,
+            var(--glass-rim-mid) 100%) border-box;
+    box-shadow:
+        inset 0 1px 0 0 var(--glass-inner-hi),
+        inset 0 -20px 30px -28px var(--glass-inner-lo);
+}
+
+[data-theme^="glass-"] .topbar {
+    background:
+        linear-gradient(180deg, var(--glass-sheen-1) 0%, transparent 62%) padding-box,
+        linear-gradient(var(--glass-fill), var(--glass-fill)) padding-box,
+        linear-gradient(180deg, var(--glass-rim-hi) 0%, var(--glass-rim-lo) 62%, var(--glass-rim-mid) 100%) border-box;
+    box-shadow:
+        inset 0 1px 0 0 var(--glass-inner-hi),
+        0 6px 24px rgba(2, 5, 12, 0.14);
+}
+
+/*
+ * Cards sit on an already-blurred panel, so they get the rim and the sheen but
+ * no backdrop-filter of their own. There can be hundreds of these on screen at
+ * once; a blur each is a large part of what made the builders stutter.
+ */
+[data-theme^="glass-"] .card,
+[data-theme^="glass-"] .cards .card,
+[data-theme^="glass-"] .card-item,
+[data-theme^="glass-"] .node-item,
+[data-theme^="glass-"] .project-item,
+[data-theme^="glass-"] .emitter-list-card,
+[data-theme^="glass-"] .queue-card,
+[data-theme^="glass-"] .command-card,
+[data-theme^="glass-"] .layer-card,
+[data-theme^="glass-"] .node-card,
+[data-theme^="glass-"] .preset-card,
+[data-theme^="glass-"] .texture-card,
+[data-theme^="glass-"] .hk-row,
+[data-theme^="glass-"] .section-block,
+[data-theme^="glass-"] .subgroup,
+[data-theme^="glass-"] .kv-row,
+[data-theme^="glass-"] .child-row {
+    border: 1px solid transparent;
+    background:
+        radial-gradient(300px circle at var(--cp-glass-mx) var(--cp-glass-my),
+            var(--glass-reveal-face) 0%,
+            var(--glass-reveal-soft) 32%,
+            var(--glass-reveal-faint) 58%,
+            transparent 100%) padding-box,
+        linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 42%) padding-box,
+        linear-gradient(var(--glass-fill), var(--glass-fill)) padding-box,
+        radial-gradient(200px circle at var(--cp-glass-mx) var(--cp-glass-my),
+            var(--glass-reveal-rim) 0%,
+            color-mix(in srgb, var(--glass-reveal-rim) 32%, transparent) 46%,
+            transparent 100%) border-box,
+        linear-gradient(148deg,
+            var(--glass-rim-mid) 0%,
+            var(--glass-rim-lo) 28%,
+            var(--glass-rim-lo) 62%,
+            var(--glass-rim-mid) 100%) border-box;
+    box-shadow: inset 0 1px 0 0 var(--glass-inner-hi);
+}
+
+[data-theme^="glass-"] .card:hover,
+[data-theme^="glass-"] .card-item:hover,
+[data-theme^="glass-"] .emitter-list-card:hover,
+[data-theme^="glass-"] .queue-card:hover {
+    background:
+        radial-gradient(300px circle at var(--cp-glass-mx) var(--cp-glass-my),
+            var(--glass-reveal-face) 0%,
+            var(--glass-reveal-soft) 32%,
+            var(--glass-reveal-faint) 58%,
+            transparent 100%) padding-box,
+        linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 46%) padding-box,
+        linear-gradient(var(--glass-fill-2), var(--glass-fill-2)) padding-box,
+        radial-gradient(200px circle at var(--cp-glass-mx) var(--cp-glass-my),
+            var(--glass-reveal-rim) 0%,
+            color-mix(in srgb, var(--glass-reveal-rim) 32%, transparent) 46%,
+            transparent 100%) border-box,
+        linear-gradient(148deg,
+            var(--glass-rim-hi) 0%,
+            var(--glass-rim-lo) 28%,
+            var(--glass-rim-lo) 62%,
+            var(--glass-rim-mid) 100%) border-box;
+    box-shadow:
+        inset 0 1px 0 0 var(--glass-inner-hi),
+        var(--glass-shadow-2);
+}
+
+[data-theme^="glass-"] .card.selected,
+[data-theme^="glass-"] .card.focused,
+[data-theme^="glass-"] .card-item.active,
+[data-theme^="glass-"] .emitter-list-card.selected,
+[data-theme^="glass-"] .queue-card.selected {
+    background:
+        linear-gradient(color-mix(in srgb, var(--accent) 16%, var(--glass-fill-2)),
+            color-mix(in srgb, var(--accent) 16%, var(--glass-fill-2))) padding-box,
+        linear-gradient(148deg,
+            color-mix(in srgb, var(--accent) 76%, var(--glass-rim-hi)) 0%,
+            color-mix(in srgb, var(--accent) 44%, transparent) 40%,
+            color-mix(in srgb, var(--accent) 70%, transparent) 100%) border-box;
+    box-shadow:
+        inset 2px 0 0 var(--accent),
+        inset 0 1px 0 var(--glass-highlight),
+        0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* --------------------------------------------------------------- controls */
+/*
+ * NO backdrop-filter here. This is the single biggest thing that was wrong with
+ * the theme's performance: the composition builder alone renders ~130 of these
+ * (48 in its markup, plus 84 generated in main.js), and each blur was its own
+ * compositing layer resampling the page behind it. Opening a native <select>
+ * forces that whole stack to re-composite — which is why the theme dropdown
+ * took seconds to paint and showed up as an empty black rectangle first.
+ *
+ * They sit on an already-blurred panel, so the second blur was buying almost no
+ * visual difference for that cost. Fill and refracted rim only.
+ */
+[data-theme^="glass-"] .btn,
+[data-theme^="glass-"] button.btn,
+[data-theme^="glass-"] .tab,
+[data-theme^="glass-"] .config-tab,
+[data-theme^="glass-"] .right-tab,
+[data-theme^="glass-"] .iconbtn,
+[data-theme^="glass-"] .icon-btn,
+[data-theme^="glass-"] .topbar-menu-trigger {
+    border: 1px solid transparent;
+    background:
+        radial-gradient(150px circle at var(--cp-glass-mx) var(--cp-glass-my),
+            var(--glass-reveal-face) 0%,
+            var(--glass-reveal-soft) 32%,
+            var(--glass-reveal-faint) 58%,
+            transparent 100%) padding-box,
+        linear-gradient(180deg, var(--glass-sheen-2) 0%, transparent 58%) padding-box,
+        linear-gradient(var(--glass-fill-2), var(--glass-fill-2)) padding-box,
+        radial-gradient(110px circle at var(--cp-glass-mx) var(--cp-glass-my),
+            var(--glass-reveal-rim) 0%,
+            color-mix(in srgb, var(--glass-reveal-rim) 32%, transparent) 46%,
+            transparent 100%) border-box,
+        linear-gradient(148deg,
+            var(--glass-rim-mid) 0%,
+            var(--glass-rim-lo) 34%,
+            var(--glass-rim-lo) 66%,
+            var(--glass-rim-mid) 100%) border-box;
+    color: var(--glass-text);
+    box-shadow: inset 0 1px 0 var(--glass-inner-hi);
+}
+
+[data-theme^="glass-"] .btn:hover,
+[data-theme^="glass-"] button.btn:hover,
+[data-theme^="glass-"] .tab:hover,
+[data-theme^="glass-"] .iconbtn:hover,
+[data-theme^="glass-"] .icon-btn:hover {
+    background:
+        radial-gradient(150px circle at var(--cp-glass-mx) var(--cp-glass-my),
+            var(--glass-reveal-face) 0%,
+            var(--glass-reveal-soft) 32%,
+            var(--glass-reveal-faint) 58%,
+            transparent 100%) padding-box,
+        linear-gradient(180deg, var(--glass-sheen-1) 0%, transparent 58%) padding-box,
+        linear-gradient(var(--glass-fill-3), var(--glass-fill-3)) padding-box,
+        radial-gradient(110px circle at var(--cp-glass-mx) var(--cp-glass-my),
+            var(--glass-reveal-rim) 0%,
+            color-mix(in srgb, var(--glass-reveal-rim) 32%, transparent) 46%,
+            transparent 100%) border-box,
+        linear-gradient(148deg,
+            var(--glass-rim-hi) 0%,
+            var(--glass-rim-lo) 34%,
+            var(--glass-rim-lo) 66%,
+            var(--glass-rim-mid) 100%) border-box;
+}
+
+[data-theme^="glass-"] .btn.primary,
+[data-theme^="glass-"] button.btn.primary,
+[data-theme^="glass-"] .tab.active,
+[data-theme^="glass-"] .config-tab.active,
+[data-theme^="glass-"] .right-tab.active {
+    background:
+        linear-gradient(180deg,
+            color-mix(in srgb, var(--accent) 94%, white 6%),
+            color-mix(in srgb, var(--accent) 86%, transparent)) padding-box,
+        linear-gradient(148deg,
+            color-mix(in srgb, white 46%, var(--accent)) 0%,
+            color-mix(in srgb, var(--accent) 90%, transparent) 40%,
+            color-mix(in srgb, white 24%, var(--accent)) 100%) border-box;
+    color: var(--accent-ink);
+    font-weight: 600;
+}
+
+[data-theme^="glass-"] .btn.danger,
+[data-theme^="glass-"] button.btn.danger {
+    background:
+        linear-gradient(180deg,
+            color-mix(in srgb, var(--danger) 90%, white 6%),
+            color-mix(in srgb, var(--danger) 80%, transparent)) padding-box,
+        linear-gradient(148deg,
+            color-mix(in srgb, white 42%, var(--danger)) 0%,
+            color-mix(in srgb, var(--danger) 88%, transparent) 40%,
+            color-mix(in srgb, white 22%, var(--danger)) 100%) border-box;
+    color: #fff6f4;
+}
+
+/* ----------------------------------------------------------------- fields */
+/*
+ * Text fields get the gradient border; <select> deliberately does not.
+ *
+ * The builders draw their own dropdown caret out of two
+ * `linear-gradient(45deg, transparent 50%, var(--input-arrow) 50%)` background
+ * layers, sized and positioned with background-size / background-position (see
+ * points_builder/css/style.css `select.input`). Their :hover and :focus rules
+ * then re-specify `background-image` ALONE.
+ *
+ * A `background` shorthand here resets background-size to `auto`,
+ * background-position to `0 0` and background-repeat to `repeat`. Those resets
+ * survive, because nothing else declares them — so on hover the caret gradients
+ * were painted across the whole control: half of it filled with --input-arrow,
+ * which is --glass-text (near-white), leaving a dark triangular wedge where both
+ * gradients were transparent. That is the unreadable blob.
+ *
+ * So selects are given a colour and a border only, via longhands, leaving every
+ * background-image / -size / -position / -repeat declaration of the host tool
+ * untouched. The fill is opaque as well: a translucent field lets whatever is
+ * painted behind it — including the pointer light — show through.
+ */
+[data-theme^="glass-"] .input:not(select),
+[data-theme^="glass-"] .textarea,
+[data-theme^="glass-"] input,
+[data-theme^="glass-"] textarea {
+    border: 1px solid transparent;
+    background:
+        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)) padding-box,
+        linear-gradient(148deg, var(--glass-rim-lo) 0%, var(--glass-rim-mid) 100%) border-box;
+    color: var(--glass-text);
+    box-shadow: inset 0 1px 2px rgba(2, 5, 12, 0.12);
+}
+
+[data-theme^="glass-"] select {
+    border: 1px solid var(--glass-line2);
+    background-color: var(--glass-field-bg);
+    color: var(--glass-text);
+}
+
+[data-theme^="glass-"] input::placeholder,
+[data-theme^="glass-"] textarea::placeholder {
+    color: var(--glass-muted2);
+}
+
+[data-theme^="glass-"] .input:not(select):focus,
+[data-theme^="glass-"] input:focus,
+[data-theme^="glass-"] textarea:focus {
+    background:
+        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)) padding-box,
+        linear-gradient(148deg,
+            color-mix(in srgb, var(--accent) 70%, transparent) 0%,
+            color-mix(in srgb, var(--accent) 40%, transparent) 100%) border-box;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+/* Border and ring only, for the same reason as above. */
+[data-theme^="glass-"] select:focus {
+    border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+
+[data-theme^="glass-"] input[type="checkbox"],
+[data-theme^="glass-"] input[type="radio"] {
+    accent-color: var(--accent);
+}
+
+/*
+ * Range inputs drive the blur / frost sliders in every tool's settings panel.
+ * The gradient-border treatment above would swallow the native track, so they
+ * opt out of it and lean on accent-color instead.
+ */
+[data-theme^="glass-"] input[type="range"] {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    accent-color: var(--accent);
+}
+
+/* ------------------------------------------------------------ chips & code */
+[data-theme^="glass-"] .badge,
+[data-theme^="glass-"] .badge2,
+[data-theme^="glass-"] .chip,
+[data-theme^="glass-"] .status-pill,
+[data-theme^="glass-"] .hk-key {
+    border: 1px solid transparent;
+    background:
+        linear-gradient(var(--glass-fill), var(--glass-fill)) padding-box,
+        linear-gradient(148deg, var(--glass-rim-mid) 0%, var(--glass-rim-lo) 60%, var(--glass-rim-lo) 100%) border-box;
+    color: var(--glass-muted);
+    box-shadow: none;
+}
+
+[data-theme^="glass-"] .code,
+[data-theme^="glass-"] .code-highlight,
+[data-theme^="glass-"] .kotlin-out,
+[data-theme^="glass-"] .kotlin-output,
+[data-theme^="glass-"] pre.code-highlight {
+    border: 1px solid transparent;
+    background:
+        linear-gradient(var(--glass-sunken), var(--glass-sunken)) padding-box,
+        linear-gradient(148deg, var(--glass-rim-lo) 0%, var(--glass-rim-mid) 100%) border-box;
+    box-shadow: inset 0 1px 0 var(--glass-inner-hi);
+}
+
+/* -------------------------------------------------------------- 3D preview */
+[data-theme^="glass-"] .viewer-wrap,
+[data-theme^="glass-"] .viewer,
+[data-theme^="glass-"] .three-host,
+[data-theme^="glass-"] .preview-canvas,
+[data-theme^="glass-"] .preview-host,
+[data-theme^="glass-"] .generator-preview,
+[data-theme^="glass-"] .preview-canvas-shell {
+    border: 1px solid var(--glass-line);
+    background:
+        radial-gradient(900px 560px at 50% 12%, color-mix(in srgb, var(--glass-hue) 26%, transparent), transparent 60%),
+        color-mix(in srgb, var(--glass-base) 88%, var(--glass-hue));
+    box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+[data-theme^="glass-"] .modal-mask {
+    background: var(--scrim);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+}
+
+[data-theme^="glass-"] .resizer,
+[data-theme^="glass-"] .editor-resizer,
+[data-theme^="glass-"] .panel-resizer {
+    border: 1px solid var(--glass-line);
+    background: var(--glass-fill);
+}
+
+[data-theme^="glass-"] *::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 50%, transparent);
+    background-clip: padding-box;
+}
+
+/*
+ * The builders' own syntax highlighting and native <option> colours are keyed on
+ * [data-theme^="light"] / ^="dark", which the glass-* ids do not match. Drive
+ * them from the glass tokens instead.
+ */
+[data-theme^="glass-"] .tok-kw { color: var(--code-kw); }
+[data-theme^="glass-"] .tok-str { color: var(--code-str); }
+[data-theme^="glass-"] .tok-com { color: var(--code-com); }
+[data-theme^="glass-"] .tok-num { color: var(--code-num); }
+[data-theme^="glass-"] .tok-fn { color: var(--code-fn); }
+[data-theme^="glass-"] .tok-type { color: var(--code-type); }
+
+[data-theme^="glass-dark-"] select,
+[data-theme^="glass-dark-"] select.input {
+    color-scheme: dark;
+}
+
+[data-theme^="glass-light-"] select,
+[data-theme^="glass-light-"] select.input {
+    color-scheme: light;
+}
+
+/*
+ * Native dropdown popups render outside the page's compositing context and
+ * cannot be translucent — they need a solid, literal surface. Both tokens are
+ * plain hex in the mode blocks for exactly this reason.
+ *
+ * <optgroup> has to be styled as well as <option>. Its default background is
+ * transparent, and the popup paints transparent as WHITE — so the theme picker,
+ * the only select in the app with groups, came out as dark rows interrupted by
+ * bright white bands while every other dropdown looked uniform. Styling both is
+ * what makes the theme select match the rest.
+ */
+[data-theme^="glass-"] select option,
+[data-theme^="glass-"] select.input option {
+    color: var(--input-option-text);
+    background: var(--input-option-bg);
+}
+
+[data-theme^="glass-"] select optgroup,
+[data-theme^="glass-"] select.input optgroup {
+    color: var(--glass-muted);
+    background: var(--input-option-bg);
+    font-weight: 600;
+    font-style: normal;
+}
+
+/* ------------------------------------------------ the material's own controls */
+/*
+ * The 模糊度 / 磨砂度 sliders that every tool's settings panel now carries.
+ *
+ * The row keeps whichever layout its host tool already gives `.settings-row` /
+ * `.field`, so it lines up with the theme picker directly above it without this
+ * file needing to know each builder's grid (they differ: 90px/96px two-column
+ * grids in the composition and points builders, a flex row in the generator, a
+ * stacked grid in the shader builder). Only the control cluster is styled here.
+ *
+ * These tune the glass and do nothing else, so under the flat themes the row is
+ * hidden outright rather than sitting there inert. Written as a :not() so the
+ * glass case never has to restore a display value it cannot know.
+ */
+[data-theme]:not([data-theme^="glass-"]) .glass-pref-row {
+    display: none;
+}
+
+.glass-pref-field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.glass-pref-field input[type="range"] {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    cursor: pointer;
+}
+
+.glass-pref-value {
+    flex: 0 0 auto;
+    min-width: 3.4em;
+    text-align: right;
+    font-size: 12px;
+    /* Tabular figures so the row does not twitch as the number's width changes. */
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+}
+
+/*
+ * The pointer light is a pure affordance. Anyone who has asked the OS to reduce
+ * motion should not get a light chasing their cursor, so park it permanently
+ * off-screen; every other part of the material is static and stays.
+ */
+@media (prefers-reduced-motion: reduce) {
+    [data-theme^="glass-"] * {
+        --cp-glass-mx: -9999px;
+        --cp-glass-my: -9999px;
+    }
+}
+
+/*
+ * backdrop-filter is the whole effect; if the browser cannot do it, fall back to
+ * opaque panels so text stays readable instead of washing out.
+ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    [data-theme^="glass-"] .topbar,
+    [data-theme^="glass-"] .panel,
+    [data-theme^="glass-"] .surface,
+    [data-theme^="glass-"] .settings-panel,
+    [data-theme^="glass-"] .code-panel,
+    [data-theme^="glass-"] .modal {
+        background: color-mix(in srgb, var(--glass-base) 82%, var(--glass-hue));
+    }
+}

@@ -273,6 +273,12 @@ def _cache_control_for(path: Path, root: Path) -> str:
         return "no-store"
     if relative == "index.html" or relative.endswith(".html"):
         return "no-cache"
+    # The desktop client serves the frontend from a local runtime directory.
+    # Legacy builder modules keep explicit query versions, but source edits can
+    # happen without changing every nested import's version.  Immutable caching
+    # then makes Electron keep the previous builder indefinitely, which looks
+    # like the feature did not load at all.  Revalidate local assets so a
+    # restarted/reloaded client always sees the current frontend build.
     if relative.startswith("assets/"):
-        return "public, max-age=31536000, immutable"
+        return "no-cache"
     return "public, max-age=600"

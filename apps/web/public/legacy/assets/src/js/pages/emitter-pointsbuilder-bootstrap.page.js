@@ -4,7 +4,7 @@ import {
   migratePointsBuilderSharedStorage,
   POINTS_BUILDER_SHARED_STORAGE_KEYS,
   setOptionalStorage,
-} from "../shared/storage-prefix-bootstrap.js?v=20260801_1";
+} from "../shared/storage-prefix-bootstrap.js?v=20260825_2";
 
 window.__PB_STORAGE_PREFIX = "egpb_";
 document.body.classList.add("emitter-no-kotlin");

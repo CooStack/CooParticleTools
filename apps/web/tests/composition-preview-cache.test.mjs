@@ -431,6 +431,36 @@ test('Composition preview enables GPU behavior only through a shape root', () =>
   assert.equal(app.resolvePreviewTextureConfigForShapeLeaf(leaf, cpuShape).useCParticle, false);
 });
 
+test('PointsBuilder preview uses the GPU path without changing Composition semantics', () => {
+  const card = {
+    id: 'builder-single',
+    dataType: 'single',
+    bindMode: 'builder',
+    particleBackend: 'single',
+    controllerActions: []
+  };
+  const leaf = { id: card.id, type: 'single', controllerActions: [] };
+  const { app } = prepareGpuParticlePathHarness(card, leaf);
+  const textureConfig = app.resolvePreviewTextureConfigForCard(card);
+
+  assert.equal(textureConfig.useCParticle, true);
+  app.previewLeafTextureConfigs = [textureConfig];
+  assert.equal(app.canUsePreviewGpuParticlePath(), true);
+  assert.equal(card.particleBackend, 'single');
+
+  const nestedLeaf = { id: 'builder-leaf', type: 'single', bindMode: 'builder' };
+  const shapeCard = {
+    id: 'shape-with-builder',
+    dataType: 'particle_shape',
+    bindMode: 'point',
+    useCParticle: false,
+    shapeChildren: [nestedLeaf]
+  };
+  const shapeApp = createVisualHarness(shapeCard);
+  assert.equal(shapeApp.resolvePreviewTextureConfigForShapeLeaf(nestedLeaf, shapeCard).useCParticle, true);
+  assert.equal(shapeCard.useCParticle, false);
+});
+
 test('simple CParticle Composition selects the GPU preview path and complex behavior falls back', () => {
   const { card, leaf } = createGpuShapeCard();
   const { app } = prepareGpuParticlePathHarness(card, leaf);
@@ -1842,6 +1872,43 @@ test('GPU preview uploads static lifecycle attributes and advances with uniforms
   assert.match(mainSource, /attribute vec4 aGpuMeta;/);
   assert.match(mainSource, /uGpuPreviewEnabled/);
   assert.match(mainSource, /defaultAttributeValues/);
+});
+
+test('GPU preview fades delayed sequenced cards from the project cycle age', () => {
+  const cycleAge = 310;
+  const cardBirthTick = 70;
+  const playTicks = 300;
+  const fadeTicks = 20;
+  const cycleCfg = { play: playTicks, total: playTicks + fadeTicks };
+  const localAge = cycleAge - cardBirthTick;
+  const globalFade = Math.min(1, Math.max(0, (cycleAge - playTicks) / fadeTicks));
+  const localFade = localAge >= playTicks
+    ? Math.min(1, Math.max(0, (localAge - playTicks) / fadeTicks))
+    : 0;
+
+  assert.equal(globalFade, 0.5);
+  assert.equal(localFade, 0);
+
+  const { card } = createGpuShapeCard({}, {
+    cparticleAlpha: {
+      fadeOut: { enabled: true, durationTicks: fadeTicks, fromAlpha: 1, toAlpha: 0 }
+    }
+  });
+  const previewApp = createVisualHarness(card);
+  const alphaAt = (statusAge) => previewApp.resolveCParticleAlphaPreviewFactor(
+    card,
+    localAge,
+    cycleCfg,
+    statusAge
+  );
+  assert.equal(alphaAt(playTicks - 1), 1);
+  assert.equal(alphaAt(playTicks), 1);
+  assert.equal(alphaAt(cycleAge), 0.5);
+  assert.equal(alphaAt(cycleCfg.total), 0);
+
+  assert.match(mainSource, /aGpuFadeOut\.x > 0\.0 && previewCycleAge >= uGpuPreviewPlayTicks/);
+  assert.match(mainSource, /\(previewCycleAge - uGpuPreviewPlayTicks\) \/ aGpuFadeOut\.x/);
+  assert.doesNotMatch(mainSource, /aGpuFadeOut\.x > 0\.0 && previewAge >= uGpuPreviewPlayTicks/);
 });
 
 test('GPU preview refreshes active masks after Composition layer visibility changes', () => {

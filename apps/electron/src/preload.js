@@ -24,6 +24,8 @@ ipcRenderer.on('shell:project-close-request', async (_event, payload = {}) => {
 
 contextBridge.exposeInMainWorld('cooParticlesShell', {
   isElectron: true,
+  closeWindow: () => ipcRenderer.invoke('shell:close-window'),
+  notifyLegacyReturn: (type) => ipcRenderer.invoke('shell:legacy-return', String(type || '')),
   getBackendInfo: () => ipcRenderer.invoke('shell:getBackendInfo'),
   getWindowChrome: () => ipcRenderer.invoke('shell:getWindowChrome'),
   getWindowState: () => ipcRenderer.invoke('shell:getWindowState'),
@@ -81,5 +83,13 @@ contextBridge.exposeInMainWorld('cooParticlesShell', {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on('shell:backend-exit', listener);
     return () => ipcRenderer.removeListener('shell:backend-exit', listener);
+  },
+  onLegacyReturn: (handler) => {
+    if (typeof handler !== 'function') {
+      return () => {};
+    }
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('shell:legacy-return', listener);
+    return () => ipcRenderer.removeListener('shell:legacy-return', listener);
   },
 });

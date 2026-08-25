@@ -10,6 +10,7 @@ const { createProjectPresetFileStore } = require('./project-preset-files');
 const { createPreferencesStore } = require('./preferences-store');
 const { writeProjectAutoSave } = require('./project-auto-save');
 const { writeTextFileAtomic } = require('./atomic-text-file');
+const { mapLegacyUrlToAppUrl } = require('./legacy-navigation');
 const {
   buildMenuModel,
   isRecentProjectId,
@@ -20,7 +21,10 @@ const repoRoot = path.resolve(__dirname, '..', '..', '..');
 const defaultWebRoot = path.join(repoRoot, 'apps', 'web');
 const appName = 'CooParticlesAPI Tools';
 const maxRecentProjects = 12;
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+const hasSingleInstanceLock = app.requestSingleInstanceLock({
+  reloadFromSource: true,
+  rebuild: isTruthy(process.env.COO_PARTICLES_REBUILD),
+});
 
 const projectFilters = [
   { name: 'CooParticles 项目 JSON', extensions: ['json'] },
@@ -33,6 +37,8 @@ const kotlinFilters = [
 ];
 
 let mainWindow = null;
+const compositionPointBuilderWindows = new Set();
+const compositionReferenceSamplerWindows = new Set();
 let backendProcess = null;
 let backendInfo = null;
 let backendOutput = '';
@@ -222,6 +228,28 @@ function killBackend() {
   }
 
   backendProcess.kill('SIGTERM');
+}
+
+let reloadPromise = null;
+
+async function reloadApplicationFromSource({ rebuild = false } = {}) {
+  if (reloadPromise) return reloadPromise;
+  reloadPromise = (async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (rebuild) process.env.COO_PARTICLES_REBUILD = '1';
+    killBackend();
+    backendProcess = null;
+    backendInfo = null;
+    backendOutput = '';
+    const info = await startBackend();
+    await mainWindow.webContents.session.clearCache();
+    await mainWindow.loadURL(launchUrl(info.url));
+  })().catch((error) => {
+    dialog.showErrorBox(appName, error?.stack || error?.message || String(error));
+  }).finally(() => {
+    reloadPromise = null;
+  });
+  return reloadPromise;
 }
 
 function userDataFile(name) {
@@ -522,6 +550,92 @@ function shouldOpenExternally(rawUrl) {
   }
 }
 
+function isCompositionPointBuilderUrl(rawUrl) {
+  try {
+    const pathname = new URL(rawUrl).pathname;
+    return pathname.endsWith('/legacy/composition_pointsbuilder.html');
+  } catch {
+    return false;
+  }
+}
+
+function isCompositionReferenceSamplerUrl(rawUrl) {
+  try {
+    const target = new URL(rawUrl);
+    return target.pathname.endsWith('/legacy/composition_builder.html')
+      && target.searchParams.get('referenceSampler') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function openCompositionReferenceSamplerWindow(url) {
+  const sampler = new BrowserWindow({
+    parent: mainWindow || undefined,
+    title: 'Composition reference sampler',
+    width: 1,
+    height: 1,
+    show: false,
+    skipTaskbar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  compositionReferenceSamplerWindows.add(sampler);
+  sampler.on('closed', () => compositionReferenceSamplerWindows.delete(sampler));
+  void sampler.loadURL(url);
+  return sampler;
+}
+
+function openCompositionPointBuilderWindow(url) {
+  const existing = [...compositionPointBuilderWindows].find((candidate) => !candidate.isDestroyed());
+  if (existing) {
+    void existing.loadURL(url);
+    existing.focus();
+    return existing;
+  }
+
+  const child = new BrowserWindow({
+    parent: mainWindow || undefined,
+    title: 'CompositionBuilder - PointsBuilder 编辑器',
+    width: 1480,
+    height: 940,
+    minWidth: 1120,
+    minHeight: 720,
+    backgroundColor: defaultTitleBarTheme.color,
+    show: true,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: defaultTitleBarTheme.color,
+      symbolColor: defaultTitleBarTheme.symbolColor,
+      height: TITLE_BAR_HEIGHT,
+    },
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  compositionPointBuilderWindows.add(child);
+  child.on('closed', () => compositionPointBuilderWindows.delete(child));
+  child.webContents.setWindowOpenHandler(({ url: nestedUrl }) => {
+    if (!isSafeExternalUrl(nestedUrl)) return { action: 'deny' };
+    if (shouldOpenExternally(nestedUrl)) {
+      shell.openExternal(nestedUrl);
+    } else {
+      void child.loadURL(mapLegacyUrlToAppUrl(nestedUrl, backendInfo?.url));
+    }
+    return { action: 'deny' };
+  });
+  void child.loadURL(url);
+  return child;
+}
+
 /*
  * Maps a menu-model id to behaviour. Shared by the native menu (accelerators)
  * and by the in-page title bar, so both always do exactly the same thing.
@@ -725,26 +839,53 @@ async function createWindow() {
     }
     if (shouldOpenExternally(url)) {
       shell.openExternal(url);
+    } else if (isCompositionReferenceSamplerUrl(url)) {
+      openCompositionReferenceSamplerWindow(mapLegacyUrlToAppUrl(url, backendInfo?.url));
+    } else if (isCompositionPointBuilderUrl(url)) {
+      // PointsBuilder is a route in the main workbench. Never create a second
+      // visible BrowserWindow for it; the legacy SPA bridge owns navigation.
+      void mainWindow.loadURL(mapLegacyUrlToAppUrl(url, backendInfo?.url));
     } else {
-      void mainWindow.loadURL(url);
+      void mainWindow.loadURL(mapLegacyUrlToAppUrl(url, backendInfo?.url));
     }
     return { action: 'deny' };
   });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!shouldOpenExternally(url)) {
+    if (shouldOpenExternally(url)) {
+      event.preventDefault();
+      if (isSafeExternalUrl(url)) {
+        shell.openExternal(url);
+      }
       return;
     }
-    event.preventDefault();
-    if (isSafeExternalUrl(url)) {
-      shell.openExternal(url);
+
+    const appUrl = mapLegacyUrlToAppUrl(url, backendInfo?.url);
+    if (appUrl !== url) {
+      event.preventDefault();
+      void mainWindow.loadURL(appUrl);
     }
   });
 
+  await mainWindow.webContents.session.clearCache();
   await mainWindow.loadURL(launchUrl(info.url));
 }
 
 ipcMain.handle('shell:getBackendInfo', () => backendInfo);
+ipcMain.handle('shell:close-window', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (window && window !== mainWindow && !window.isDestroyed()) {
+    window.close();
+  }
+  return { ok: true };
+});
+ipcMain.handle('shell:legacy-return', (event, type) => {
+  const messageType = String(type || '').trim();
+  if (mainWindow && !mainWindow.isDestroyed() && messageType) {
+    mainWindow.webContents.send('shell:legacy-return', { type: messageType });
+  }
+  return { ok: true };
+});
 ipcMain.handle('shell:getMenuModel', () => currentMenuModel());
 ipcMain.handle('shell:runMenuCommand', (_event, id) => runMenuCommand(id));
 ipcMain.handle('shell:getWindowChrome', () => ({
@@ -801,11 +942,14 @@ ipcMain.handle('shell:revealInFolder', (_event, rawPath) => {
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, _commandLine, _workingDirectory, additionalData) => {
     if (!mainWindow) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
+    if (additionalData?.reloadFromSource) {
+      void reloadApplicationFromSource({ rebuild: additionalData.rebuild === true });
+    }
   });
 
   app.whenReady().then(createWindow).catch((error) => {

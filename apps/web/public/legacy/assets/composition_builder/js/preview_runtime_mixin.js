@@ -40,9 +40,11 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             fadeOut: Object.assign({ enabled: false, durationTicks: 10, fromAlpha: 1, toAlpha: 0 }, raw?.fadeOut || {})
         }));
     const isCParticleOwnerType = (type) => type === "particle_shape" || type === "sequenced_shape";
+    const usesPointsBuilderSource = (source) => source?.bindMode === "builder";
     const isCParticleCard = (card) => {
         const type = String(card?.dataType || "single");
-        return (isCParticleOwnerType(type) && card?.useCParticle === true)
+        return usesPointsBuilderSource(card)
+            || (isCParticleOwnerType(type) && card?.useCParticle === true)
             || ((type === "single" || type === "cparticle") && card?.particleBackend === "cparticle");
     };
 
@@ -72,7 +74,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     const PREVIEW_RENDER_CACHE_WORKER_USER_MAX_WORKERS = 16;
     const PREVIEW_RENDER_CACHE_WORKER_MAX_QUEUE = 8;
     const PREVIEW_RENDER_CACHE_WARMUP_TIMEOUT = 120;
-    const PREVIEW_RENDER_CACHE_WORKER_URL = "./preview_render_cache_worker.js?v=20260824_14";
+    const PREVIEW_RENDER_CACHE_WORKER_URL = "./preview_render_cache_worker.js?v=20260826_1";
     const hashPreviewUint32 = (value) => {
         let x = Number(value) >>> 0;
         x = Math.imul((x ^ (x >>> 16)) >>> 0, 0x7feb352d) >>> 0;
@@ -3097,6 +3099,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             previewRootVirtualTotal: this.previewRootVirtualTotal,
             previewLeafTextureConfigs: this.previewLeafTextureConfigs,
             previewLeafVisualSources: this.previewLeafVisualSources,
+            previewReferenceAllCards: this.previewReferenceAllCards === true,
             previewPointGroupIndex: this.previewPointGroupIndex,
             previewGroupOwner: this.previewGroupOwner,
             previewGroupOwnerCount: this.previewGroupOwnerCount,
@@ -4883,7 +4886,8 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const rootGpuEnabled = isCParticleCard(card);
         const useCParticle = inheritedPolicy === true
             || inheritedPolicy?.enabled === true
-            || rootGpuEnabled;
+            || rootGpuEnabled
+            || usesPointsBuilderSource(node);
         return this.normalizePreviewTextureConfig({
             effectClass: String(node?.effectClass || cardCfg.effectClass || ""),
             useTexture: node?.useTexture !== false,

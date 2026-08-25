@@ -413,11 +413,10 @@ export function cubicBezierPoint(t, p0, p1, p2, p3) {
 }
 
 export function buildCubicBezier(p0, p1, p2, p3, count) {
-  const total = Math.max(2, int(count, 2));
-  return Array.from({ length: total }, (_, index) => {
-    const t = total === 1 ? 1 : index / (total - 1);
-    return cubicBezierPoint(t, p0, p1, p2, p3);
-  });
+  const total = Math.max(1, int(count, 2));
+  if (total === 1) return [clone(p0)];
+  if (total === 2) return [clone(p0), clone(p3)];
+  return sampleNumericPathByDistance(buildAdaptiveCubicSegment(p0, p1, p2, p3), total);
 }
 
 export function quadToCubic(p0, p1, p2) {
@@ -460,6 +459,201 @@ function evaluateBezierNodePath(nodes, t) {
   );
 }
 
+const BEZIER_FLATNESS_EPSILON = 1e-3;
+const BEZIER_MAX_RECURSION_DEPTH = 12;
+const BEZIER_MAX_SAMPLE_BUDGET = 4096;
+const BEZIER_SEGMENT_CACHE = new Map();
+
+function midpoint(a, b) {
+  return mul(add(a, b), 0.5);
+}
+
+function distanceToChordLine(point, start, end) {
+  const chord = sub(end, start);
+  const chordLength = len(chord);
+  if (chordLength <= EPSILON) return len(sub(point, start));
+  return len(cross(chord, sub(point, start))) / chordLength;
+}
+
+function cubicFlatness(p0, p1, p2, p3) {
+  const polygonLength = len(sub(p1, p0)) + len(sub(p2, p1)) + len(sub(p3, p2));
+  const chordLength = len(sub(p3, p0));
+  const controlDistance = Math.max(
+    distanceToChordLine(p1, p0, p3),
+    distanceToChordLine(p2, p0, p3)
+  );
+  return Math.max(Math.max(0, polygonLength - chordLength), controlDistance);
+}
+
+function splitCubicAtHalf(p0, p1, p2, p3) {
+  const q0 = midpoint(p0, p1);
+  const q1 = midpoint(p1, p2);
+  const q2 = midpoint(p2, p3);
+  const r0 = midpoint(q0, q1);
+  const r1 = midpoint(q1, q2);
+  const center = midpoint(r0, r1);
+  return {
+    left: [p0, q0, r0, center],
+    right: [center, r1, q2, p3]
+  };
+}
+
+function pointArray(point) {
+  return [point.x, point.y, point.z];
+}
+
+function pointFromArray(point) {
+  return v(point[0], point[1], point[2]);
+}
+
+function segmentKey(p0, p1, p2, p3) {
+  return [p0, p1, p2, p3].flatMap((point) => [point.x, point.y, point.z]).join(",");
+}
+
+function buildAdaptiveCubicSegment(p0, p1, p2, p3, options = {}) {
+  const flatness = Math.max(0, num(options.flatness, BEZIER_FLATNESS_EPSILON));
+  const maxDepth = Math.max(0, int(options.maxDepth, BEZIER_MAX_RECURSION_DEPTH));
+  const maxSamples = Math.max(2, int(options.maxSamples, BEZIER_MAX_SAMPLE_BUDGET));
+  const cache = options.cache instanceof Map ? options.cache : BEZIER_SEGMENT_CACHE;
+  const cacheKey = `${segmentKey(p0, p1, p2, p3)}|${flatness.toPrecision(12)}|${maxDepth}|${maxSamples}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+  const points = [pointArray(p0)];
+  const finalPoint = pointArray(p3);
+  const append = (point) => {
+    const last = points[points.length - 1];
+    if (!last || last[0] !== point[0] || last[1] !== point[1] || last[2] !== point[2]) points.push(point);
+  };
+
+  function subdivide(control, depth) {
+    const [, , , end] = control;
+    if (points.length >= maxSamples - 1) {
+      append(finalPoint);
+      return;
+    }
+    if (depth >= maxDepth || cubicFlatness(...control) < flatness) {
+      append(pointArray(end));
+      return;
+    }
+    const split = splitCubicAtHalf(...control);
+    subdivide(split.left, depth + 1);
+    if (points[points.length - 1] !== finalPoint) subdivide(split.right, depth + 1);
+  }
+
+  subdivide([clone(p0), clone(p1), clone(p2), clone(p3)], 0);
+  const cumulative = [0];
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    cumulative.push(cumulative[index - 1] + Math.hypot(
+      current[0] - previous[0],
+      current[1] - previous[1],
+      current[2] - previous[2]
+    ));
+  }
+  const result = { points, cumulative, length: cumulative[cumulative.length - 1] || 0 };
+  cache.set(cacheKey, result);
+  return result;
+}
+
+function normalizeBezierNode(node) {
+  return {
+    point: clone(node?.point || { x: node?.x, y: node?.y, z: node?.z }),
+    startHandle: clone(node?.startHandle || { x: node?.shx, y: node?.shy, z: node?.shz }),
+    endHandle: clone(node?.endHandle || { x: node?.ehx, y: node?.ehy, z: node?.ehz })
+  };
+}
+
+function getBezierSegments(nodes) {
+  const segments = [];
+  for (let index = 0; index < nodes.length - 1; index += 1) {
+    const start = nodes[index];
+    const end = nodes[index + 1];
+    const p0 = start.point;
+    const p1 = add(start.point, start.startHandle);
+    const p2 = add(end.point, end.endHandle);
+    const p3 = end.point;
+    segments.push({ p0, p1, p2, p3, key: segmentKey(p0, p1, p2, p3) });
+  }
+  return segments;
+}
+
+function buildAdaptiveBezierPath(nodes, options = {}) {
+  const segments = getBezierSegments(nodes);
+  if (!segments.length) return { points: [], cumulative: [], length: 0 };
+  const cache = options.cache instanceof Map ? options.cache : BEZIER_SEGMENT_CACHE;
+  const maxSamples = Math.max(2, int(options.maxSamples, BEZIER_MAX_SAMPLE_BUDGET));
+  const perSegmentBudget = Math.max(2, Math.floor((maxSamples - 1) / segments.length) + 1);
+  const cacheConfig = `${num(options.flatness, BEZIER_FLATNESS_EPSILON).toPrecision(12)}|${Math.max(0, int(options.maxDepth, BEZIER_MAX_RECURSION_DEPTH))}|${perSegmentBudget}`;
+  const entries = segments.map((segment) => {
+    const cacheKey = `${segment.key}|${cacheConfig}`;
+    const cached = cache?.get(cacheKey);
+    if (cached) return cached;
+    const entry = buildAdaptiveCubicSegment(segment.p0, segment.p1, segment.p2, segment.p3, {
+      ...options,
+      maxSamples: perSegmentBudget
+    });
+    cache?.set(cacheKey, entry);
+    return entry;
+  });
+  const points = [];
+  const cumulative = [];
+  let length = 0;
+  entries.forEach((entry, segmentIndex) => {
+    entry.points.forEach((point, pointIndex) => {
+      if (segmentIndex > 0 && pointIndex === 0) return;
+      points.push(point);
+      if (!cumulative.length) {
+        cumulative.push(0);
+      } else {
+        const previous = points[points.length - 2];
+        length += Math.hypot(
+          point[0] - previous[0],
+          point[1] - previous[1],
+          point[2] - previous[2]
+        );
+        cumulative.push(length);
+      }
+    });
+  });
+  return { points, cumulative, length };
+}
+
+function sampleNumericPathByDistance(path, count) {
+  const total = Math.max(1, int(count, 1));
+  const points = path.points;
+  if (!points.length) return [];
+  if (total === 1) return [pointFromArray(points[points.length - 1])];
+  if (total === 2) return [pointFromArray(points[0]), pointFromArray(points[points.length - 1])];
+  if (!(path.length > EPSILON)) return Array.from({ length: total }, () => pointFromArray(points[0]));
+  const result = [];
+  let cursor = 1;
+  for (let index = 0; index < total; index += 1) {
+    const target = path.length * index / (total - 1);
+    while (cursor < path.cumulative.length - 1 && path.cumulative[cursor] < target) cursor += 1;
+    if (cursor <= 0) {
+      result.push(pointFromArray(points[0]));
+      continue;
+    }
+    const high = cursor;
+    const low = high - 1;
+    const span = path.cumulative[high] - path.cumulative[low];
+    if (!(span > EPSILON)) {
+      result.push(pointFromArray(points[high]));
+      continue;
+    }
+    const ratio = (target - path.cumulative[low]) / span;
+    const a = points[low];
+    const b = points[high];
+    result.push(v(
+      a[0] + (b[0] - a[0]) * ratio,
+      a[1] + (b[1] - a[1]) * ratio,
+      a[2] + (b[2] - a[2]) * ratio
+    ));
+  }
+  return result;
+}
+
 export function generateSmoothBezierCurveNodes(controlNodes, count) {
   const total = Math.max(1, int(count, 1));
   const nodes = (Array.isArray(controlNodes) ? controlNodes : []).map((node) => ({
@@ -486,30 +680,40 @@ export function sampleByDistance(polyline, count) {
   }
   const length = cumulative[cumulative.length - 1];
   if (!(length > EPSILON)) return Array.from({ length: total }, () => clone(source[0]));
-  return Array.from({ length: total }, (_, index) => {
+  const result = [];
+  let cursor = 1;
+  for (let index = 0; index < total; index += 1) {
     const target = length * index / (total - 1);
-    let high = cumulative.findIndex((value) => value >= target);
-    if (high <= 0) return clone(source[0]);
-    if (high < 0) high = cumulative.length - 1;
+    while (cursor < cumulative.length - 1 && cumulative[cursor] < target) cursor += 1;
+    const high = cursor;
+    if (high <= 0) {
+      result.push(clone(source[0]));
+      continue;
+    }
     const low = high - 1;
     const span = cumulative[high] - cumulative[low];
-    if (!(span > EPSILON)) return clone(source[high]);
+    if (!(span > EPSILON)) {
+      result.push(clone(source[high]));
+      continue;
+    }
     const ratio = (target - cumulative[low]) / span;
-    return v(
+    result.push(v(
       source[low].x + (source[high].x - source[low].x) * ratio,
       source[low].y + (source[high].y - source[low].y) * ratio,
       source[low].z + (source[high].z - source[low].z) * ratio
-    );
-  });
+    ));
+  }
+  return result;
 }
 
-export function generateEquidistantBezierCurveNodes(controlNodes, count) {
+export function generateEquidistantBezierCurveNodes(controlNodes, count, options = {}) {
   const total = Math.max(1, int(count, 1));
-  const nodes = Array.isArray(controlNodes) ? controlNodes : [];
+  const nodes = (Array.isArray(controlNodes) ? controlNodes : []).map(normalizeBezierNode);
   if (!nodes.length) return Array.from({ length: total }, () => ({ x: 0, y: 0, z: 0 }));
   if (nodes.length === 1) return Array.from({ length: total }, () => clone(nodes[0].point || nodes[0]));
-  const subdivision = Math.min(16384, Math.max(256, total * 256));
-  const result = sampleByDistance(generateSmoothBezierCurveNodes(nodes, subdivision), total);
+  if (total === 1) return [clone(nodes[0].point)];
+  if (total === 2) return [clone(nodes[0].point), clone(nodes[nodes.length - 1].point)];
+  const result = sampleNumericPathByDistance(buildAdaptiveBezierPath(nodes, options), total);
   if (result.length) {
     result[0] = clone(nodes[0].point || nodes[0]);
     result[result.length - 1] = clone(nodes[nodes.length - 1].point || nodes[nodes.length - 1]);

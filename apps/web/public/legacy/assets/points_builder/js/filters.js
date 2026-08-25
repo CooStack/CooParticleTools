@@ -619,12 +619,22 @@ export function initFilterSystem(ctx) {
         const walk = (p, n, path) => {
             if (isObj(p) && isObj(n)) {
                 const keys = new Set([...Object.keys(p), ...Object.keys(n)]);
+                for (const key of keys) {
+                    if (String(key).startsWith("__pb_")) keys.delete(key);
+                }
                 for (const k of keys) {
                     walk(p[k], n[k], path.concat(k));
                 }
                 return;
             }
             if (isArr(p) || isArr(n)) {
+                // Bezier 节点数组需要按节点和字段同步；只有数组结构本身变化时才整体替换。
+                // 这样编辑单个节点不会把其他未修改的节点覆盖到目标曲线上。
+                if (isArr(p) && isArr(n) && p.length === n.length
+                    && p.every((item, index) => isObj(item) && isObj(n[index]))) {
+                    for (let i = 0; i < p.length; i++) walk(p[i], n[i], path.concat(i));
+                    return;
+                }
                 if (JSON.stringify(p) !== JSON.stringify(n)) {
                     diffs.push({ path, value: deepClone ? deepClone(n) : JSON.parse(JSON.stringify(n)) });
                 }

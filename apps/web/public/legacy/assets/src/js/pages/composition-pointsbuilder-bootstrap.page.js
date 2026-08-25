@@ -4,9 +4,33 @@ import {
   migratePointsBuilderSharedStorage,
   POINTS_BUILDER_SHARED_STORAGE_KEYS,
   setOptionalStorage,
-} from "../shared/storage-prefix-bootstrap.js?v=20260801_1";
+} from "../shared/storage-prefix-bootstrap.js?v=20260825_2";
 
 window.__PB_STORAGE_PREFIX = "cpb_";
+try {
+  const params = new URLSearchParams(window.location.search || "");
+  const rawTarget = String(params.get("target") || "").trim();
+  const target = /^tree_node:/.test(rawTarget)
+    || /^shape_level:\d+$/.test(rawTarget)
+    || rawTarget === "shape"
+    || rawTarget === "shape_child"
+    || rawTarget === "root"
+    ? rawTarget
+    : "root";
+  window.__PB_EDITOR_CONTEXT = {
+    cardId: String(params.get("card") || "").trim(),
+    target
+  };
+} catch {
+  window.__PB_EDITOR_CONTEXT = null;
+}
+try {
+  const shell = globalThis.cooParticlesShell || globalThis.parent?.cooParticlesShell;
+  window.__PB_ELECTRON_CHILD_WINDOW = shell?.isElectron === true
+    && String(window.top?.location?.pathname || "").endsWith("/composition-pointsbuilder");
+} catch {
+  window.__PB_ELECTRON_CHILD_WINDOW = false;
+}
 
 migratePointsBuilderSharedStorage({
   prefix: String(window.__PB_STORAGE_PREFIX || ""),

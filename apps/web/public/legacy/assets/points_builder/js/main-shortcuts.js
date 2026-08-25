@@ -72,6 +72,11 @@ export function initGlobalShortcuts(ctx = {}) {
         focusCardById,
         beginRenameNode,
         addRotateForTargetIds,
+        setOffsetAxisConstraint,
+        setTransformAxisConstraint,
+        getTransformConstraintOperation,
+        cancelActiveTransformOperation,
+        resetOffsetForTargetIds,
         startOffsetMode,
         addKindInContext,
         hideActionMenu,
@@ -164,6 +169,10 @@ export function initGlobalShortcuts(ctx = {}) {
 
         // Esc closes modal / hotkeys menu
         if (e.code === "Escape") {
+            if (typeof cancelActiveTransformOperation === "function" && cancelActiveTransformOperation(e)) {
+                e.preventDefault();
+                return;
+            }
             if (typeof getBezierCreateState === "function" && getBezierCreateState()) {
                 e.preventDefault();
                 if (typeof stopBezierCreate === "function") stopBezierCreate({ keepGuide: true });
@@ -224,6 +233,17 @@ export function initGlobalShortcuts(ctx = {}) {
 
         // ignore plain single-key hotkeys when typing
         const isPlainKey = !(e.ctrlKey || e.metaKey || e.altKey);
+        const transformOperation = typeof getTransformConstraintOperation === "function"
+            ? getTransformConstraintOperation()
+            : null;
+        if (isPlainKey && transformOperation && !e.shiftKey
+            && (key === "x" || key === "y" || key === "z")) {
+            e.preventDefault();
+            if (!e.repeat && typeof setTransformAxisConstraint === "function") {
+                setTransformAxisConstraint(key.toUpperCase(), Date.now());
+            }
+            return;
+        }
         const isLockPlaneDragActive = (typeof isPresetDragActive === "function" && isPresetDragActive())
             || (typeof isBezierHandleDragActive === "function" && isBezierHandleDragActive());
         if (isPlainKey && isLockPlaneDragActive && hotkeyMatchEvent(e, hotkeys.actions.lockPlaneHold)) {
@@ -237,6 +257,15 @@ export function initGlobalShortcuts(ctx = {}) {
             return;
         }
         if (isPlainKey && shouldIgnorePlainHotkeys() && !(activeVecTarget && hotkeyMatchEvent(e, hotkeys.actions.pickPoint))) return;
+
+        // Blender-style modal axis constraints stay active for the current transform.
+        if (offsetMode && isPlainKey && !e.shiftKey && (key === "x" || key === "y" || key === "z")) {
+            e.preventDefault();
+            if (!e.repeat && typeof setOffsetAxisConstraint === "function") {
+                setOffsetAxisConstraint(key.toUpperCase(), Date.now());
+            }
+            return;
+        }
 
         // when Add-Card modal is open, avoid triggering kind hotkeys while typing search
         if (modal && !modal.classList.contains("hidden") && document.activeElement === cardSearch && isPlainKey) {
@@ -582,6 +611,22 @@ export function initGlobalShortcuts(ctx = {}) {
             if (typeof addRotateForTargetIds === "function") addRotateForTargetIds(selectedIds.length > 1 ? selectedIds : [targetId]);
             return;
         }
+        if (e.code === "KeyV" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
+            if ((modal && !modal.classList.contains("hidden")) || (hkModal && !hkModal.classList.contains("hidden"))) return;
+            e.preventDefault();
+            if (offsetMode && typeof stopOffsetMode === "function") stopOffsetMode();
+            let targetId = (typeof getFocusedNodeId === "function") ? getFocusedNodeId() : null;
+            let selectedIds = [];
+            if (typeof getCardSelectionIds === "function") {
+                const sel = getCardSelectionIds();
+                if (sel && sel.size) selectedIds = Array.from(sel).filter(Boolean);
+                if (!targetId && selectedIds.length) targetId = selectedIds[0];
+            }
+            if (!targetId || typeof resetOffsetForTargetIds !== "function") return;
+            if (typeof focusCardById === "function") focusCardById(targetId, false, false, true);
+            resetOffsetForTargetIds(selectedIds.length > 1 ? selectedIds : [targetId]);
+            return;
+        }
         if (hotkeyMatchEvent(e, hotkeys.actions.triggerFocusedLocalRotate)) {
             if ((modal && !modal.classList.contains("hidden")) || (hkModal && !hkModal.classList.contains("hidden"))) return;
             e.preventDefault();
@@ -621,6 +666,10 @@ export function initGlobalShortcuts(ctx = {}) {
                 if (typeof stopOffsetMode === "function") stopOffsetMode();
                 return;
             }
+            const activeTransform = typeof getTransformConstraintOperation === "function"
+                ? getTransformConstraintOperation()
+                : null;
+            if (activeTransform && activeTransform !== "point_pick") return;
             let targetId = (typeof getFocusedNodeId === "function") ? getFocusedNodeId() : null;
             let selectedIds = [];
             if (!targetId && typeof getCardSelectionIds === "function") {

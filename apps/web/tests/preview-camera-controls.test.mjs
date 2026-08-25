@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { resolveAdaptiveGridLod, resolveAdaptiveGridStep } from '../src/modules/preview/adaptive-grid.js';
 
 const previewSource = readFileSync(
   new URL('../src/modules/preview/three-points-preview.js', import.meta.url),
+  'utf8'
+);
+const legacyAdaptiveGridSource = readFileSync(
+  new URL('../public/legacy/assets/shared/js/adaptive-grid.js', import.meta.url),
   'utf8'
 );
 const canvasSource = readFileSync(
@@ -82,6 +87,54 @@ test('reset uses a fixed pose while alignment frames current particles', () => {
   assert.doesNotMatch(resetCamera, /getCameraFocusBounds/);
   assert.match(alignCameraToPoints, /getCameraFocusBounds\(\)/);
   assert.match(alignCameraToPoints, /camera\.position\.copy\(center\)/);
+});
+
+test('preview grid adapts its world step to camera distance', () => {
+  const closeStep = resolveAdaptiveGridStep({ distance: 2, fov: 55, viewportHeight: 240 });
+  const farStep = resolveAdaptiveGridStep({ distance: 20, fov: 55, viewportHeight: 240 });
+
+  assert.ok(closeStep > 0);
+  assert.ok(farStep > closeStep);
+  const closeNormalized = closeStep / (10 ** Math.floor(Math.log10(closeStep)));
+  const farNormalized = farStep / (10 ** Math.floor(Math.log10(farStep)));
+  assert.ok([1, 2, 5].includes(closeNormalized));
+  assert.ok([1, 2, 5].includes(farNormalized));
+});
+
+test('preview grid transitions from fine cells to coarse cells', () => {
+  const near = resolveAdaptiveGridLod({ distance: 2, fov: 55, viewportHeight: 240 });
+  const transition = resolveAdaptiveGridLod({ distance: 30, fov: 55, viewportHeight: 240 });
+  const far = resolveAdaptiveGridLod({ distance: 20, fov: 55, viewportHeight: 240 });
+
+  assert.ok(near.coarseStep > near.fineStep);
+  assert.ok(far.coarseStep > far.fineStep);
+  assert.ok(near.blend >= 0 && near.blend <= 1);
+  assert.ok(transition.blend > 0 && transition.blend < 1);
+  assert.ok(far.blend >= 0 && far.blend <= 1);
+  assert.ok(far.blend >= near.blend);
+});
+
+test('preview updates the shared grid every render from the camera distance', () => {
+  assert.match(previewSource, /function updateAdaptiveGrid\(\)/);
+  assert.match(previewSource, /const cameraDistance = camera\.position\.distanceTo\(controls\.target\)/);
+  assert.match(previewSource, /uniform float uFineStep/);
+  assert.match(previewSource, /uniform float uCoarseStep/);
+  assert.match(previewSource, /uniform float uLodBlend/);
+  assert.match(previewSource, /gridMaterial\.uniforms\.uFineStep\.value = lod\.fineStep/);
+  assert.match(previewSource, /gridMaterial\.uniforms\.uCoarseStep\.value = lod\.coarseStep/);
+  assert.match(previewSource, /gridMaterial\.uniforms\.uPlaneOrigin\.value\.set\(controls\.target\.x/);
+  assert.match(previewSource, /gridMaterial\.uniforms\.uInvProjection\.value\.copy\(camera\.projectionMatrix\)/);
+  assert.match(previewSource, /new THREE\.PlaneGeometry\(2, 2\)/);
+  assert.match(previewSource, /updateAdaptiveGrid\(\);/);
+});
+
+test('legacy adaptive grid keeps each plane anchored in world coordinates', () => {
+  assert.match(legacyAdaptiveGridSource, /uPlaneOrigin\.value\.set\(0, 0, 0\)/);
+  assert.match(legacyAdaptiveGridSource, /uPlaneOrigin\.value\.z = planeOffset/);
+  assert.match(legacyAdaptiveGridSource, /uPlaneOrigin\.value\.x = planeOffset/);
+  assert.match(legacyAdaptiveGridSource, /uPlaneOrigin\.value\.y = planeOffset/);
+  assert.doesNotMatch(legacyAdaptiveGridSource, /uPlaneOrigin\.value\.copy\(target\)/);
+  assert.match(legacyAdaptiveGridSource, /uCenter\.value\.copy\(target\)/);
 });
 
 test('generator exposes an explicit align camera action', () => {

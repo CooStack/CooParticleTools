@@ -1,0 +1,236 @@
+/*
+ * The custom dropdown's appearance.
+ *
+ * Pairs with shared/js/custom-select.js. Kept in its own file, and NOT inside
+ * glass-theme.css, because the control has to look right under the flat themes
+ * too — glass-theme.css is only loaded for, and only scoped to, [data-theme^=glass-].
+ *
+ * Everything here is expressed through the tokens both theme families define
+ * (--panel/--line/--text/--accent/...), so the flat and glass themes each get a
+ * dropdown that matches the rest of their own chrome with no per-theme copy.
+ * glass-theme.css then adds the lens rim on top.
+ */
+
+.cp-select {
+    position: relative;
+    display: inline-flex;
+    min-width: 0;
+    /* Inherit the width the host tool gave the original <select> row. */
+    width: 100%;
+}
+
+/*
+ * The native control stays in the DOM for its value/change contract — every
+ * tool's existing `themeSelect.value` and 'change' listener keeps working — but
+ * it must never paint or take focus.
+ */
+select.cp-select-native {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.cp-select-trigger {
+    appearance: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--line2, rgba(255, 255, 255, 0.24));
+    border-radius: var(--radius3, 9px);
+    /* Opaque: a translucent field lets whatever is painted behind it — including
+     * the pointer light — show through the text. */
+    background: var(--input-bg, #141922);
+    color: var(--text, #e8eef7);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.cp-select-trigger:hover {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--line2, transparent));
+}
+
+.cp-select-trigger:focus-visible {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.cp-select-value {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* A CSS-drawn chevron, so there is no image to load and it follows the text
+ * colour. Two borders rotated 45deg give a symmetric arrow at any DPI. */
+.cp-select-caret {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    margin-bottom: 2px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+    opacity: 0.62;
+    transition: transform 0.16s ease, opacity 0.16s ease;
+}
+
+.cp-select-open .cp-select-caret {
+    /* Point up while the panel is open, and sit on its own baseline. */
+    margin-bottom: -3px;
+    transform: rotate(225deg);
+    opacity: 0.9;
+}
+
+/*
+ * `position: fixed` is set here and the coordinates are written by JS.
+ *
+ * Every tool puts these selects inside a panel or modal with `overflow: hidden`,
+ * which would clip an absolutely-positioned dropdown to the row it lives in.
+ * Fixed positioning escapes that clip. The panel is portaled to <body>, so the
+ * z-index has to clear every modal and topbar submenu in the document.
+ */
+.cp-select-panel {
+    position: fixed;
+    z-index: 2147483647;
+    box-sizing: border-box;
+    padding: 5px;
+    border: 1px solid var(--line2, rgba(255, 255, 255, 0.24));
+    border-radius: 11px;
+    background: var(--panel, #141922);
+    box-shadow:
+        0 1px 2px rgba(0, 0, 0, 0.3),
+        0 18px 44px rgba(0, 0, 0, 0.42);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.cp-select-panel[hidden] {
+    display: none;
+}
+
+.cp-select-group {
+    padding: 7px 9px 4px;
+    color: var(--muted, #9aa7b6);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+
+/* Separates groups after the first without drawing a full-width divider. */
+.cp-select-group + .cp-select-option {
+    margin-top: 1px;
+}
+
+.cp-select-option {
+    padding: 7px 9px;
+    border-radius: 7px;
+    color: var(--text, #e8eef7);
+    font-size: 12.5px;
+    line-height: 1.25;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+/*
+ * Hover and keyboard focus share one `.active` class, driven by JS, rather than
+ * a :hover rule. With two visual states the pointer and the arrow keys can
+ * disagree — the row under the cursor and the row the keyboard is on both look
+ * current, and Enter picks the one that is not under the pointer.
+ */
+.cp-select-option.active {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.cp-select-option.selected {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.cp-select-option.selected.active {
+    color: var(--accent-ink, #10141a);
+    background: var(--accent);
+}
+
+.cp-select-option.disabled {
+    color: var(--muted2, rgba(154, 167, 182, 0.5));
+    cursor: default;
+}
+
+.cp-select-option.disabled.active {
+    background: transparent;
+}
+
+/* ---------------------------------------------------------------- glass skin */
+/*
+ * Under the glass themes the trigger and the panel pick up the same lens rim as
+ * the rest of the material. The fill stays opaque — see the note on
+ * --glass-field-bg — but the panel may blur what is behind it, because there is
+ * only ever one panel open at a time.
+ */
+[data-theme^="glass-"] .cp-select-trigger {
+    border: 1px solid transparent;
+    background:
+        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)) padding-box,
+        linear-gradient(148deg, var(--glass-rim-lo) 0%, var(--glass-rim-mid) 100%) border-box;
+    color: var(--glass-text);
+    box-shadow: inset 0 1px 2px rgba(2, 5, 12, 0.12);
+}
+
+[data-theme^="glass-"] .cp-select-trigger:hover {
+    background:
+        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)) padding-box,
+        linear-gradient(148deg,
+            color-mix(in srgb, var(--accent) 46%, var(--glass-rim-mid)) 0%,
+            color-mix(in srgb, var(--accent) 24%, transparent) 100%) border-box;
+}
+
+[data-theme^="glass-"] .cp-select-trigger:focus-visible {
+    background:
+        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)) padding-box,
+        linear-gradient(148deg,
+            color-mix(in srgb, var(--accent) 70%, transparent) 0%,
+            color-mix(in srgb, var(--accent) 40%, transparent) 100%) border-box;
+}
+
+[data-theme^="glass-"] .cp-select-panel {
+    border: 1px solid transparent;
+    background:
+        linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 46%) padding-box,
+        linear-gradient(var(--glass-fill-3), var(--glass-fill-3)) padding-box,
+        linear-gradient(148deg,
+            var(--glass-rim-hi) 0%,
+            var(--glass-rim-lo) 26%,
+            var(--glass-rim-lo) 60%,
+            var(--glass-rim-mid) 100%) border-box;
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    box-shadow:
+        inset 0 1px 0 0 var(--glass-inner-hi),
+        var(--glass-shadow-modal);
+}
+
+[data-theme^="glass-"] .cp-select-group {
+    color: var(--glass-muted);
+}
+
+[data-theme^="glass-"] .cp-select-option {
+    color: var(--glass-text);
+}

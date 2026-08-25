@@ -7,7 +7,7 @@ import {
     normalizeAngleOffsetEaseName,
     normalizeAngleOffsetEaseSpecialParams
 } from "./angle_offset_utils.js";
-import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260825_15";
+import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260826_1";
 
 const U = globalThis.Utils;
 
@@ -289,6 +289,7 @@ class WorkerPreviewRuntime {
         this.previewRootVirtualTotal = 0;
         this.previewLeafTextureConfigs = [];
         this.previewLeafVisualSources = [];
+        this.previewReferenceAllCards = false;
         this.previewPointGroupIndex = null;
         this.previewGroupOwner = [];
         this.previewGroupOwnerCount = [];
@@ -373,6 +374,7 @@ class WorkerPreviewRuntime {
         this.previewRootVirtualTotal = Math.max(0, int(snapshot.previewRootVirtualTotal || 0));
         this.previewLeafTextureConfigs = Array.isArray(snapshot.previewLeafTextureConfigs) ? snapshot.previewLeafTextureConfigs : [];
         this.previewLeafVisualSources = Array.isArray(snapshot.previewLeafVisualSources) ? snapshot.previewLeafVisualSources : [];
+        this.previewReferenceAllCards = snapshot.previewReferenceAllCards === true;
         this.previewPointGroupIndex = snapshot.previewPointGroupIndex instanceof Int32Array
             ? snapshot.previewPointGroupIndex
             : new Int32Array(snapshot.previewPointGroupIndex || []);

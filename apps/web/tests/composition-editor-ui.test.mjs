@@ -42,6 +42,13 @@ test('Composition Monaco suggestions prefer code context and release boundary wh
   assert.match(source, /quickSuggestions:\s*{\s*comments:\s*false,\s*strings:\s*false,\s*other:\s*true\s*}/);
   assert.match(source, /scrollbar:\s*{[\s\S]*?alwaysConsumeMouseWheel:\s*false[\s\S]*?}/);
   assert.doesNotMatch(source, /scrollbar:\s*this\.compact\s*\?/);
+  assert.match(source, /fixedOverflowWidgets:\s*true/);
+  assert.match(source, /overflowWidgetsDomNode:\s*this\.overflowWidgetsHostEl/);
+  assert.match(source, /codetip-overflow-widgets-host/);
+  assert.match(source, /this\.disposeMonacoResources\(\)/);
+  assert.match(source, /zIndex:\s*"50"/);
+  assert.match(source, /document\.addEventListener\("scroll", onViewportScroll, true\)/);
+  assert.match(source, /window\.addEventListener\("resize", onViewportScroll\)/);
   assert.match(source, /editor\.action\.triggerSuggest/);
 });
 
@@ -58,6 +65,26 @@ test('Composition shape stack uses grouped node actions and a full-width inspect
   assert.match(source, /aria-label="删除"/);
   assert.match(styles, /\.composition-editor-grid\s*>\s*\.inspector-panel\s*{[^}]*grid-column:\s*1\s*\/\s*-1/s);
   assert.match(styles, /\.child-row-actions\s*{[^}]*display:\s*flex/s);
+});
+
+test('Composition shape navigation does not rebuild the preview', async () => {
+  const source = await readFile(compositionMainUrl, 'utf8');
+  const navigationHandler = source.match(/const skipHistory = act === "open-builder-editor"[\s\S]*?switch \(act\) \{/u)?.[0] || '';
+  assert.match(navigationHandler, /act === "shape-tree-drill-into"/);
+  assert.match(navigationHandler, /act === "shape-tree-navigate-breadcrumb"/);
+  assert.match(navigationHandler, /if \(!skipHistory\) this\.pushHistory\(\);/);
+  const drillInto = source.match(/case "shape-tree-drill-into":\s*\{[\s\S]*?this\.renderCards\(\);\s*this\.scheduleSave\(\);\s*return;/u)?.[0] || '';
+  const navigateBreadcrumb = source.match(/case "shape-tree-navigate-breadcrumb":\s*\{[\s\S]*?this\.renderCards\(\);\s*this\.scheduleSave\(\);\s*return;/u)?.[0] || '';
+  assert.doesNotMatch(drillInto, /pushHistory\s*\(|afterStructureMutate\s*\(|rebuildPreview\s*\(/);
+  assert.doesNotMatch(navigateBreadcrumb, /pushHistory\s*\(|afterStructureMutate\s*\(|rebuildPreview\s*\(/);
+  assert.match(
+    source,
+    /case "shape-tree-drill-into":\s*\{[\s\S]*?this\.renderCards\(\);\s*this\.scheduleSave\(\);\s*return;\s*\}/
+  );
+  assert.match(
+    source,
+    /case "shape-tree-navigate-breadcrumb":\s*\{[\s\S]*?this\.renderCards\(\);\s*this\.scheduleSave\(\);\s*return;\s*\}/
+  );
 });
 
 test('Composition narrow layout keeps the page and editor column scrollable', async () => {

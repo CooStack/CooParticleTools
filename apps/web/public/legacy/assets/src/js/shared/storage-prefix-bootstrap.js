@@ -103,7 +103,7 @@ export function initStandaloneOrEmbeddedReturn({
     const params = new URLSearchParams(window.location.search);
     const returnPage = params.get(queryReturnKey) || defaultReturnPage;
 
-    back.addEventListener("click", (ev) => {
+    back.addEventListener("click", async (ev) => {
       ev.preventDefault();
 
       try {
@@ -114,6 +114,23 @@ export function initStandaloneOrEmbeddedReturn({
       try {
         writeStorage(params, localStorage);
       } catch {
+      }
+
+      // Electron opens Composition PointsBuilder in a separate BrowserWindow.
+      // That window has no DOM opener/parent message route, so persist the
+      // return keys and close the child; the Composition page consumes them via
+      // the shared-storage event.
+      const shell = globalThis.cooParticlesShell || globalThis.parent?.cooParticlesShell;
+      if (shell?.isElectron === true && globalThis.__PB_ELECTRON_CHILD_WINDOW === true) {
+        try {
+          await shell.notifyLegacyReturn?.(messageType);
+        } catch {
+        }
+        try {
+          await shell.closeWindow?.();
+        } catch {
+        }
+        return;
       }
 
       if (window.parent && window.parent !== window) {

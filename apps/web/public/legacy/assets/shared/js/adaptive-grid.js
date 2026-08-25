@@ -1,0 +1,258 @@
+import * as THREE from "three";
+
+const TARGET_PIXEL_SPACING = 48;
+const MIN_STEP = 0.01;
+const MAX_STEP = 100000;
+const PLANE_SIZE = 1000000;
+
+const vertexShader = `
+varying vec2 vScreenUv;
+
+void main() {
+  vScreenUv = position.xy * 0.5 + 0.5;
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`;
+
+const fragmentShader = `
+uniform float uFineStep;
+uniform float uCoarseStep;
+uniform float uNextStep;
+uniform float uFarStep;
+uniform float uLodBlend;
+uniform vec3 uCenter;
+uniform mat4 uInvProjection;
+uniform mat4 uInvView;
+uniform vec3 uPlaneOrigin;
+uniform vec3 uPlaneNormal;
+uniform int uPlaneMode;
+uniform float uFadeStart;
+uniform float uFadeEnd;
+uniform vec3 uGridColor;
+uniform float uOpacity;
+varying vec2 vScreenUv;
+
+vec3 unproject(vec2 uv, float depth) {
+  vec4 clipPosition = vec4(uv * 2.0 - 1.0, depth, 1.0);
+  vec4 viewPosition = uInvProjection * clipPosition;
+  viewPosition /= max(abs(viewPosition.w), 0.000001);
+  return (uInvView * vec4(viewPosition.xyz, 1.0)).xyz;
+}
+
+vec2 planeCoordinate(vec3 worldPosition) {
+  if (uPlaneMode == 1) return worldPosition.xy;
+  if (uPlaneMode == 2) return worldPosition.zy;
+  return worldPosition.xz;
+}
+
+float gridLine(vec2 coordinate) {
+  vec2 distanceToLine = abs(fract(coordinate - 0.5) - 0.5);
+  vec2 derivative = fwidth(coordinate);
+  vec2 antiAlias = clamp(derivative * 1.5, vec2(0.0001), vec2(0.22));
+  vec2 line = 1.0 - smoothstep(vec2(0.0), antiAlias, distanceToLine);
+  float pixelCoverage = min(1.0, 0.5 / max(max(derivative.x, derivative.y), 0.0001));
+  return max(line.x, line.y) * pixelCoverage;
+}
+
+float gridDensity(vec2 coordinate, float step) {
+  vec2 derivative = fwidth(coordinate / max(step, 0.0001));
+  return max(derivative.x, derivative.y);
+}
+
+void main() {
+  vec3 rayStart = unproject(vScreenUv, -1.0);
+  vec3 rayEnd = unproject(vScreenUv, 1.0);
+  vec3 rayDirection = normalize(rayEnd - rayStart);
+  float denominator = dot(rayDirection, uPlaneNormal);
+  if (abs(denominator) < 0.00001) discard;
+  float rayDistance = dot(uPlaneOrigin - rayStart, uPlaneNormal) / denominator;
+  if (rayDistance < 0.0) discard;
+  vec3 vWorldPosition = rayStart + rayDirection * rayDistance;
+  vec2 coordinate = planeCoordinate(vWorldPosition);
+  float fineDensity = gridDensity(coordinate, uFineStep);
+  float coarseDensity = gridDensity(coordinate, uCoarseStep);
+  float nextDensity = gridDensity(coordinate, uNextStep);
+  float fineToCoarse = max(smoothstep(0.45, 0.9, fineDensity), uLodBlend);
+  float coarseToNext = smoothstep(0.45, 0.9, coarseDensity);
+  float nextToFar = smoothstep(0.45, 0.9, nextDensity);
+  float fineLine = gridLine(coordinate / max(uFineStep, 0.0001));
+  float coarseLine = gridLine(coordinate / max(uCoarseStep, 0.0001));
+  float nextLine = gridLine(coordinate / max(uNextStep, 0.0001));
+  float farLine = gridLine(coordinate / max(uFarStep, 0.0001));
+  float planeDistance = distance(vWorldPosition, uCenter);
+  float distanceFade = 1.0 - smoothstep(uFadeStart, uFadeEnd, planeDistance);
+  float fineAlpha = fineLine * (1.0 - fineToCoarse) * 0.58;
+  float coarseAlpha = coarseLine * fineToCoarse * (1.0 - coarseToNext) * 0.98;
+  float nextAlpha = nextLine * coarseToNext * (1.0 - nextToFar) * 0.9;
+  float farAlpha = farLine * nextToFar * 0.82;
+  float alpha = max(max(fineAlpha, coarseAlpha), max(nextAlpha, farAlpha)) * distanceFade * uOpacity;
+  if (alpha <= 0.01) discard;
+  gl_FragColor = vec4(uGridColor, alpha);
+}
+`;
+
+function clampStep(value) {
+  return Math.max(MIN_STEP, Math.min(MAX_STEP, value));
+}
+
+function rawStep(distance, fov, viewportHeight) {
+  const safeDistance = Number(distance);
+  const safeFov = Number(fov);
+  const safeHeight = Number(viewportHeight);
+  if (![safeDistance, safeFov, safeHeight].every(Number.isFinite)) return 1;
+  const visibleHeight = 2 * Math.max(0.001, safeDistance) * Math.tan(Math.max(1, safeFov) * Math.PI / 360);
+  return visibleHeight * TARGET_PIXEL_SPACING / Math.max(1, safeHeight);
+}
+
+function resolveLod(distance, fov, viewportHeight) {
+  const raw = Math.max(MIN_STEP, rawStep(distance, fov, viewportHeight));
+  const exponent = Math.floor(Math.log10(raw));
+  const magnitude = 10 ** exponent;
+  const normalized = raw / magnitude;
+  let fineMultiplier = 1;
+  let coarseMultiplier = 2;
+  if (normalized >= Math.sqrt(2) && normalized < Math.sqrt(10)) {
+    fineMultiplier = 2;
+    coarseMultiplier = 5;
+  } else if (normalized >= Math.sqrt(10)) {
+    fineMultiplier = 5;
+    coarseMultiplier = 10;
+  }
+  const fineStep = clampStep(fineMultiplier * magnitude);
+  const coarseStep = clampStep(coarseMultiplier * magnitude);
+  const normalizedFine = raw / fineStep;
+  const blendStart = 1.05;
+  const blendEnd = Math.max(blendStart + 0.1, (coarseStep / fineStep) * 0.85);
+  const t = Math.max(0, Math.min(1, (normalizedFine - blendStart) / (blendEnd - blendStart)));
+  return {
+    fineStep,
+    coarseStep,
+    blend: t * t * (3 - 2 * t),
+  };
+}
+
+function colorFrom(value, fallback = "#617d9b") {
+  const color = new THREE.Color();
+  try {
+    color.set(value || fallback);
+  } catch {
+    color.set(fallback);
+  }
+  return color;
+}
+
+export function createAdaptiveGrid({
+  scene,
+  camera,
+  controls,
+  renderer,
+  color = "#617d9b",
+  visible = true,
+  plane = "XZ",
+  offset = -0.01,
+} = {}) {
+  if (!scene || !camera || !controls || !renderer) return null;
+
+  const gridColor = colorFrom(color);
+  const material = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.DoubleSide,
+    extensions: { derivatives: true },
+    uniforms: {
+      uFineStep: { value: 1 },
+      uCoarseStep: { value: 2 },
+      uNextStep: { value: 10 },
+      uFarStep: { value: 50 },
+      uLodBlend: { value: 0 },
+      uCenter: { value: new THREE.Vector3() },
+      uInvProjection: { value: new THREE.Matrix4() },
+      uInvView: { value: new THREE.Matrix4() },
+      uPlaneOrigin: { value: new THREE.Vector3() },
+      uPlaneNormal: { value: new THREE.Vector3(0, 1, 0) },
+      uPlaneMode: { value: 0 },
+      uFadeStart: { value: 12 },
+      uFadeEnd: { value: 64 },
+      uGridColor: { value: gridColor },
+      uOpacity: { value: 1 },
+    },
+    vertexShader,
+    fragmentShader,
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -10;
+  material.depthTest = false;
+  scene.add(mesh);
+
+  let planeKey = "XZ";
+  let planeOffset = Number.isFinite(Number(offset)) ? Number(offset) : -0.01;
+  let lastFineStep = 1;
+
+  function applyPlane(nextPlane = "XZ", nextOffset = planeOffset) {
+    planeKey = ["XZ", "XY", "ZY"].includes(String(nextPlane).toUpperCase())
+      ? String(nextPlane).toUpperCase()
+      : "XZ";
+    planeOffset = Number.isFinite(Number(nextOffset)) ? Number(nextOffset) : planeOffset;
+    material.uniforms.uPlaneMode.value = planeKey === "XY" ? 1 : planeKey === "ZY" ? 2 : 0;
+    if (planeKey === "XY") material.uniforms.uPlaneNormal.value.set(0, 0, 1);
+    else if (planeKey === "ZY") material.uniforms.uPlaneNormal.value.set(1, 0, 0);
+    else material.uniforms.uPlaneNormal.value.set(0, 1, 0);
+    material.uniforms.uPlaneOrigin.value.set(0, 0, 0);
+    if (planeKey === "XY") material.uniforms.uPlaneOrigin.value.z = planeOffset;
+    else if (planeKey === "ZY") material.uniforms.uPlaneOrigin.value.x = planeOffset;
+    else material.uniforms.uPlaneOrigin.value.y = planeOffset;
+    update();
+  }
+
+  function update() {
+    const target = controls.target;
+    camera.updateMatrixWorld();
+    material.uniforms.uInvProjection.value.copy(camera.projectionMatrix).invert();
+    material.uniforms.uInvView.value.copy(camera.matrixWorld);
+    const cameraDistance = camera.position.distanceTo(target);
+    const viewportHeight = renderer.domElement.height || renderer.domElement.clientHeight || 1;
+    const lod = resolveLod(cameraDistance, camera.fov, viewportHeight);
+    if (Math.abs(lod.fineStep - lastFineStep) > Math.max(1e-6, lod.fineStep * 1e-6)) {
+      material.uniforms.uFineStep.value = lod.fineStep;
+      material.uniforms.uCoarseStep.value = lod.coarseStep;
+      material.uniforms.uNextStep.value = clampStep(lod.coarseStep * 5);
+      material.uniforms.uFarStep.value = clampStep(lod.coarseStep * 125);
+      lastFineStep = lod.fineStep;
+    }
+    material.uniforms.uLodBlend.value = lod.blend;
+    material.uniforms.uCenter.value.copy(target);
+    const fadeEnd = Math.min(
+      camera.far * 0.8,
+      PLANE_SIZE * 0.35,
+      Math.max(lod.coarseStep * 96, cameraDistance * 16)
+    );
+    material.uniforms.uFadeStart.value = fadeEnd * 0.42;
+    material.uniforms.uFadeEnd.value = fadeEnd;
+  }
+
+  function setVisible(nextVisible) {
+    mesh.visible = Boolean(nextVisible);
+  }
+
+  function setColor(nextColor) {
+    material.uniforms.uGridColor.value.copy(colorFrom(nextColor));
+  }
+
+  function setOpacity(nextOpacity) {
+    material.uniforms.uOpacity.value = Math.max(0, Math.min(1, Number(nextOpacity) || 0));
+  }
+
+  function dispose() {
+    scene.remove(mesh);
+    mesh.geometry.dispose();
+    material.dispose();
+  }
+
+  mesh.userData.adaptiveGrid = { setPlane: applyPlane };
+  applyPlane(plane, planeOffset);
+  setColor(color);
+  setVisible(visible);
+  return { mesh, material, update, setVisible, setColor, setOpacity, setPlane: applyPlane, dispose };
+}

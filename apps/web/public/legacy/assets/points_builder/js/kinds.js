@@ -1,7 +1,9 @@
 import * as THREE from "three";
+import { sampleAdaptiveBezierNodes, sampleAdaptiveCubic } from "./bezier-sampling.js?v=20260826_1";
 
 export function createKindDefs(ctx) {
     const { U, num, int, relExpr, rotatePointsToPointUpright } = ctx || {};
+    const bezierSegmentCache = new Map();
 
     function cubicBezierPoint(t, p0, p1, p2, p3) {
         const u = 1 - t;
@@ -17,13 +19,7 @@ export function createKindDefs(ctx) {
     }
 
     function buildCubicBezier(p0, p1, p2, p3, count) {
-        const c = Math.max(1, int(count));
-        const res = [];
-        for (let i = 0; i < c; i++) {
-            const t = (c === 1) ? 1.0 : i / (c - 1);
-            res.push(cubicBezierPoint(t, p0, p1, p2, p3));
-        }
-        return res;
+        return sampleAdaptiveCubic(p0, p1, p2, p3, Math.max(1, int(count)), { cache: bezierSegmentCache });
     }
 
     function sampleByDistance(polyline, count) {
@@ -36,21 +32,30 @@ export function createKindDefs(ctx) {
         }
         const length = cumulative[cumulative.length - 1];
         if (!(length > 1e-9)) return Array.from({length: total}, () => ({...polyline[0]}));
-        return Array.from({length: total}, (_, index) => {
+        const result = [];
+        let cursor = 1;
+        for (let index = 0; index < total; index += 1) {
             const target = length * index / (total - 1);
-            let hi = cumulative.findIndex((value) => value >= target);
-            if (hi <= 0) return {...polyline[0]};
-            if (hi < 0) hi = cumulative.length - 1;
+            while (cursor < cumulative.length - 1 && cumulative[cursor] < target) cursor += 1;
+            const hi = cursor;
+            if (hi <= 0) {
+                result.push({...polyline[0]});
+                continue;
+            }
             const lo = hi - 1;
             const span = cumulative[hi] - cumulative[lo];
-            if (!(span > 1e-9)) return {...polyline[hi]};
+            if (!(span > 1e-9)) {
+                result.push({...polyline[hi]});
+                continue;
+            }
             const ratio = (target - cumulative[lo]) / span;
-            return U.v(
+            result.push(U.v(
                 polyline[lo].x + (polyline[hi].x - polyline[lo].x) * ratio,
                 polyline[lo].y + (polyline[hi].y - polyline[lo].y) * ratio,
                 polyline[lo].z + (polyline[hi].z - polyline[lo].z) * ratio
-            );
-        });
+            ));
+        }
+        return result;
     }
 
     function generateMultiBezier(nodes, count, equidistant = true) {
@@ -71,9 +76,7 @@ export function createKindDefs(ctx) {
             return cubicBezierPoint(local, p0, p1, p2, p3);
         };
         if (!equidistant) return Array.from({length: total}, (_, i) => evaluate(total === 1 ? 1 : i / (total - 1)));
-        const subdivision = Math.min(16384, Math.max(256, total * 256));
-        const dense = Array.from({length: subdivision}, (_, i) => evaluate(i / (subdivision - 1)));
-        const result = sampleByDistance(dense, total);
+        const result = sampleAdaptiveBezierNodes(list, total, { cache: bezierSegmentCache });
         result[0] = U.v(list[0].x, list[0].y, list[0].z);
         result[result.length - 1] = U.v(list[list.length - 1].x, list[list.length - 1].y, list[list.length - 1].z);
         return result;

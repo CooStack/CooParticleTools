@@ -1530,6 +1530,10 @@ export function initCardSystem(ctx = {}) {
         return b;
     }
 
+    function chevronSvg(collapsed) {
+        return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${collapsed ? "m9 6 6 6-6 6" : "m6 9 6 6 6-6"}"/></svg>`;
+    }
+
     function panelToolSvgIcon(name) {
         const icons = {
             builder: `
@@ -2788,17 +2792,18 @@ export function initCardSystem(ctx = {}) {
         const actions = document.createElement("div");
         actions.className = "card-actions";
 
-        const collapseBtn = iconBtn(t.collapsed ? "▸" : "▾", (e) => {
+        const collapseBtn = iconBtn("", (e) => {
             e.stopPropagation();
             historyCapture("toggle_term_collapse");
             t.collapsed = !t.collapsed;
             const synced = (typeof ctx.syncCardCollapseUI === "function") ? ctx.syncCardCollapseUI(t.id) : false;
             if (!synced) {
                 card.classList.toggle("collapsed", t.collapsed);
-                collapseBtn.textContent = t.collapsed ? "▸" : "▾";
+                collapseBtn.innerHTML = chevronSvg(t.collapsed);
                 collapseBtn.title = t.collapsed ? "展开" : "收起";
             }
         });
+        collapseBtn.innerHTML = chevronSvg(t.collapsed);
         collapseBtn.title = t.collapsed ? "展开" : "收起";
         actions.appendChild(collapseBtn);
 
@@ -2997,19 +3002,20 @@ export function initCardSystem(ctx = {}) {
 
         if (!renderCardParamsInline && isBuilderContainerKind(node.kind)) {
             const treeCollapsed = node.treeCollapsed === true;
-            const treeToggleBtn = iconBtn(treeCollapsed ? ">" : "⌄", (e) => {
+            const treeToggleBtn = iconBtn("", (e) => {
                 e.stopPropagation();
                 historyCapture("toggle_tree_collapse");
                 node.treeCollapsed = !(node.treeCollapsed === true);
                 const nextCollapsed = node.treeCollapsed === true;
                 const children = card.parentElement ? card.parentElement.querySelector(":scope > .pb-tree-children") : null;
                 if (children) children.classList.toggle("collapsed", nextCollapsed);
-                treeToggleBtn.textContent = nextCollapsed ? ">" : "⌄";
+                treeToggleBtn.innerHTML = chevronSvg(nextCollapsed);
                 treeToggleBtn.dataset.tip = nextCollapsed ? "展开子卡片" : "折叠子卡片";
                 treeToggleBtn.setAttribute("aria-label", treeToggleBtn.dataset.tip);
                 treeToggleBtn.title = treeToggleBtn.dataset.tip;
             });
             treeToggleBtn.classList.add("tree-toggle-btn");
+            treeToggleBtn.innerHTML = chevronSvg(treeCollapsed);
             treeToggleBtn.dataset.keepMainAction = "1";
             treeToggleBtn.dataset.tip = treeCollapsed ? "展开子卡片" : "折叠子卡片";
             treeToggleBtn.setAttribute("aria-label", treeToggleBtn.dataset.tip);
@@ -3030,7 +3036,7 @@ export function initCardSystem(ctx = {}) {
                 if (collapsePrev !== null) return;
                 collapsePrev = node.collapsed;
             };
-            const collapseBtn = iconBtn(node.collapsed ? "▸" : "▾", (e) => {
+            const collapseBtn = iconBtn("", (e) => {
                 e.stopPropagation();
                 historyCapture("toggle_card_collapse");
                 const wasCollapsed = (collapsePrev !== null) ? collapsePrev : node.collapsed;
@@ -3046,10 +3052,11 @@ export function initCardSystem(ctx = {}) {
                 const synced = (typeof ctx.syncCardCollapseUI === "function") ? ctx.syncCardCollapseUI(node.id) : false;
                 if (!synced) {
                     card.classList.toggle("collapsed", node.collapsed);
-                    collapseBtn.textContent = node.collapsed ? "▸" : "▾";
+                    collapseBtn.innerHTML = chevronSvg(node.collapsed);
                     collapseBtn.title = node.collapsed ? "展开" : "收起";
                 }
             });
+            collapseBtn.innerHTML = chevronSvg(node.collapsed);
             collapseBtn.addEventListener("pointerdown", rememberCollapsePrev);
             collapseBtn.addEventListener("mousedown", rememberCollapsePrev);
             collapseBtn.addEventListener("touchstart", rememberCollapsePrev, { passive: true });

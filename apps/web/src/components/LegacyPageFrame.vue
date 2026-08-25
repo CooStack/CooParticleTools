@@ -80,6 +80,7 @@ let savedFileSnapshot = '';
 let observedProjectSnapshot = '';
 let autoSaveTimer = 0;
 let autoSavePollTimer = 0;
+let removeLegacyReturnListener = null;
 const forwardedShellCommands = new Set([
   'export-kotlin'
 ]);
@@ -486,7 +487,7 @@ const src = computed(() => {
   params.set('spa_pointsbuilder', routeHref('pointsbuilder'));
   params.set('spa_composition_pointsbuilder', routeHref('composition-pointsbuilder'));
   params.set('spa_bezier', routeHref('bezier'));
-  params.set('shell_frame_version', '20260710_6');
+  params.set('shell_frame_version', '20260826_1');
   const search = params.toString();
   return `${deploymentProfile.appBase}legacy/${props.page}${search ? `?${search}` : ''}`;
 });
@@ -545,7 +546,15 @@ function handleLegacyMessage(event) {
     frameNonce.value += 1;
     return;
   }
-  router.push(props.returnRoute || { name: targetName });
+  const returnQuery = Object.fromEntries(
+    Object.entries(route.query || {}).filter(([key]) => (
+      key === 'projectId'
+      || key === 'projectType'
+      || key === 'shellOpen'
+      || key === 'shellNew'
+    ))
+  );
+  router.push(props.returnRoute || { name: targetName, query: returnQuery });
 }
 
 function sendProjectContextToFrame(targetWindow = frameRef.value?.contentWindow, requestId = '') {
@@ -661,6 +670,18 @@ onMounted(() => {
   window.addEventListener('message', handleLegacyMessage);
   window.addEventListener('coo-shell-command', handleShellCommand);
   window.addEventListener('coo-project-close-request', handleProjectCloseRequest);
+  const shell = window.cooParticlesShell;
+  if (shell?.onLegacyReturn) {
+    removeLegacyReturnListener = shell.onLegacyReturn((payload) => {
+      const type = String(payload?.type || '').trim();
+      if (!type) return;
+      handleLegacyMessage({
+        origin: window.location.origin,
+        data: { type },
+        source: frameRef.value?.contentWindow || null
+      });
+    });
+  }
   autoSavePollTimer = window.setInterval(observeLegacyProjectChanges, AUTO_SAVE_POLL_MS);
   void restoreDurableLegacyPreferences().then(syncRouteProject);
 });
@@ -681,6 +702,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('message', handleLegacyMessage);
   window.removeEventListener('coo-shell-command', handleShellCommand);
   window.removeEventListener('coo-project-close-request', handleProjectCloseRequest);
+  removeLegacyReturnListener?.();
+  removeLegacyReturnListener = null;
 });
 
 onBeforeRouteLeave(async () => {

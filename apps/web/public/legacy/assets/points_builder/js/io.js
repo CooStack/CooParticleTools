@@ -57,7 +57,26 @@ export function loadAutoState() {
 export function saveAutoState(state) {
     if (!state) return false;
     try {
-        const payload = {state, ts: Date.now()};
+        const editorContext = globalThis.__PB_EDITOR_CONTEXT;
+        let previousContext = null;
+        try {
+            const previousRaw = localStorage.getItem(STATE_STORAGE_KEY);
+            const previousPayload = previousRaw ? JSON.parse(previousRaw) : null;
+            previousContext = previousPayload?.context || null;
+        } catch {
+        }
+        const context = editorContext && typeof editorContext === "object"
+            ? {
+                cardId: String(editorContext.cardId || ""),
+                target: String(editorContext.target || "root"),
+                compositionRevision: String(
+                    editorContext.compositionRevision || previousContext?.compositionRevision || ""
+                )
+            }
+            : null;
+        const payload = context?.cardId
+            ? {state, context, ts: Date.now()}
+            : {state, ts: Date.now()};
         localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(payload));
         return true;
     } catch {

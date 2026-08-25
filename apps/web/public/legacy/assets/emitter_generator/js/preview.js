@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { createAdaptiveGrid } from "../../shared/js/adaptive-grid.js?v=20260825_14";
 import { clamp, lerp, rand, randInt } from "./utils.js";
 import { normalizeEmitterBehavior } from "./emitter_behavior.js";
 import { normalizeBuilderState, evaluateBuilderState } from "./points_builder_bridge.js?v=20260820_2";
@@ -33,7 +34,7 @@ export function initPreview(ctx = {}) {
 
     let renderer, scene, camera, controls;
     let points, pointsGeo, pointsMat;
-    let axesHelper, gridHelper;
+    let axesHelper, gridHelper, adaptiveGrid;
     let motionEditorRuntime = null;
     let pointScale = 1.0;
     let previewDistanceTool = null;
@@ -260,7 +261,7 @@ export function initPreview(ctx = {}) {
 
         scene = new THREE.Scene();
         scene.background = new THREE.Color(previewSceneColor);
-        camera = new THREE.PerspectiveCamera(55, w / h, 0.01, 5000);
+        camera = new THREE.PerspectiveCamera(55, w / h, 0.01, 1000000);
         camera.position.set(10, 10, 10);
 
         controls = new OrbitControls(camera, renderer.domElement);
@@ -274,11 +275,17 @@ export function initPreview(ctx = {}) {
         renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
         bindArrowPan();
 
-        const GRID_SIZE = 512;
-        const GRID_DIV = 512;
-        gridHelper = new THREE.GridHelper(GRID_SIZE, GRID_DIV, 0x233044, 0x1a2434);
-        gridHelper.position.y = -0.01;
-        scene.add(gridHelper);
+        adaptiveGrid = createAdaptiveGrid({
+            scene,
+            camera,
+            controls,
+            renderer,
+            color: getComputedStyle(document.body).getPropertyValue("--grid-color").trim() || "#617d9b",
+            visible: true,
+            plane: "XZ",
+            offset: -0.01,
+        });
+        gridHelper = adaptiveGrid?.mesh || null;
 
         axesHelper = new THREE.AxesHelper(64);
         scene.add(axesHelper);
@@ -611,6 +618,7 @@ export function initPreview(ctx = {}) {
         if (state.playing) stepSim(dt);
         applyArrowPan();
         if (controls) controls.update();
+        if (adaptiveGrid) adaptiveGrid.update();
         updatePointsBuffer();
         if (motionEditorRuntime) motionEditorRuntime.syncFromState();
         renderer.render(scene, camera);
@@ -2351,7 +2359,8 @@ export function initPreview(ctx = {}) {
     }
 
     function setShowGrid(show) {
-        if (gridHelper) gridHelper.visible = !!show;
+        if (adaptiveGrid) adaptiveGrid.setVisible(!!show);
+        else if (gridHelper) gridHelper.visible = !!show;
     }
 
     function setPointScale(next) {

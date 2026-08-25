@@ -7,6 +7,7 @@
     --card: #1d242b;
     --line: rgba(255, 255, 255, .08);
     --line2: rgba(255, 255, 255, .14);
+    --grid-color: #617d9b;
     --text: rgba(236, 240, 245, .94);
     --muted: rgba(185, 198, 214, .82);
     --muted2: rgba(185, 198, 214, .58);
@@ -28,12 +29,21 @@ body[data-theme="dark-1"] {
     --card: #1d242b;
     --line: rgba(255, 255, 255, .08);
     --line2: rgba(255, 255, 255, .14);
+    --grid-color: #617d9b;
     --text: rgba(236, 240, 245, .94);
     --muted: rgba(185, 198, 214, .82);
     --muted2: rgba(185, 198, 214, .58);
     --accent: #8fa7b8;
     --ok: #b49363;
     --danger: #c96f62;
+}
+
+body[data-theme="dark-2"] {
+    --grid-color: #64826f;
+}
+
+body[data-theme="dark-3"] {
+    --grid-color: #82675d;
 }
 
 body[data-theme="light-1"] {
@@ -43,12 +53,21 @@ body[data-theme="light-1"] {
     --card: #fbfcfd;
     --line: rgba(79, 93, 109, .12);
     --line2: rgba(79, 93, 109, .18);
+    --grid-color: #6e7f8f;
     --text: rgba(34, 42, 52, .92);
     --muted: rgba(92, 103, 118, .64);
     --muted2: rgba(92, 103, 118, .44);
     --accent: #70879b;
     --ok: #a07f52;
     --danger: #b36358;
+}
+
+body[data-theme="light-2"] {
+    --grid-color: #8a7669;
+}
+
+body[data-theme="light-3"] {
+    --grid-color: #6d8175;
 }
 
 * {
@@ -1389,6 +1408,25 @@ body[data-theme^="light"] select.input option {
 .editor-monaco-host {
     position: absolute;
     inset: 0;
+}
+
+/* Monaco's fixed overflow widgets must escape clipped/filtered editor shells. */
+.codetip-overflow-widgets-host {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    overflow: visible !important;
+    contain: none !important;
+    pointer-events: none !important;
+    z-index: 50 !important;
+    background: transparent !important;
+}
+
+.codetip-overflow-widgets-host .suggest-widget,
+.codetip-overflow-widgets-host .monaco-hover,
+.codetip-overflow-widgets-host .monaco-menu-container {
+    pointer-events: auto;
 }
 
 .editor-source-hidden {

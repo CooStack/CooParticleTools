@@ -1,11 +1,12 @@
 import * as THREE from "three";
 import {OrbitControls} from "three/addons/controls/OrbitControls.js";
-import { createCardInputs, initCardSystem } from "./cards.js?v=20260825_5";
+import { createCardInputs, initCardSystem } from "./cards.js?v=20260825_6";
 import { initFilterSystem } from "./filters.js?v=20260429_7";
 import { initHotkeysSystem } from "./hotkeys.js?v=20260505_1";
 import { createKindDefs } from "./kinds.js?v=20260825_5";
 import { ALL_THEMES, APP_THEME_KEY, normalizeTheme, watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
 import { createBuilderTools } from "./builder.js?v=20260825_5";
+import { sampleAdaptiveBezierNodes } from "./bezier-sampling.js?v=20260826_1";
 import { initLayoutSystem } from "./layout.js?v=20260429_1";
 import { createNodeHelpers } from "./nodes.js?v=20260825_4";
 import {
@@ -21,10 +22,11 @@ import {
 } from "./model.js?v=20260825_4";
 import { toggleFullscreen } from "./viewer.js";
 import { createPickerModule } from "./main-picker.js?v=20260825_4";
-import { initGlobalShortcuts } from "./main-shortcuts.js?v=20260825_5";
+import { initGlobalShortcuts } from "./main-shortcuts.js?v=20260826_1";
 import { initTopbarAndBoot } from "./main-topbar-boot.js?v=20260505_1";
 import { createPreviewDistanceTool } from "../../src/js/shared/preview-distance-tool.js";
 import { getCompositionReferenceSnapshot } from "../../shared/js/composition-reference-storage.js?v=20260825_1";
+import { createAdaptiveGrid } from "../../shared/js/adaptive-grid.js?v=20260825_14";
 import {
     getRandomPresetGroupOptions,
     pickRandomPresetIdsForGroup
@@ -259,6 +261,7 @@ function initPointsBuilderMain() {
     const inpPointSize = document.getElementById("inpPointSize");
     const inpParamStep = document.getElementById("inpParamStep");
     const inpOffsetPreviewLimit = document.getElementById("inpOffsetPreviewLimit");
+    const selPresetRingPreviewMode = document.getElementById("selPresetRingPreviewMode");
     const inpSnapStep = document.getElementById("inpSnapStep");
     const inpRotateSnapDeg = document.getElementById("inpRotateSnapDeg");
     const inpSnapParticleRange = document.getElementById("inpSnapParticleRange");
@@ -299,6 +302,7 @@ function initPointsBuilderMain() {
     const presetRingSharedVariableState = {
         enabled: {},
         values: {},
+        touched: {},
         excluded: {}
     };
     const DEFAULT_PRESET_GROUP = "默认分组";
@@ -408,10 +412,18 @@ function initPointsBuilderMain() {
         const walk = (a, b, path) => {
             if (isObj(a) && isObj(b)) {
                 const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+                for (const key of keys) {
+                    if (String(key).startsWith("__pb_")) keys.delete(key);
+                }
                 for (const k of keys) walk(a[k], b[k], path.concat(k));
                 return;
             }
             if (isArr(a) || isArr(b)) {
+                if (isArr(a) && isArr(b) && a.length === b.length
+                    && a.every((item, index) => isObj(item) && isObj(b[index]))) {
+                    for (let i = 0; i < a.length; i++) walk(a[i], b[i], path.concat(i));
+                    return;
+                }
                 if (JSON.stringify(a) !== JSON.stringify(b)) diffs.push({ path, value: clonePlain(b) });
                 return;
             }
@@ -908,6 +920,7 @@ function initPointsBuilderMain() {
         btnRightKotlinTab?.setAttribute("aria-selected", kotlinActive ? "true" : "false");
         if (paramsActive) scheduleParamEditorRender();
         if (presetsActive) schedulePresetLibraryRender();
+        if (typeof renderPresetRingPreview === "function") renderPresetRingPreview();
     }
 
     function bindRightPanelTabs() {
@@ -1121,7 +1134,7 @@ function initPointsBuilderMain() {
         return v || fallback;
     };
     const applySceneTheme = () => {
-        const gridColor = readCssColor("--grid-color", "#223344");
+        const gridColor = readCssColor("--grid-color", "#617d9b");
         const pointColor = readCssColor("--point-color", "#ffffff");
         const focusColor = readCssColor("--point-focus", "#ffcc33");
         const syncColor = readCssColor("--point-sync", "#5dd6ff");
@@ -1136,24 +1149,9 @@ function initPointsBuilderMain() {
         if (scene) scene.background = new THREE.Color(previewSceneColor);
         if (renderer) renderer.setClearColor(previewSceneColor, 1);
 
-        if (gridHelper && scene) {
-            const wasVisible = gridHelper.visible;
-            try {
-                scene.remove(gridHelper);
-                gridHelper.geometry && gridHelper.geometry.dispose();
-                if (Array.isArray(gridHelper.material)) {
-                    gridHelper.material.forEach(m => m && m.dispose && m.dispose());
-                } else if (gridHelper.material && gridHelper.material.dispose) {
-                    gridHelper.material.dispose();
-                }
-            } catch {}
-            gridHelper = new THREE.GridHelper(GRID_HELPER_SIZE, GRID_HELPER_DIVISIONS, gridColor, gridColor);
-            gridHelper.position.y = -0.01;
-            gridHelper.visible = wasVisible;
-            scene.add(gridHelper);
-            updateGridForPlane();
-            updateLockPlaneGuideVisual();
-        }
+        if (adaptiveGrid) adaptiveGrid.setColor(gridColor);
+        updateGridForPlane();
+        updateLockPlaneGuideVisual();
         updateMirrorPlaneHintTheme();
         refreshPointBaseColors();
     };
@@ -1208,6 +1206,7 @@ function initPointsBuilderMain() {
     };
 
     const PB_COMP_CONTEXT_KEY = "pb_comp_context_v1";
+    const COMPOSITION_REFERENCE_BUILD_VERSION = "20260825_19";
     const compositionNumericContext = {
         enabled: false,
         map: { PI: Math.PI },
@@ -1217,11 +1216,10 @@ function initPointsBuilderMain() {
         version: 0
     };
     const isCompositionPointsBuilder = !!(document.body?.classList?.contains("composition-no-kotlin"));
-    const COMPOSITION_REFERENCE_VISIBILITY_KEY = "cpb_composition_reference_visibility_v1";
+    const COMPOSITION_REFERENCE_VISIBILITY_KEY = "cpb_composition_reference_visibility_v2";
     const COMPOSITION_REFERENCE_ONLY_CURRENT_KEY = "cpb_composition_reference_only_current_v1";
-    const COMPOSITION_REFERENCE_SHOW_CURRENT_KEY = "cpb_composition_reference_show_current_v1";
     const COMPOSITION_REFERENCE_OPACITY_KEY = "cpb_composition_reference_opacity_v1";
-    const COMPOSITION_REFERENCE_COLLAPSED_KEY = "cpb_composition_reference_collapsed_v1";
+    const COMPOSITION_REFERENCE_COLLAPSED_KEY = "cpb_composition_reference_collapsed_v2";
     let compositionReferenceState = null;
     let compositionReferenceSnapshot = null;
     let compositionReferenceStatus = "";
@@ -1230,14 +1228,22 @@ function initPointsBuilderMain() {
     let compositionReferenceCurrentAnchorRefs = [];
     let compositionReferenceFrameIndex = 0;
     let compositionReferenceOnlyCurrent = false;
-    let compositionReferenceShowCurrent = false;
     let compositionReferenceOpacity = 0.3;
     let activeBuilderColumn = "builder";
     let compositionReferenceVisibility = Object.create(null);
     let compositionReferenceCollapsed = Object.create(null);
     let compositionReferenceSceneReady = false;
     let compositionReferenceHydrating = false;
+    let compositionReferenceFrameDragging = false;
     let compositionReferenceHydrationToken = 0;
+    let compositionReferenceHydrationRetryHandle = 0;
+    let compositionReferenceCollapseListenerBound = false;
+    let compositionReferenceGpuMaterial = null;
+    let compositionReferenceGpuUniforms = null;
+    let compositionReferenceGpuVisibleBuf = null;
+    let compositionReferenceGpuDeltaBuf = null;
+    let compositionReferenceGpuPointCount = 0;
+    let compositionReferenceGpuSnapshotRef = null;
     const CONTEXT_NUMERIC_TYPES = new Set(["Int", "Long", "Float", "Double"]);
     const CONTEXT_VECTOR_TYPES = new Set(["Vec3", "RelativeLocation", "Vector3f"]);
 
@@ -1534,6 +1540,35 @@ function initPointsBuilderMain() {
         };
     }
 
+    function getCompositionReferenceTimelineInfo(snapshot, hydrating = false) {
+        const frames = Array.isArray(snapshot?.frames) ? snapshot.frames : [];
+        const gpu = snapshot?.gpu?.enabled === true && typeof snapshot.gpu === "object"
+            ? snapshot.gpu
+            : null;
+        const gpuTimeline = Array.isArray(gpu?.timeline) ? gpu.timeline : [];
+        const frameTicks = Array.isArray(snapshot?.frameTicks) ? snapshot.frameTicks : [];
+        const totalTicks = Math.max(1, Math.trunc(Number(
+            snapshot?.totalTicks || snapshot?.frameCount || gpuTimeline.length || frames.length || 1
+        ) || 1));
+        const availableFrameCount = gpu ? gpuTimeline.length : frames.length;
+        // Keep the frame-only expression explicit for CPU snapshots; GPU snapshots
+        // extend the same timeline with their uniform-driven entries.
+        const legacyFrameTimelineCount = Math.max(totalTicks, frames.length);
+        const timelineCount = Math.max(legacyFrameTimelineCount, availableFrameCount);
+        return {
+            frames,
+            gpu,
+            gpuTimeline,
+            frameTicks,
+            totalTicks,
+            timelineCount,
+            availableFrameCount,
+            pending: snapshot?.complete === false
+                || hydrating
+                || (availableFrameCount < timelineCount && snapshot?.frameSampled !== true)
+        };
+    }
+
     function loadCompositionNumericContext() {
         compositionReferenceHydrationToken += 1;
         compositionReferenceHydrating = false;
@@ -1559,8 +1594,19 @@ function initPointsBuilderMain() {
         compositionReferenceState = payload?.compositionState && typeof payload.compositionState === "object"
             ? payload.compositionState
             : null;
-        compositionReferenceSnapshot = payload?.compositionReference && typeof payload.compositionReference === "object"
+        const storedReference = payload?.compositionReference && typeof payload.compositionReference === "object"
             ? payload.compositionReference
+            : null;
+        const compositionRevision = String(
+            payload?.compositionReferenceRevision
+            || payload?.compositionState?.revision
+            || ""
+        );
+        compositionReferenceSnapshot = storedReference
+            && String(storedReference.referenceVersion || "") === COMPOSITION_REFERENCE_BUILD_VERSION
+            && compositionRevision
+            && String(storedReference.compositionRevision || "") === compositionRevision
+            ? storedReference
             : null;
         compositionReferenceStatus = String(payload?.compositionReferenceStatus || "");
         compositionReferenceCardId = String(payload?.cardId || new URLSearchParams(location.search).get("card") || "").trim();
@@ -1601,15 +1647,19 @@ function initPointsBuilderMain() {
             compositionReferenceFrameIndex = 0;
         }
         compositionReferenceOnlyCurrent = loadCompositionReferenceOnlyCurrent();
-        compositionReferenceShowCurrent = loadCompositionReferenceShowCurrent();
         compositionReferenceOpacity = loadCompositionReferenceOpacity();
         loadCompositionReferenceVisibility();
         loadCompositionReferenceCollapsed();
-        renderCompositionReferencePanel();
-        rebuildCompositionReferencePreview();
+        if (!compositionReferenceFrameDragging) {
+            renderCompositionReferencePanel();
+            rebuildCompositionReferencePreview();
+        }
         if (compositionReferenceSnapshot?.storage === "indexeddb"
             && String(compositionReferenceSnapshot.storageKey || "").trim()
-            && !(Array.isArray(compositionReferenceSnapshot.frames) && compositionReferenceSnapshot.frames.length)) {
+            && !(Array.isArray(compositionReferenceSnapshot.frames) && compositionReferenceSnapshot.frames.length)
+            && !(compositionReferenceSnapshot.gpu?.enabled === true
+                && Array.isArray(compositionReferenceSnapshot.gpu.timeline)
+                && compositionReferenceSnapshot.gpu.timeline.length)) {
             hydrateCompositionReferenceSnapshot(compositionReferenceSnapshot.storageKey);
         }
     }
@@ -1629,45 +1679,64 @@ function initPointsBuilderMain() {
         }
     }
 
-    function loadCompositionReferenceShowCurrent() {
-        try {
-            return localStorage.getItem(COMPOSITION_REFERENCE_SHOW_CURRENT_KEY) === "true";
-        } catch {
-            return false;
-        }
-    }
-
-    function saveCompositionReferenceShowCurrent() {
-        try {
-            localStorage.setItem(COMPOSITION_REFERENCE_SHOW_CURRENT_KEY, compositionReferenceShowCurrent ? "true" : "false");
-        } catch {
-        }
-    }
-
     async function hydrateCompositionReferenceSnapshot(storageKey) {
         const token = ++compositionReferenceHydrationToken;
         compositionReferenceHydrating = true;
-        renderCompositionReferencePanel();
+        if (compositionReferenceHydrationRetryHandle) {
+            clearTimeout(compositionReferenceHydrationRetryHandle);
+            compositionReferenceHydrationRetryHandle = 0;
+        }
+        if (!compositionReferenceFrameDragging) renderCompositionReferencePanel();
         try {
             const stored = await getCompositionReferenceSnapshot(storageKey);
             if (token !== compositionReferenceHydrationToken) return;
-            if (!stored || !Array.isArray(stored.frames) || !stored.frames.length) {
+            const storedGpu = stored?.gpu?.enabled === true && typeof stored.gpu === "object"
+                ? stored.gpu
+                : null;
+            const storedGpuTimeline = Array.isArray(storedGpu?.timeline) ? storedGpu.timeline : [];
+            if (!stored || (!storedGpuTimeline.length && (!Array.isArray(stored.frames) || !stored.frames.length))) {
                 throw new Error("Composition reference snapshot is empty");
             }
+            if (String(stored.compositionRevision || "") !== String(compositionReferenceSnapshot?.compositionRevision || "")) {
+                throw new Error("Composition reference snapshot is stale");
+            }
+            const storedFrames = Array.isArray(stored.frames) ? stored.frames : [];
+            const storedTotalTicks = Math.max(1, Math.trunc(Number(
+                stored.totalTicks
+                || compositionReferenceSnapshot?.totalTicks
+                || stored.frameCount
+                || storedGpuTimeline.length
+                || storedFrames.length
+                || 1
+            ) || 1));
             compositionReferenceSnapshot = {
                 ...compositionReferenceSnapshot,
-                frames: stored.frames,
-                visibleMasks: Array.isArray(stored.visibleMasks) ? stored.visibleMasks : []
+                totalTicks: storedTotalTicks,
+                frameTicks: Array.isArray(stored.frameTicks)
+                    ? stored.frameTicks
+                    : (Array.isArray(compositionReferenceSnapshot?.frameTicks) ? compositionReferenceSnapshot.frameTicks : []),
+                frameCount: Math.max(storedTotalTicks, Math.trunc(Number(stored.frameCount) || 0), storedFrames.length),
+                availableFrameCount: storedGpu ? storedGpuTimeline.length : storedFrames.length,
+                frames: storedFrames,
+                visibleMasks: Array.isArray(stored.visibleMasks) ? stored.visibleMasks : [],
+                gpu: storedGpu || compositionReferenceSnapshot?.gpu || null,
+                complete: stored.complete !== false
             };
-            compositionReferenceHydrating = false;
-            compositionReferenceStatus = "ready";
-            renderCompositionReferencePanel();
+            compositionReferenceHydrating = stored.complete === false;
+            compositionReferenceStatus = stored.complete === false ? "pending" : "ready";
+            if (!compositionReferenceFrameDragging) renderCompositionReferencePanel();
             rebuildCompositionReferencePreview();
+            if (stored.complete === false && token === compositionReferenceHydrationToken) {
+                compositionReferenceHydrationRetryHandle = setTimeout(() => {
+                    compositionReferenceHydrationRetryHandle = 0;
+                    if (token === compositionReferenceHydrationToken) hydrateCompositionReferenceSnapshot(storageKey);
+                }, 200);
+            }
         } catch (error) {
             if (token !== compositionReferenceHydrationToken) return;
             compositionReferenceHydrating = false;
             compositionReferenceStatus = "storage_unavailable";
-            renderCompositionReferencePanel();
+            if (!compositionReferenceFrameDragging) renderCompositionReferencePanel();
             rebuildCompositionReferencePreview();
             console.warn("load Composition reference snapshot failed:", error);
         }
@@ -1855,7 +1924,14 @@ function initPointsBuilderMain() {
             .reduce((sum, ownerId) => sum + (countById.get(ownerId) || 0), 0);
         const selfVisible = new Map();
         for (const row of rows) {
-            selfVisible.set(row.id, compositionReferenceVisibility[row.id] !== false);
+            const hasStoredVisibility = Object.prototype.hasOwnProperty.call(compositionReferenceVisibility, row.id);
+            // The current card is represented in the tree as a placement
+            // placeholder, but its rendered reference stays opt-in. This
+            // applies to nested Composition nodes as well as the root card.
+            const defaultVisible = row.isCurrentCard ? false : true;
+            selfVisible.set(row.id, hasStoredVisibility
+                ? compositionReferenceVisibility[row.id] !== false
+                : defaultVisible);
         }
         const effectiveVisible = new Map();
         for (const row of rows) {
@@ -1863,19 +1939,48 @@ function initPointsBuilderMain() {
             effectiveVisible.set(row.id, parentVisible && selfVisible.get(row.id) !== false);
         }
         return rows.map((row) => {
-            const isCurrent = row.isCurrent;
-            const currentCardVisible = compositionReferenceShowCurrent || compositionReferenceOnlyCurrent;
             return {
                 ...row,
                 pointCount: countForRow(row),
-                visible: row.isCurrentCard
-                    ? (currentCardVisible && effectiveVisible.get(row.id) === true)
-                    : (compositionReferenceOnlyCurrent
-                        ? false
-                        : (effectiveVisible.get(row.id) === true
-                            && (!isCompositionReferenceDescendant(row.id, currentOwnerId) || compositionReferenceShowCurrent)))
+                visible: compositionReferenceOnlyCurrent
+                    ? (row.isCurrentCard && effectiveVisible.get(row.id) === true)
+                    : effectiveVisible.get(row.id) === true
             };
         });
+    }
+
+    function toggleCompositionReferenceCollapse(button) {
+        const id = String(button?.dataset?.referenceCollapse || "");
+        if (!id) return;
+        compositionReferenceCollapsed[id] = compositionReferenceCollapsed[id] !== true;
+        saveCompositionReferenceCollapsed();
+        const section = button.closest?.("[data-reference-group]");
+        const children = section?.querySelector?.(":scope > .composition-reference-children");
+        const collapsed = compositionReferenceCollapsed[id] === true;
+        const title = section?.querySelector?.(":scope > .composition-reference-group-head .composition-reference-group-title")?.textContent || "节点";
+        button.setAttribute("aria-label", `${collapsed ? "展开" : "折叠"} ${title}`);
+        button.title = collapsed ? "展开节点" : "折叠节点";
+        button.innerHTML = collapsed
+            ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>'
+            : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+        section?.classList.toggle("collapsed", collapsed);
+        if (!children) return;
+        children.classList.toggle("collapsed", collapsed);
+        if (collapsed) {
+            children.style.maxHeight = `${children.scrollHeight}px`;
+            requestAnimationFrame(() => {
+                children.style.maxHeight = "0px";
+            });
+        } else {
+            children.style.maxHeight = "0px";
+            requestAnimationFrame(() => {
+                children.classList.remove("collapsed");
+                children.style.maxHeight = `${children.scrollHeight}px`;
+            });
+            window.setTimeout(() => {
+                if (!children.classList.contains("collapsed")) children.style.maxHeight = "";
+            }, 260);
+        }
     }
 
     function renderCompositionReferencePanel() {
@@ -1887,30 +1992,25 @@ function initPointsBuilderMain() {
         }
         const hasStoredSnapshot = !!(compositionReferenceSnapshot?.storage === "indexeddb"
             && String(compositionReferenceSnapshot.storageKey || "").trim());
+        const hasGpuSnapshot = compositionReferenceSnapshot?.gpu?.enabled === true
+            && Array.isArray(compositionReferenceSnapshot.gpu.timeline)
+            && compositionReferenceSnapshot.gpu.timeline.length > 0;
         const hasSnapshot = !!(compositionReferenceSnapshot
             && ((Array.isArray(compositionReferenceSnapshot.frames) && compositionReferenceSnapshot.frames.length)
+                || hasGpuSnapshot
                 || hasStoredSnapshot));
         const sampled = compositionReferenceSnapshot?.sampled === true;
         const frameSampled = compositionReferenceSnapshot?.frameSampled === true;
-        const frames = Array.isArray(compositionReferenceSnapshot?.frames) ? compositionReferenceSnapshot.frames : [];
-        const rawFrameTicks = Array.isArray(compositionReferenceSnapshot?.frameTicks)
-            ? compositionReferenceSnapshot.frameTicks
-            : [];
-        // A pending fallback has one cached frame but still exposes the complete
-        // Composition cycle so the user can scrub immediately.
-        const isVirtualTimeline = frames.length === 1
-            && Number(compositionReferenceSnapshot?.totalTicks || 0) > 1
-            && rawFrameTicks.length <= 1;
-        const timelineCount = isVirtualTimeline
-            ? Math.max(1, Math.trunc(Number(compositionReferenceSnapshot?.totalTicks) || 1))
-            : (frames.length || Math.max(1, Math.trunc(Number(compositionReferenceSnapshot?.frameCount || compositionReferenceSnapshot?.totalTicks) || 1)));
+        const timeline = getCompositionReferenceTimelineInfo(compositionReferenceSnapshot, compositionReferenceHydrating);
+        const frames = timeline.frames;
+        const availableFrameCount = timeline.availableFrameCount;
+        const rawFrameTicks = timeline.frameTicks;
+        const timelineCount = timeline.timelineCount;
         const safeFrameIndex = timelineCount > 0
             ? Math.max(0, Math.min(timelineCount - 1, Math.trunc(Number(compositionReferenceFrameIndex) || 0)))
             : 0;
         compositionReferenceFrameIndex = safeFrameIndex;
-        const frameTick = isVirtualTimeline
-            ? safeFrameIndex
-            : Number(rawFrameTicks?.[safeFrameIndex] ?? safeFrameIndex);
+        const frameTick = Number(rawFrameTicks?.[safeFrameIndex] ?? safeFrameIndex);
         const controls = `<section class="composition-reference-controls" aria-label="Composition 预览控制">
             <div class="composition-reference-controls-head">
                 <div>
@@ -1923,10 +2023,6 @@ function initPointsBuilderMain() {
                 <input type="checkbox" data-reference-only-current ${compositionReferenceOnlyCurrent ? "checked" : ""}/>
                 <span>只显示当前卡片</span>
             </label>
-            <label class="composition-reference-current-only">
-                <input type="checkbox" data-reference-show-current ${compositionReferenceShowCurrent || compositionReferenceOnlyCurrent ? "checked" : ""} ${compositionReferenceOnlyCurrent ? "disabled" : ""}/>
-                <span>显示当前卡片 Composition 预览</span>
-            </label>
             <label class="composition-reference-opacity">
                 <span>参考不透明度</span>
                 <input type="range" min="0.05" max="1" step="0.05" value="${compositionReferenceOpacity}" data-reference-opacity aria-label="参考不透明度"/>
@@ -1934,7 +2030,7 @@ function initPointsBuilderMain() {
             </label>
             <div class="composition-reference-frame-controls">
                 <button class="btn composition-reference-frame-btn" type="button" data-reference-frame-action="prev" ${timelineCount <= 1 ? "disabled" : ""}>上一帧</button>
-                <input class="composition-reference-frame-range" type="range" min="0" max="${Math.max(0, timelineCount - 1)}" step="1" value="${safeFrameIndex}" data-reference-frame-range aria-label="Composition 预览进度" ${timelineCount ? "" : "disabled"}/>
+                <input class="composition-reference-frame-range" type="range" min="0" max="${Math.max(0, timelineCount - 1)}" step="1" value="${safeFrameIndex}" data-reference-frame-range aria-label="Composition 预览进度" ${timelineCount > 1 ? "" : "disabled"}/>
                 <button class="btn composition-reference-frame-btn" type="button" data-reference-frame-action="next" ${timelineCount <= 1 ? "disabled" : ""}>下一帧</button>
             </div>
         </section>`;
@@ -1950,10 +2046,13 @@ function initPointsBuilderMain() {
             const eyePath = group.visible
                 ? '<path d="M2 12s3.2-5 10-5 10 5 10 5-3.2 5-10 5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.4"/>'
                 : '<path d="m3 3 18 18"/><path d="M10.6 6.2A10.8 10.8 0 0 1 12 6c6.8 0 10 6 10 6a18.5 18.5 0 0 1-3.2 3.8M6.2 6.2C3.5 8 2 12 2 12s3.2 6 10 6c1.3 0 2.4-.2 3.4-.6"/>';
-            const eyeDisabled = group.isCurrentCard || compositionReferenceOnlyCurrent;
+            const eyeDisabled = !group.isCurrentCard && compositionReferenceOnlyCurrent;
             const childGroups = (group.childIds || []).map((id) => groupsById.get(id)).filter(Boolean);
             const hasChildren = childGroups.length > 0;
-            const collapsed = hasChildren && compositionReferenceCollapsed[group.id] === true;
+            const hasStoredCollapsed = Object.prototype.hasOwnProperty.call(compositionReferenceCollapsed, group.id);
+            const collapsed = hasChildren && (hasStoredCollapsed
+                ? compositionReferenceCollapsed[group.id] === true
+                : !group.isCurrentCard);
             const collapseIcon = collapsed
                 ? '<path d="m9 6 6 6-6 6"/>'
                 : '<path d="m6 9 6 6 6-6"/>';
@@ -1962,15 +2061,15 @@ function initPointsBuilderMain() {
                     ${hasChildren ? `<button class="composition-reference-collapse" type="button" data-reference-collapse="${escapeReferenceText(group.id)}" aria-label="${collapsed ? "展开" : "折叠"} ${escapeReferenceText(title)}" title="${collapsed ? "展开节点" : "折叠节点"}"><svg viewBox="0 0 24 24" aria-hidden="true">${collapseIcon}</svg></button>` : '<span class="composition-reference-collapse-spacer" aria-hidden="true"></span>'}
                     <div class="composition-reference-group-title" title="${escapeReferenceText(title)}">${escapeReferenceText(title)}</div>
                     <div class="composition-reference-group-meta">${escapeReferenceText(meta)}</div>
-                    <button class="composition-reference-eye${group.visible ? " visible" : ""}" type="button" data-reference-eye="${escapeReferenceText(group.id)}" ${eyeDisabled ? "disabled" : ""} aria-label="${group.isCurrentCard ? "当前编辑卡片" : `${group.visible ? "隐藏" : "显示"} ${escapeReferenceText(group.name)}`}" title="${group.isCurrentCard ? "当前编辑卡片由上方开关控制" : (compositionReferenceOnlyCurrent ? "已启用只显示当前卡片" : (group.visible ? "隐藏" : "显示"))}"><svg viewBox="0 0 24 24" aria-hidden="true">${eyePath}</svg></button>
+                    <button class="composition-reference-eye${group.visible ? " visible" : ""}" type="button" data-reference-eye="${escapeReferenceText(group.id)}" ${eyeDisabled ? "disabled" : ""} aria-label="${group.visible ? "隐藏" : "显示"} ${escapeReferenceText(group.isCurrent ? (group.depth > 0 ? "当前节点" : "当前卡片") : group.name)}" title="${eyeDisabled ? "已启用只显示当前卡片" : (group.visible ? "隐藏" : "显示")}"><svg viewBox="0 0 24 24" aria-hidden="true">${eyePath}</svg></button>
                 </div>
-                ${group.isCurrent ? `<div class="composition-reference-placeholder">当前编辑内容保留在主场景；Composition 位置参考默认隐藏，可通过上方开关显示。</div>` : ""}
+                ${group.isCurrent ? `<div class="composition-reference-placeholder">当前编辑内容保留在主场景；可使用当前卡片或当前节点行的小眼睛显示参考位置。</div>` : ""}
                 ${hasChildren ? `<div class="composition-reference-children${collapsed ? " collapsed" : ""}">${childGroups.map(renderGroup).join("")}</div>` : ""}
             </section>`;
         };
         const html = groups.filter((group) => !group.parentId).map(renderGroup).join("");
-        const pendingNote = compositionReferenceStatus === "pending" || compositionReferenceHydrating
-            ? '<div class="composition-reference-note">参考快照正在后台更新；当前先显示已有帧，完成后会自动替换。</div>'
+        const pendingNote = compositionReferenceStatus === "pending" || timeline.pending
+            ? `<div class="composition-reference-note">完整参考帧正在后台加载；当前已完成 ${Math.min(availableFrameCount, timelineCount)} / ${timelineCount} Tick，可先切换已完成帧。</div>`
             : "";
         const snapshotNote = `${pendingNote}<div class="composition-reference-note">参考层${sampled ? `已从 ${escapeReferenceText(compositionReferenceSnapshot?.sourcePointTotal || 0)} 点中抽样` : "包含最终展开"}显示${frameSampled ? `；完整周期 ${escapeReferenceText(compositionReferenceSnapshot?.totalTicks || 0)} Tick 已均匀取样` : ""}；点位淡化且不可选中，但会参与粒子吸附。</div>`;
         const unavailableNote = compositionReferenceStatus === "storage_limit"
@@ -1988,14 +2087,19 @@ function initPointsBuilderMain() {
             renderCompositionReferencePanel();
             rebuildCompositionReferencePreview();
         });
-        const showCurrent = elCompositionReferenceRoot.querySelector("[data-reference-show-current]");
-        showCurrent?.addEventListener("change", () => {
-            compositionReferenceShowCurrent = !!showCurrent.checked;
-            saveCompositionReferenceShowCurrent();
+        const frameRange = elCompositionReferenceRoot.querySelector("[data-reference-frame-range]");
+        frameRange?.addEventListener("pointerdown", () => {
+            compositionReferenceFrameDragging = true;
+        });
+        const finishFrameDrag = () => {
+            if (!compositionReferenceFrameDragging) return;
+            compositionReferenceFrameDragging = false;
             renderCompositionReferencePanel();
             rebuildCompositionReferencePreview();
-        });
-        const frameRange = elCompositionReferenceRoot.querySelector("[data-reference-frame-range]");
+        };
+        frameRange?.addEventListener("pointerup", finishFrameDrag);
+        frameRange?.addEventListener("pointercancel", finishFrameDrag);
+        frameRange?.addEventListener("blur", finishFrameDrag);
         frameRange?.addEventListener("input", () => {
             setCompositionReferenceFrame(Number(frameRange.value));
         });
@@ -2026,7 +2130,13 @@ function initPointsBuilderMain() {
             button.addEventListener("click", () => {
                 const id = String(button.dataset.referenceEye || "");
                 if (!id) return;
-                compositionReferenceVisibility[id] = compositionReferenceVisibility[id] === false;
+                const group = compositionReferenceGroups().find((item) => item.id === id);
+                const hasStoredVisibility = Object.prototype.hasOwnProperty.call(compositionReferenceVisibility, id);
+                const defaultVisible = group?.isCurrentCard && group.depth === 0 ? false : true;
+                const currentSelfVisible = hasStoredVisibility
+                    ? compositionReferenceVisibility[id] !== false
+                    : defaultVisible;
+                compositionReferenceVisibility[id] = !currentSelfVisible;
                 saveCompositionReferenceVisibility();
                 renderCompositionReferencePanel();
                 rebuildCompositionReferencePreview();
@@ -2038,26 +2148,46 @@ function initPointsBuilderMain() {
                 if (!id) return;
                 compositionReferenceCollapsed[id] = compositionReferenceCollapsed[id] !== true;
                 saveCompositionReferenceCollapsed();
-                renderCompositionReferencePanel();
+                const section = button.closest?.("[data-reference-group]");
+                const children = section?.querySelector?.(":scope > .composition-reference-children");
+                const collapsed = compositionReferenceCollapsed[id] === true;
+                const title = section?.querySelector?.(":scope > .composition-reference-group-head .composition-reference-group-title")?.textContent || "节点";
+                button.setAttribute("aria-label", `${collapsed ? "展开" : "折叠"} ${title}`);
+                button.title = collapsed ? "展开节点" : "折叠节点";
+                button.innerHTML = collapsed
+                    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>'
+                    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+                section?.classList.toggle("collapsed", collapsed);
+                if (!children) return;
+                children.classList.toggle("collapsed", collapsed);
+                if (collapsed) {
+                    children.style.maxHeight = `${children.scrollHeight}px`;
+                    requestAnimationFrame(() => {
+                        children.style.maxHeight = "0px";
+                    });
+                } else {
+                    children.style.maxHeight = "0px";
+                    requestAnimationFrame(() => {
+                        children.classList.remove("collapsed");
+                        children.style.maxHeight = `${children.scrollHeight}px`;
+                    });
+                    window.setTimeout(() => {
+                        if (!children.classList.contains("collapsed")) children.style.maxHeight = "";
+                    }, 260);
+                }
             });
         });
     }
 
     function setCompositionReferenceFrame(nextIndex) {
-        const frames = Array.isArray(compositionReferenceSnapshot?.frames) ? compositionReferenceSnapshot.frames : [];
-        const frameTicks = Array.isArray(compositionReferenceSnapshot?.frameTicks)
-            ? compositionReferenceSnapshot.frameTicks
-            : [];
-        const isVirtualTimeline = frames.length === 1
-            && Number(compositionReferenceSnapshot?.totalTicks || 0) > 1
-            && frameTicks.length <= 1;
-        const timelineCount = isVirtualTimeline
-            ? Math.max(1, Math.trunc(Number(compositionReferenceSnapshot?.totalTicks) || 1))
-            : (frames.length || Math.max(1, Math.trunc(Number(compositionReferenceSnapshot?.frameCount || compositionReferenceSnapshot?.totalTicks) || 1)));
+        const timeline = getCompositionReferenceTimelineInfo(compositionReferenceSnapshot, compositionReferenceHydrating);
+        const frames = timeline.frames;
+        const frameTicks = timeline.frameTicks;
+        const timelineCount = timeline.timelineCount;
         const requested = Number(nextIndex);
         const normalized = Number.isFinite(requested) ? Math.trunc(requested) : 0;
         compositionReferenceFrameIndex = Math.max(0, Math.min(timelineCount - 1, normalized));
-        if (frames.length) {
+        if (frames.length || timeline.gpuTimeline.length) {
             rebuildCompositionReferencePreview(compositionReferenceFrameIndex);
         } else if (compositionReferenceHydrating) {
             // Keep the requested frame while IndexedDB is loading; hydration uses this index.
@@ -2065,9 +2195,7 @@ function initPointsBuilderMain() {
         }
         const label = elCompositionReferenceRoot?.querySelector?.("[data-reference-frame-label]");
         const range = elCompositionReferenceRoot?.querySelector?.("[data-reference-frame-range]");
-        const tick = isVirtualTimeline
-            ? compositionReferenceFrameIndex
-            : Number(frameTicks?.[compositionReferenceFrameIndex] ?? compositionReferenceFrameIndex);
+        const tick = Number(frameTicks?.[compositionReferenceFrameIndex] ?? compositionReferenceFrameIndex);
         if (label) label.textContent = `帧 ${compositionReferenceFrameIndex + 1} / ${timelineCount} · Tick ${Number.isFinite(tick) ? tick : 0}`;
         if (range) range.value = String(compositionReferenceFrameIndex);
     }
@@ -2097,6 +2225,252 @@ function initPointsBuilderMain() {
         rebuildCompositionReferencePreview();
     }
 
+    function createCompositionReferenceGpuMaterial() {
+        const mat = new THREE.PointsMaterial({
+            size: Math.max(0.12, pointSize * 0.9),
+            sizeAttenuation: true,
+            vertexColors: true,
+            color: 0xffffff,
+            transparent: true,
+            opacity: compositionReferenceOpacity,
+            depthWrite: false,
+            depthTest: true
+        });
+        mat.defaultAttributeValues = {
+            ...(mat.defaultAttributeValues || {}),
+            aSize: [1],
+            aAlpha: [1],
+            aGpuMeta: [0, 0, 0, 0],
+            aGpuFadeIn: [0, 0, 0, 0],
+            aGpuFadeOut: [0, 0, 0, 0],
+            aGpuTransform: [0, 0, 0, 0],
+            aGpuTransformVector: [0, 0, 0],
+            aGpuScale: [1],
+            aGpuLifecycle: [0, 100],
+            aGpuAlphaCurve: [1, 1, -2, -2],
+            aGpuScaleCurve: [1, 1, -2, -2],
+            aGpuColorCurve: [1, 1],
+            aReferenceVisible: [1]
+        };
+        mat.customProgramCacheKey = () => "composition-reference-gpu-v2";
+        mat.onBeforeCompile = (shader) => {
+            const groupLimit = 24;
+            shader.uniforms.uReferenceGpuEnabled = { value: 1 };
+            shader.uniforms.uReferenceTick = { value: 0 };
+            shader.uniforms.uReferenceCycleTicks = { value: 1 };
+            shader.uniforms.uReferencePlayTicks = { value: 1 };
+            shader.uniforms.uReferenceGlobalAlpha = { value: 1 };
+            shader.uniforms.uReferenceHasLifecycle = { value: 0 };
+            shader.uniforms.uReferenceUseSharedTransform = { value: 0 };
+            shader.uniforms.uReferenceSharedTransform = { value: new THREE.Vector4() };
+            shader.uniforms.uReferenceSharedScale = { value: 1 };
+            shader.uniforms.uReferenceGroupCount = { value: 0 };
+            shader.uniforms.uReferenceGroupTransforms = {
+                value: Array.from({ length: groupLimit }, () => new THREE.Vector4())
+            };
+            shader.uniforms.uReferenceGroupScales = {
+                value: new Float32Array(groupLimit).fill(1)
+            };
+            shader.uniforms.uReferenceGlobalTransform = { value: new THREE.Matrix4() };
+            compositionReferenceGpuUniforms = shader.uniforms;
+            const groupTransformSelectors = [];
+            const groupScaleSelectors = [];
+            for (let i = 0; i < groupLimit; i++) {
+                const upper = (i + 1.5).toFixed(1);
+                groupTransformSelectors.push(`if (groupIndex < ${upper}) return uReferenceGroupTransforms[${i}];`);
+                groupScaleSelectors.push(`if (groupIndex < ${upper}) return uReferenceGroupScales[${i}];`);
+            }
+            shader.vertexShader = [
+                "attribute float aSize;",
+                "attribute float aAlpha;",
+                "attribute vec4 aGpuMeta;",
+                "attribute vec4 aGpuFadeIn;",
+                "attribute vec4 aGpuFadeOut;",
+                "attribute vec4 aGpuTransform;",
+                "attribute vec3 aGpuTransformVector;",
+                "attribute float aGpuScale;",
+                "attribute vec2 aGpuLifecycle;",
+                "attribute vec4 aGpuAlphaCurve;",
+                "attribute vec4 aGpuScaleCurve;",
+                "attribute float aReferenceVisible;",
+                "uniform int uReferenceGpuEnabled;",
+                "uniform float uReferenceTick;",
+                "uniform float uReferenceCycleTicks;",
+                "uniform float uReferencePlayTicks;",
+                "uniform float uReferenceGlobalAlpha;",
+                "uniform int uReferenceHasLifecycle;",
+                "uniform int uReferenceUseSharedTransform;",
+                "uniform vec4 uReferenceSharedTransform;",
+                "uniform float uReferenceSharedScale;",
+                `uniform int uReferenceGroupCount;`,
+                `uniform vec4 uReferenceGroupTransforms[${groupLimit}];`,
+                `uniform float uReferenceGroupScales[${groupLimit}];`,
+                "uniform mat4 uReferenceGlobalTransform;",
+                "varying float vReferenceAlpha;",
+                "vec3 rotateReferenceVector(vec3 value, vec3 axis, float angle) {",
+                "  float axisLength = length(axis);",
+                "  if (axisLength < 0.0001) return value;",
+                "  vec3 unitAxis = axis / axisLength;",
+                "  float c = cos(angle);",
+                "  float s = sin(angle);",
+                "  return value * c + cross(unitAxis, value) * s + unitAxis * dot(unitAxis, value) * (1.0 - c);",
+                "}",
+                "vec4 resolveReferenceTransform(float groupIndex, vec4 fallbackValue) {",
+                "  if (groupIndex < 0.5) return fallbackValue;",
+                ...groupTransformSelectors,
+                "  return fallbackValue;",
+                "}",
+                "float resolveReferenceScale(float groupIndex, float fallbackValue) {",
+                "  if (groupIndex < 0.5) return fallbackValue;",
+                ...groupScaleSelectors,
+                "  return fallbackValue;",
+                "}",
+                "float sampleReferenceCurve(vec4 curve, float progress) {",
+                "  float t = clamp(progress, 0.0, 1.0);",
+                "  if (curve.z < -1.5) return 1.0;",
+                "  if (curve.z < -0.5) return mix(curve.x, curve.y, t);",
+                "  float fadeIn = clamp(curve.z, 0.0, 1.0);",
+                "  float fadeOut = clamp(curve.w, fadeIn, 1.0);",
+                "  if (t <= fadeIn) return fadeIn > 0.000001 ? curve.x * t / fadeIn : curve.x;",
+                "  if (t <= fadeOut) return curve.x;",
+                "  return fadeOut < 0.999999 ? curve.x * (1.0 - (t - fadeOut) / (1.0 - fadeOut)) : curve.x;",
+                "}",
+                ""
+            ].join("\n") + shader.vertexShader;
+            shader.vertexShader = shader.vertexShader.replace(
+                /gl_PointSize\s*=\s*size\s*;/g,
+                [
+                    "float referenceAlpha = clamp(aAlpha, 0.0, 1.0) * clamp(uReferenceGlobalAlpha, 0.0, 1.0);",
+                    "if (aReferenceVisible < 0.5) referenceAlpha = 0.0;",
+                    "float referenceSizeScale = 1.0;",
+                    "if (uReferenceGpuEnabled == 1 && abs(aGpuMeta.x) > 0.5) {",
+                    "  float cycleAge = mod(uReferenceTick, max(uReferenceCycleTicks, 1.0));",
+                    "  float birthTick = max(aGpuMeta.y, 0.0);",
+                    "  if (aGpuMeta.x < 0.0 || cycleAge < birthTick) {",
+                    "    referenceAlpha = 0.0;",
+                    "  } else {",
+                    "    float age = max(cycleAge - birthTick, 0.0);",
+                    "    float lifetime = max(abs(aGpuLifecycle.y), 1.0);",
+                    "    float lifecycleAge = aGpuLifecycle.x;",
+                    "    if (aGpuLifecycle.y > 0.0 && uReferenceHasLifecycle == 1) lifecycleAge = clamp(aGpuLifecycle.x + age, 0.0, lifetime);",
+                    "    float progress = clamp(lifecycleAge / lifetime, 0.0, 1.0);",
+                    "    referenceAlpha *= sampleReferenceCurve(aGpuAlphaCurve, progress);",
+                    "    referenceSizeScale = sampleReferenceCurve(aGpuScaleCurve, progress);",
+                    "    if (aGpuFadeOut.x > 0.0 && cycleAge >= max(uReferencePlayTicks, 1.0)) {",
+                    "      referenceAlpha *= mix(aGpuFadeOut.y, aGpuFadeOut.z, clamp((cycleAge - uReferencePlayTicks) / aGpuFadeOut.x, 0.0, 1.0));",
+                    "    } else if (aGpuFadeIn.x > 0.0) {",
+                    "      referenceAlpha *= mix(aGpuFadeIn.y, aGpuFadeIn.z, clamp(age / aGpuFadeIn.x, 0.0, 1.0));",
+                    "    }",
+                    "  }",
+                    "}",
+                    "gl_PointSize = referenceAlpha > 0.0001 ? size * max(aSize * referenceSizeScale, 0.05) : 0.0;",
+                    "vReferenceAlpha = referenceAlpha;"
+                ].join("\n    ")
+            );
+            shader.vertexShader = shader.vertexShader.replace(
+                "#include <begin_vertex>",
+                [
+                    "#include <begin_vertex>",
+                    "if (uReferenceGpuEnabled == 1 && aGpuMeta.x > 0.5) {",
+                    "  float groupIndex = aGpuFadeOut.w;",
+                    "  if (groupIndex < -0.5) {",
+                    "    transformed = aGpuTransformVector;",
+                    "  } else {",
+                    "    vec4 gpuTransform = uReferenceUseSharedTransform == 1 ? uReferenceSharedTransform : resolveReferenceTransform(groupIndex, aGpuTransform);",
+                    "    float gpuScale = uReferenceUseSharedTransform == 1 ? uReferenceSharedScale : resolveReferenceScale(groupIndex, aGpuScale);",
+                    "    vec3 gpuAnchor = transformed - aGpuTransformVector;",
+                    "    vec3 transformedLocal = aGpuTransformVector * max(gpuScale, 0.0001);",
+                    "    if (abs(gpuTransform.w) > 0.000001) transformedLocal = rotateReferenceVector(transformedLocal, gpuTransform.xyz, gpuTransform.w);",
+                    "    transformed = (uReferenceGlobalTransform * vec4(gpuAnchor, 1.0)).xyz + transformedLocal;",
+                    "  }",
+                    "}"
+                ].join("\n    ")
+            );
+            shader.fragmentShader = [
+                "varying float vReferenceAlpha;",
+                ""
+            ].join("\n") + shader.fragmentShader;
+            shader.fragmentShader = shader.fragmentShader.replace(
+                /vec4\s+diffuseColor\s*=\s*vec4\(\s*diffuse\s*,\s*opacity\s*\)\s*;/g,
+                [
+                    "if (vReferenceAlpha <= 0.0001) discard;",
+                    "vec4 diffuseColor = vec4(diffuse, opacity * vReferenceAlpha);"
+                ].join("\n    ")
+            );
+        };
+        return mat;
+    }
+
+    function ensureCompositionReferenceGpuPointsObj() {
+        if (!scene) return null;
+        ensureCompositionReferencePointsObj();
+        if (!compositionReferencePointsObj) return null;
+        if (compositionReferencePointsObj.material !== compositionReferenceGpuMaterial) {
+            compositionReferencePointsObj.material?.dispose?.();
+            compositionReferenceGpuMaterial = createCompositionReferenceGpuMaterial();
+            compositionReferencePointsObj.material = compositionReferenceGpuMaterial;
+        }
+        compositionReferencePointsObj.onBeforeRender = () => {
+            if (compositionReferenceSnapshot?.gpu?.enabled === true) {
+                updateCompositionReferenceGpuUniforms(compositionReferenceSnapshot, compositionReferenceFrameIndex);
+            }
+        };
+        compositionReferencePointsObj.frustumCulled = false;
+        return compositionReferencePointsObj;
+    }
+
+    function updateCompositionReferenceGpuUniforms(snapshot, frameIndex) {
+        const timeline = getCompositionReferenceTimelineInfo(snapshot, compositionReferenceHydrating);
+        const entries = timeline.gpuTimeline;
+        if (!entries.length) return null;
+        const safeIndex = Math.max(0, Math.min(entries.length - 1, Math.trunc(Number(frameIndex) || 0)));
+        const entry = entries[safeIndex] || entries[entries.length - 1] || {};
+        const uniforms = compositionReferenceGpuUniforms;
+        if (!uniforms) return entry;
+        const setVector4 = (uniform, value) => {
+            const target = uniforms[uniform]?.value;
+            const values = Array.isArray(value) ? value : [0, 0, 0, 0];
+            if (target?.set) target.set(Number(values[0]) || 0, Number(values[1]) || 0, Number(values[2]) || 0, Number(values[3]) || 0);
+        };
+        if (uniforms.uReferenceGpuEnabled) uniforms.uReferenceGpuEnabled.value = 1;
+        if (uniforms.uReferenceTick) uniforms.uReferenceTick.value = Number(entry.tick) || 0;
+        if (uniforms.uReferenceCycleTicks) uniforms.uReferenceCycleTicks.value = Math.max(1, Number(timeline.totalTicks) || 1);
+        if (uniforms.uReferencePlayTicks) uniforms.uReferencePlayTicks.value = Math.max(
+            1,
+            Number(snapshot?.gpu?.playTicks) || Number(timeline.totalTicks) || 1
+        );
+        const globalAlpha = Number(entry.globalAlpha);
+        if (uniforms.uReferenceGlobalAlpha) {
+            uniforms.uReferenceGlobalAlpha.value = Number.isFinite(globalAlpha)
+                ? Math.max(0, Math.min(1, globalAlpha))
+                : 1;
+        }
+        if (uniforms.uReferenceHasLifecycle) uniforms.uReferenceHasLifecycle.value = entry.hasLifecycle ? 1 : 0;
+        if (uniforms.uReferenceUseSharedTransform) uniforms.uReferenceUseSharedTransform.value = entry.useSharedTransform ? 1 : 0;
+        setVector4("uReferenceSharedTransform", entry.sharedTransform);
+        if (uniforms.uReferenceSharedScale) uniforms.uReferenceSharedScale.value = Math.max(0.0001, Number(entry.sharedScale) || 1);
+        const transforms = Array.isArray(entry.groupTransforms) ? entry.groupTransforms : [];
+        const scales = Array.isArray(entry.groupScales) ? entry.groupScales : [];
+        if (uniforms.uReferenceGroupCount) uniforms.uReferenceGroupCount.value = Math.min(24, transforms.length);
+        const transformTargets = uniforms.uReferenceGroupTransforms?.value || [];
+        for (let i = 0; i < transformTargets.length; i++) setVector4Target(transformTargets[i], transforms[i]);
+        const scaleTargets = uniforms.uReferenceGroupScales?.value;
+        if (scaleTargets) for (let i = 0; i < scaleTargets.length; i++) scaleTargets[i] = Math.max(0.0001, Number(scales[i]) || 1);
+        if (uniforms.uReferenceGlobalTransform?.value?.fromArray) {
+            const matrix = Array.isArray(entry.globalTransform) && entry.globalTransform.length >= 16
+                ? entry.globalTransform
+                : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+            uniforms.uReferenceGlobalTransform.value.fromArray(matrix);
+        }
+        return entry;
+    }
+
+    function setVector4Target(target, value) {
+        if (!target?.set) return;
+        const values = Array.isArray(value) ? value : [0, 0, 0, 0];
+        target.set(Number(values[0]) || 0, Number(values[1]) || 0, Number(values[2]) || 0, Number(values[3]) || 0);
+    }
+
     function ensureCompositionReferencePointsObj() {
         if (compositionReferencePointsObj || !scene) return;
         const geom = new THREE.BufferGeometry();
@@ -2114,6 +2488,313 @@ function initPointsBuilderMain() {
         scene.add(compositionReferencePointsObj);
     }
 
+    function ensureCompositionReferencePickObj() {
+        if (compositionReferencePickObj || !scene) return;
+        const geom = new THREE.BufferGeometry();
+        const mat = new THREE.PointsMaterial({
+            size: Math.max(0.12, pointSize * 0.9),
+            sizeAttenuation: true,
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0,
+            depthWrite: false,
+            depthTest: false
+        });
+        compositionReferencePickObj = new THREE.Points(geom, mat);
+        compositionReferencePickObj.visible = false;
+        compositionReferencePickObj.renderOrder = -1000;
+        scene.add(compositionReferencePickObj);
+    }
+
+    function updateCompositionReferencePickPoints(points) {
+        const list = Array.isArray(points) ? points : [];
+        ensureCompositionReferencePickObj();
+        if (!compositionReferencePickObj) return;
+        if (!list.length) {
+            compositionReferencePickObj.visible = false;
+            compositionReferencePickCount = 0;
+            return;
+        }
+        if (!compositionReferencePickBuf || compositionReferencePickCount !== list.length) {
+            compositionReferencePickBuf = new Float32Array(list.length * 3);
+            compositionReferencePickCount = list.length;
+            compositionReferencePickObj.geometry.setAttribute(
+                "position",
+                new THREE.BufferAttribute(compositionReferencePickBuf, 3)
+            );
+        }
+        for (let i = 0; i < list.length; i++) {
+            const point = list[i];
+            compositionReferencePickBuf[i * 3] = Number(point?.x) || 0;
+            compositionReferencePickBuf[i * 3 + 1] = Number(point?.y) || 0;
+            compositionReferencePickBuf[i * 3 + 2] = Number(point?.z) || 0;
+        }
+        const position = compositionReferencePickObj.geometry.getAttribute("position");
+        if (position) position.needsUpdate = true;
+        compositionReferencePickObj.geometry.computeBoundingSphere();
+        compositionReferencePickObj.material.size = Math.max(0.12, pointSize * 0.9);
+        compositionReferencePickObj.visible = true;
+    }
+
+    function compositionReferenceGpuArray(raw) {
+        if (raw instanceof Float32Array) return raw;
+        if (Array.isArray(raw)) return Float32Array.from(raw, (value) => Number(value) || 0);
+        if (raw && typeof raw.length === "number") return Float32Array.from(raw, (value) => Number(value) || 0);
+        return null;
+    }
+
+    function updateCompositionReferenceGpuGeometry(snapshot, visibleIds) {
+        const obj = ensureCompositionReferenceGpuPointsObj();
+        const gpu = snapshot?.gpu;
+        const attributes = gpu?.attributes;
+        if (!obj || gpu?.enabled !== true || !attributes) return null;
+        const geom = obj.geometry;
+        const pointCount = Math.max(0, Math.trunc(Number(gpu.pointCount) || 0));
+        if (!pointCount) return null;
+        const needsBaseUpload = compositionReferenceGpuSnapshotRef !== gpu
+            || compositionReferenceGpuPointCount !== pointCount
+            || !geom.getAttribute?.("position");
+        const itemSizes = {
+            position: 3,
+            color: 3,
+            aSize: 1,
+            aAlpha: 1,
+            aGpuMeta: 4,
+            aGpuFadeIn: 4,
+            aGpuFadeOut: 4,
+            aGpuTransform: 4,
+            aGpuTransformVector: 3,
+            aGpuScale: 1,
+            aGpuLifecycle: 2,
+            aGpuAlphaCurve: 4,
+            aGpuScaleCurve: 4,
+            aGpuColorCurve: 2
+        };
+        if (needsBaseUpload) {
+            for (const [name, itemSize] of Object.entries(itemSizes)) {
+                const array = compositionReferenceGpuArray(attributes[name]);
+                if (!array || array.length < pointCount * itemSize) {
+                    geom.deleteAttribute?.(name);
+                    continue;
+                }
+                const buffer = name === "position" ? Float32Array.from(array) : array;
+                geom.setAttribute(name, new THREE.BufferAttribute(buffer, itemSize));
+            }
+            compositionReferenceGpuSnapshotRef = gpu;
+            compositionReferenceGpuPointCount = pointCount;
+            compositionReferenceGpuVisibleBuf = new Float32Array(pointCount);
+            compositionReferenceGpuDeltaBuf = new Float32Array(pointCount * 3);
+            geom.setAttribute("aReferenceVisible", new THREE.BufferAttribute(compositionReferenceGpuVisibleBuf, 1));
+            geom.deleteAttribute?.("aReferenceDelta");
+            geom.computeBoundingSphere();
+        }
+        const owners = Array.isArray(compositionReferenceSnapshot?.owners)
+            ? compositionReferenceSnapshot.owners
+            : [];
+        const anchorRefs = Array.isArray(compositionReferenceCurrentAnchorRefs)
+            ? compositionReferenceCurrentAnchorRefs
+            : [];
+        const baselinePoints = Array.isArray(compositionReferenceCurrentSourcePoints)
+            ? compositionReferenceCurrentSourcePoints
+            : [];
+        const basePosition = compositionReferenceGpuArray(attributes.position);
+        const positionAttr = geom.getAttribute("position");
+        for (let i = 0; i < pointCount; i++) {
+            const owner = String(owners[i] || "");
+            const visible = visibleIds.has(owner);
+            compositionReferenceGpuVisibleBuf[i] = visible ? 1 : 0;
+            let dx = 0;
+            let dy = 0;
+            let dz = 0;
+            if (isCompositionReferenceDescendant(owner, compositionReferenceCardId)
+                && lastPoints?.length
+                && anchorRefs.length > i) {
+                const sourceIndex = Math.trunc(Number(anchorRefs[i]));
+                const baseline = baselinePoints[sourceIndex];
+                const current = lastPoints[sourceIndex];
+                if (baseline && current) {
+                    dx = num(current.x) - num(baseline.x);
+                    dy = num(current.y) - num(baseline.y);
+                    dz = num(current.z) - num(baseline.z);
+                }
+            }
+            compositionReferenceGpuDeltaBuf[i * 3] = dx;
+            compositionReferenceGpuDeltaBuf[i * 3 + 1] = dy;
+            compositionReferenceGpuDeltaBuf[i * 3 + 2] = dz;
+            if (positionAttr?.array && basePosition) {
+                positionAttr.array[i * 3] = (Number(basePosition[i * 3]) || 0) + dx;
+                positionAttr.array[i * 3 + 1] = (Number(basePosition[i * 3 + 1]) || 0) + dy;
+                positionAttr.array[i * 3 + 2] = (Number(basePosition[i * 3 + 2]) || 0) + dz;
+            }
+        }
+        geom.getAttribute("aReferenceVisible").needsUpdate = true;
+        if (positionAttr) positionAttr.needsUpdate = true;
+        geom.computeBoundingSphere();
+        return {
+            pointCount,
+            owners,
+            positions: compositionReferenceGpuArray(attributes.position),
+            visible: compositionReferenceGpuVisibleBuf,
+            delta: compositionReferenceGpuDeltaBuf
+        };
+    }
+
+    function rotateCompositionReferenceVector(value, axis, angle) {
+        const axisLength = Math.hypot(axis.x, axis.y, axis.z);
+        if (axisLength < 0.0001 || Math.abs(angle) < 0.000001) return { ...value };
+        const ax = axis.x / axisLength;
+        const ay = axis.y / axisLength;
+        const az = axis.z / axisLength;
+        const c = Math.cos(angle);
+        const s = Math.sin(angle);
+        const dot = ax * value.x + ay * value.y + az * value.z;
+        return {
+            x: value.x * c + (ay * value.z - az * value.y) * s + ax * dot * (1 - c),
+            y: value.y * c + (az * value.x - ax * value.z) * s + ay * dot * (1 - c),
+            z: value.z * c + (ax * value.y - ay * value.x) * s + az * dot * (1 - c)
+        };
+    }
+
+    function sampleCompositionReferenceCurve(curve, progress) {
+        const values = Array.isArray(curve) || curve instanceof Float32Array ? curve : [1, 1, -2, -2];
+        const t = Math.max(0, Math.min(1, Number(progress) || 0));
+        const x = Number(values[0]) || 0;
+        const y = Number(values[1]) || 0;
+        const z = Number(values[2]);
+        const w = Number(values[3]);
+        if (!Number.isFinite(z) || z < -1.5) return 1;
+        if (z < -0.5) return x + (y - x) * t;
+        const fadeIn = Math.max(0, Math.min(1, z));
+        const fadeOut = Math.max(fadeIn, Math.min(1, Number.isFinite(w) ? w : 1));
+        if (t <= fadeIn) return fadeIn > 0.000001 ? x * t / fadeIn : x;
+        if (t <= fadeOut) return x;
+        return fadeOut < 0.999999 ? x * (1 - (t - fadeOut) / (1 - fadeOut)) : x;
+    }
+
+    function compositionReferenceGpuMatrixPoint(matrix, point) {
+        const m = Array.isArray(matrix) || matrix instanceof Float32Array ? matrix : null;
+        if (!m || m.length < 16) return { ...point };
+        return {
+            x: m[0] * point.x + m[4] * point.y + m[8] * point.z + m[12],
+            y: m[1] * point.x + m[5] * point.y + m[9] * point.z + m[13],
+            z: m[2] * point.x + m[6] * point.y + m[10] * point.z + m[14]
+        };
+    }
+
+    function resolveCompositionReferenceGpuPoint(snapshot, index, frameEntry, delta = null) {
+        const attributes = snapshot?.gpu?.attributes || {};
+        const position = compositionReferenceGpuArray(attributes.position);
+        if (!position || index * 3 + 2 >= position.length) {
+            return null;
+        }
+        let point = {
+            x: (Number(position[index * 3]) || 0) + (Number(delta?.[0]) || 0),
+            y: (Number(position[index * 3 + 1]) || 0) + (Number(delta?.[1]) || 0),
+            z: (Number(position[index * 3 + 2]) || 0) + (Number(delta?.[2]) || 0)
+        };
+        const meta = compositionReferenceGpuArray(attributes.aGpuMeta);
+        const fadeIn = compositionReferenceGpuArray(attributes.aGpuFadeIn);
+        const fadeOut = compositionReferenceGpuArray(attributes.aGpuFadeOut);
+        const transform = compositionReferenceGpuArray(attributes.aGpuTransform);
+        const transformVector = compositionReferenceGpuArray(attributes.aGpuTransformVector);
+        const scale = compositionReferenceGpuArray(attributes.aGpuScale);
+        const lifecycle = compositionReferenceGpuArray(attributes.aGpuLifecycle);
+        const alphaCurve = compositionReferenceGpuArray(attributes.aGpuAlphaCurve);
+        const scaleCurve = compositionReferenceGpuArray(attributes.aGpuScaleCurve);
+        const alphaAttr = compositionReferenceGpuArray(attributes.aAlpha);
+        const sizeAttr = compositionReferenceGpuArray(attributes.aSize);
+        const metaOffset = index * 4;
+        const gpuFlag = Number(meta?.[metaOffset]) || 0;
+        let alpha = Number(alphaAttr?.[index]);
+        if (!Number.isFinite(alpha)) alpha = 1;
+        let size = Number(sizeAttr?.[index]) || 1;
+        const tick = Number(frameEntry?.tick) || 0;
+        if (gpuFlag < -0.5) {
+            return null;
+        }
+        if (gpuFlag > 0.5) {
+            const birthTick = Math.max(0, Number(meta?.[metaOffset + 1]) || 0);
+            if (tick < birthTick) {
+                return null;
+            }
+            const age = Math.max(0, tick - birthTick);
+            const lifeOffset = index * 2;
+            const lifetime = Math.max(Math.abs(Number(lifecycle?.[lifeOffset + 1]) || 100), 1);
+            let lifecycleAge = Number(lifecycle?.[lifeOffset]) || 0;
+            if (frameEntry?.hasLifecycle === true && Number(lifecycle?.[lifeOffset + 1]) > 0) {
+                lifecycleAge = Math.max(0, Math.min(lifetime, lifecycleAge + age));
+            }
+            const progress = Math.max(0, Math.min(1, lifecycleAge / lifetime));
+            alpha *= sampleCompositionReferenceCurve(alphaCurve ? alphaCurve.slice(index * 4, index * 4 + 4) : null, progress);
+            size *= sampleCompositionReferenceCurve(scaleCurve ? scaleCurve.slice(index * 4, index * 4 + 4) : null, progress);
+            const fadeOutOffset = index * 4;
+            const fadeInOffset = index * 4;
+            const cycleTicks = Math.max(1, Number(snapshot?.totalTicks) || 1);
+            const playTicks = Math.max(1, Number(snapshot?.gpu?.playTicks) || cycleTicks);
+            const fadeOutDuration = Number(fadeOut?.[fadeOutOffset]) || 0;
+            const fadeInDuration = Number(fadeIn?.[fadeInOffset]) || 0;
+            if (fadeOutDuration > 0 && tick >= playTicks) {
+                const fadeProgress = Math.max(0, Math.min(1, (tick - playTicks) / fadeOutDuration));
+                const fromAlpha = Number(fadeOut[fadeOutOffset + 1]);
+                const toAlpha = Number(fadeOut[fadeOutOffset + 2]);
+                alpha *= (Number.isFinite(fromAlpha) ? fromAlpha : 0)
+                    + ((Number.isFinite(toAlpha) ? toAlpha : 0) - (Number.isFinite(fromAlpha) ? fromAlpha : 0)) * fadeProgress;
+            } else if (fadeInDuration > 0) {
+                const fadeProgress = Math.max(0, Math.min(1, age / fadeInDuration));
+                const fromAlpha = Number(fadeIn[fadeInOffset + 1]);
+                const toAlpha = Number(fadeIn[fadeInOffset + 2]);
+                alpha *= (Number.isFinite(fromAlpha) ? fromAlpha : 0)
+                    + ((Number.isFinite(toAlpha) ? toAlpha : 0) - (Number.isFinite(fromAlpha) ? fromAlpha : 0)) * fadeProgress;
+            }
+            const encodedGroupIndex = Number(fadeOut?.[fadeOutOffset + 3]);
+            const vectorOffset = index * 3;
+            const local = {
+                x: Number(transformVector?.[vectorOffset]) || 0,
+                y: Number(transformVector?.[vectorOffset + 1]) || 0,
+                z: Number(transformVector?.[vectorOffset + 2]) || 0
+            };
+            if (encodedGroupIndex < -0.5) {
+                point = local;
+            } else {
+                const groups = Array.isArray(frameEntry?.groupTransforms) ? frameEntry.groupTransforms : [];
+                const scales = Array.isArray(frameEntry?.groupScales) ? frameEntry.groupScales : [];
+                const groupIndex = Math.max(0, Math.trunc(encodedGroupIndex - 1));
+                const fallback = [
+                    Number(transform?.[metaOffset]) || 0,
+                    Number(transform?.[metaOffset + 1]) || 0,
+                    Number(transform?.[metaOffset + 2]) || 0,
+                    Number(transform?.[metaOffset + 3]) || 0
+                ];
+                const resolved = frameEntry?.useSharedTransform
+                    ? (frameEntry.sharedTransform || [0, 0, 0, 0])
+                    : (groups[Math.max(0, Math.trunc(groupIndex))] || fallback);
+                const resolvedScale = frameEntry?.useSharedTransform
+                    ? Number(frameEntry.sharedScale) || 1
+                    : Number(scales[Math.max(0, Math.trunc(groupIndex))] ?? scale?.[index] ?? 1) || 1;
+                const anchor = {
+                    x: point.x - local.x,
+                    y: point.y - local.y,
+                    z: point.z - local.z
+                };
+                const rotated = rotateCompositionReferenceVector({
+                    x: local.x * resolvedScale,
+                    y: local.y * resolvedScale,
+                    z: local.z * resolvedScale
+                }, { x: Number(resolved[0]) || 0, y: Number(resolved[1]) || 0, z: Number(resolved[2]) || 0 }, Number(resolved[3]) || 0);
+                const worldAnchor = compositionReferenceGpuMatrixPoint(frameEntry.globalTransform, anchor);
+                point = { x: worldAnchor.x + rotated.x, y: worldAnchor.y + rotated.y, z: worldAnchor.z + rotated.z };
+            }
+        }
+        const frameGlobalAlpha = Number(frameEntry?.globalAlpha);
+        alpha *= Number.isFinite(frameGlobalAlpha)
+            ? Math.max(0, Math.min(1, frameGlobalAlpha))
+            : 1;
+        if (alpha <= 0.0001 || size <= 0.0001) {
+            return null;
+        }
+        return point;
+    }
+
     function rebuildCompositionReferencePreview(frameIndex = null) {
         if (!isCompositionPointsBuilder || !compositionReferenceSceneReady) return;
         ensureCompositionReferencePointsObj();
@@ -2122,30 +2803,72 @@ function initPointsBuilderMain() {
         const frames = Array.isArray(snapshot?.frames) ? snapshot.frames : [];
         const owners = Array.isArray(snapshot?.owners) ? snapshot.owners : [];
         const visibleMasks = Array.isArray(snapshot?.visibleMasks) ? snapshot.visibleMasks : [];
-        if (!frames.length || !owners.length) {
-            compositionReferencePointsObj.visible = false;
-            lastCompositionReferencePoints = [];
-            return;
-        }
+        const timeline = getCompositionReferenceTimelineInfo(snapshot, compositionReferenceHydrating);
+        const requestedIndex = frameIndex == null ? compositionReferenceFrameIndex : frameIndex;
+        const index = Math.max(0, Math.min(timeline.timelineCount - 1, Math.trunc(Number(requestedIndex) || 0)));
+        compositionReferenceFrameIndex = index;
         const groups = compositionReferenceGroups();
         const visibleIds = new Set(groups
             .filter((group) => group.visible)
             .map((group) => group.id));
-        const requestedIndex = frameIndex == null ? compositionReferenceFrameIndex : frameIndex;
-        const frameTicks = Array.isArray(snapshot?.frameTicks) ? snapshot.frameTicks : [];
-        const isVirtualTimeline = frames.length === 1
-            && Number(snapshot?.totalTicks || 0) > 1
-            && frameTicks.length <= 1;
-        const timelineCount = isVirtualTimeline
-            ? Math.max(1, Math.trunc(Number(snapshot?.totalTicks) || 1))
-            : frames.length;
-        const index = Math.max(0, Math.min(timelineCount - 1, Math.trunc(Number(requestedIndex) || 0)));
-        compositionReferenceFrameIndex = index;
-        const requestedTick = isVirtualTimeline
-            ? index
-            : Number(frameTicks?.[index] ?? index);
+        if (timeline.gpu) {
+            const gpuState = updateCompositionReferenceGpuGeometry(snapshot, visibleIds);
+            const entry = updateCompositionReferenceGpuUniforms(snapshot, Math.min(index, timeline.availableFrameCount - 1));
+            if (!gpuState || !entry) {
+                compositionReferencePointsObj.visible = false;
+                if (compositionReferencePickObj) compositionReferencePickObj.visible = false;
+                lastCompositionReferencePoints = [];
+                return;
+            }
+            const points = [];
+            for (let i = 0; i < gpuState.pointCount; i++) {
+                if (gpuState.visible[i] < 0.5) continue;
+                const owner = String(gpuState.owners[i] || "");
+                const offset = i * 3;
+                const point = resolveCompositionReferenceGpuPoint(snapshot, i, entry, gpuState.delta.subarray(offset, offset + 3));
+                if (!point) continue;
+                points.push({
+                    x: point.x,
+                    y: point.y,
+                    z: point.z,
+                    ownerId: owner
+                });
+            }
+            lastCompositionReferencePoints = points;
+            updateCompositionReferencePickPoints(points);
+            compositionReferencePointsObj.material.opacity = compositionReferenceOpacity;
+            compositionReferencePointsObj.material.size = Math.max(0.12, pointSize * 0.9);
+            compositionReferencePointsObj.visible = points.length > 0;
+            return;
+        }
+        if (compositionReferencePointsObj.material === compositionReferenceGpuMaterial) {
+            compositionReferenceGpuMaterial.dispose?.();
+            compositionReferenceGpuMaterial = null;
+            compositionReferenceGpuUniforms = null;
+            compositionReferenceGpuSnapshotRef = null;
+            compositionReferenceGpuPointCount = 0;
+            compositionReferencePointsObj.material = new THREE.PointsMaterial({
+                size: Math.max(0.12, pointSize * 0.9),
+                sizeAttenuation: true,
+                color: 0x7ea8b8,
+                transparent: true,
+                opacity: compositionReferenceOpacity,
+                depthWrite: false,
+                vertexColors: false
+            });
+        }
+        if (compositionReferencePickObj) compositionReferencePickObj.visible = false;
+        if (!frames.length || !owners.length) {
+            compositionReferencePointsObj.visible = false;
+            if (compositionReferencePickObj) compositionReferencePickObj.visible = false;
+            lastCompositionReferencePoints = [];
+            return;
+        }
+        const frameTicks = timeline.frameTicks;
+        const timelineCount = timeline.timelineCount;
+        const requestedTick = Number(frameTicks?.[index] ?? index);
         let sourceFrameIndex = 0;
-        if (!isVirtualTimeline && frames.length > 1) {
+        if (frames.length > 1) {
             let bestDistance = Number.POSITIVE_INFINITY;
             for (let i = 0; i < frames.length; i++) {
                 const tick = Number(frameTicks?.[i] ?? i);
@@ -2189,6 +2912,7 @@ function initPointsBuilderMain() {
         lastCompositionReferencePoints = points;
         if (!points.length) {
             compositionReferencePointsObj.visible = false;
+            if (compositionReferencePickObj) compositionReferencePickObj.visible = false;
             return;
         }
         const geom = compositionReferencePointsObj.geometry;
@@ -2351,7 +3075,9 @@ function initPointsBuilderMain() {
         const key = String(e?.key || "");
         if (!key || !key.endsWith(PB_COMP_CONTEXT_KEY)) return;
         loadCompositionNumericContext();
-        rebuildPreviewAndKotlin();
+        // Composition reference progress only changes the overlay. Rebuilding
+        // the editable Builder here steals pointer events from the frame range
+        // and makes a drag appear to stop until the next click.
     });
 
     function clamp(v, min, max) {
@@ -2379,6 +3105,7 @@ function initPointsBuilderMain() {
         theme: "dark-1",
         pointSize: 0.5,
         offsetPreviewLimit: -1,
+        presetRingPreviewMode: "preview",
         snapGridKeyToggleMode: false,
         snapParticleKeyToggleMode: false,
         snapPriority: ["line_division", "geometry_center", "grid", "particle"]
@@ -2401,6 +3128,7 @@ function initPointsBuilderMain() {
     let autoSelectCompleteGroups = DEFAULT_SETTINGS_PAYLOAD.autoSelectCompleteGroups;
     let geometryCenterPreviewEnabled = DEFAULT_SETTINGS_PAYLOAD.showGeometryCenters;
     let lineDivisionPoints = DEFAULT_SETTINGS_PAYLOAD.lineDivisionPoints;
+    let presetRingPreviewMode = DEFAULT_SETTINGS_PAYLOAD.presetRingPreviewMode;
     let snapGridKeyToggleMode = DEFAULT_SETTINGS_PAYLOAD.snapGridKeyToggleMode;
     let snapParticleKeyToggleMode = DEFAULT_SETTINGS_PAYLOAD.snapParticleKeyToggleMode;
     let snapPriority = DEFAULT_SETTINGS_PAYLOAD.snapPriority.slice();
@@ -2444,6 +3172,23 @@ function initPointsBuilderMain() {
         const n = Math.trunc(Number(v));
         if (!Number.isFinite(n) || n < 0) return DEFAULT_SETTINGS_PAYLOAD.lineDivisionPoints;
         return Math.min(64, n);
+    }
+
+    function normalizePresetRingPreviewMode(value) {
+        const mode = String(value || "").trim().toLowerCase();
+        return ["global", "hidden", "preview"].includes(mode)
+            ? mode
+            : DEFAULT_SETTINGS_PAYLOAD.presetRingPreviewMode;
+    }
+
+    function setPresetRingPreviewMode(value, opts = {}) {
+        const next = normalizePresetRingPreviewMode(value);
+        presetRingPreviewMode = next;
+        if (selPresetRingPreviewMode && selPresetRingPreviewMode.value !== next) {
+            selPresetRingPreviewMode.value = next;
+        }
+        if (typeof renderPresetRingPreview === "function") renderPresetRingPreview();
+        if (!opts.skipSave) saveSettingsToStorage();
     }
 
     function normalizeSnapPriority(value) {
@@ -2725,6 +3470,7 @@ function initPointsBuilderMain() {
             autoSelectCompleteGroups,
             showGeometryCenters: geometryCenterPreviewEnabled,
             lineDivisionPoints,
+            presetRingPreviewMode,
             theme: currentTheme,
             pointSize,
             offsetPreviewLimit,
@@ -2770,6 +3516,9 @@ function initPointsBuilderMain() {
         }
         if (payload.showGeometryCenters !== undefined) {
             setGeometryCenterPreviewEnabled(payload.showGeometryCenters, { skipSave: true });
+        }
+        if (payload.presetRingPreviewMode !== undefined) {
+            setPresetRingPreviewMode(payload.presetRingPreviewMode, { skipSave: true });
         }
         if (payload.lineDivisionPoints !== undefined) {
             setLineDivisionPoints(payload.lineDivisionPoints, { skipSave: true });
@@ -2837,6 +3586,13 @@ function initPointsBuilderMain() {
         chkAutoSelectCompleteGroups.__pbBound = true;
         chkAutoSelectCompleteGroups.addEventListener("change", () => {
             setAutoSelectCompleteGroups(chkAutoSelectCompleteGroups.checked);
+        });
+    }
+
+    if (selPresetRingPreviewMode && !selPresetRingPreviewMode.__pbBound) {
+        selPresetRingPreviewMode.__pbBound = true;
+        selPresetRingPreviewMode.addEventListener("change", () => {
+            setPresetRingPreviewMode(selPresetRingPreviewMode.value);
         });
     }
 
@@ -4083,9 +4839,21 @@ function initPointsBuilderMain() {
     }
 
     function renderPresetRingPreview() {
-        if (!presetRingTool || presetRingTool.classList.contains("hidden")) return false;
+        if (!presetRingTool || presetRingTool.classList.contains("hidden")) {
+            clearPresetPreview();
+            return false;
+        }
+        if (presetRingPreviewMode === "hidden"
+            || (presetRingPreviewMode === "preview" && rightPanelPage !== "presets")) {
+            clearPresetPreview();
+            return false;
+        }
         const count = getPresetRingCount();
         const presetIds = getPresetRingSelectedIds();
+        if (presetRingPreviewMode === "preview" && !presetIds.some(Boolean)) {
+            clearPresetPreview();
+            return false;
+        }
         const presetsById = new Map(getPresetList().map((preset) => [preset.id, preset]));
         const options = {
             count,
@@ -4104,7 +4872,7 @@ function initPointsBuilderMain() {
             const presetId = presetIds[i] || "";
             const preset = presetId ? presetsById.get(presetId) : null;
             if (!preset) {
-                previewPoints.push(placement.slotPoint);
+                if (presetRingPreviewMode === "global") previewPoints.push(placement.slotPoint);
                 continue;
             }
             const resolved = resolvePresetForRingSlotPreview(preset, i, sharedGroups);
@@ -4269,12 +5037,8 @@ function initPointsBuilderMain() {
 
     function cleanupPresetRingSharedState(groups) {
         const valid = new Set((groups || []).map((group) => group.key));
-        for (const key of Object.keys(presetRingSharedVariableState.enabled)) {
-            if (!valid.has(key)) delete presetRingSharedVariableState.enabled[key];
-        }
-        for (const key of Object.keys(presetRingSharedVariableState.values)) {
-            if (!valid.has(key)) delete presetRingSharedVariableState.values[key];
-        }
+        // 数量变化时，变量可能暂时只剩一个槽位，随后又重新成为共享变量。
+        // 保留已编辑值，避免重绘把用户输入替换回预设默认值。
         for (const key of Object.keys(presetRingSharedVariableState.excluded)) {
             if (!valid.has(key)) {
                 delete presetRingSharedVariableState.excluded[key];
@@ -4299,7 +5063,8 @@ function initPointsBuilderMain() {
     function getPresetRingSharedVariableValue(group) {
         const key = group?.key || "";
         if (!key) return group?.defaultValue;
-        if (!Object.prototype.hasOwnProperty.call(presetRingSharedVariableState.values, key)) {
+        if (presetRingSharedVariableState.touched[key] !== true
+            || !Object.prototype.hasOwnProperty.call(presetRingSharedVariableState.values, key)) {
             presetRingSharedVariableState.values[key] = group.type === "vector"
                 ? normalizePointValue(group.defaultValue)
                 : normalizePresetScalarVariableValue(group.defaultValue);
@@ -4309,6 +5074,7 @@ function initPointsBuilderMain() {
 
     function setPresetRingSharedVariableInputValue(group, value) {
         if (!group?.key) return;
+        presetRingSharedVariableState.touched[group.key] = true;
         presetRingSharedVariableState.values[group.key] = group.type === "vector"
             ? normalizePointValue(value)
             : normalizePresetScalarVariableValue(value);
@@ -4467,6 +5233,10 @@ function initPointsBuilderMain() {
     function closePresetRingTool() {
         presetRingTool?.classList.add("hidden");
         clearPresetPreview();
+        presetRingSharedVariableState.enabled = {};
+        presetRingSharedVariableState.values = {};
+        presetRingSharedVariableState.touched = {};
+        presetRingSharedVariableState.excluded = {};
     }
 
     function makePresetChildrenForResolvedApply(preset) {
@@ -4570,6 +5340,12 @@ function initPointsBuilderMain() {
 
     async function applyPresetRingTool() {
         if (!presetRingTool) return false;
+        const scopeCtx = typeof getCurrentCardScopeContext === "function"
+            ? getCurrentCardScopeContext()
+            : null;
+        const targetList = scopeCtx && Array.isArray(scopeCtx.list)
+            ? scopeCtx.list
+            : state.root.children;
         const count = getPresetRingCount();
         const presetIds = getPresetRingSelectedIds();
         const presetsById = new Map(getPresetList().map((preset) => [preset.id, preset]));
@@ -4656,7 +5432,7 @@ function initPointsBuilderMain() {
         }
         historyCapture("apply_preset_ring");
         normalizeNodeTree(group);
-        state.root.children.push(group);
+        targetList.push(group);
         normalizeNodeTree(state.root);
         ensureAxisEverywhere();
         resetCollapseScopes();
@@ -7364,7 +8140,9 @@ function initPointsBuilderMain() {
         const wasCollapsed = card.classList.contains("collapsed");
 
         if (btn) {
-            btn.textContent = collapsed ? "▸" : "▾";
+            btn.innerHTML = collapsed
+                ? '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 6 6 6-6 6"/></svg>'
+                : '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg>';
             btn.title = collapsed ? "展开" : "收起";
         }
         if (wasCollapsed === collapsed) {
@@ -8045,6 +8823,9 @@ function initPointsBuilderMain() {
     let compositionReferencePointsObj = null;
     let compositionReferencePointsBuf = null;
     let compositionReferencePointCount = 0;
+    let compositionReferencePickObj = null;
+    let compositionReferencePickBuf = null;
+    let compositionReferencePickCount = 0;
     let addWithPreviewObj = null;
     let addWithPreviewBuf = null;
     let addWithPreviewCount = 0;
@@ -8074,8 +8855,9 @@ function initPointsBuilderMain() {
     let pointPickPreviewLastX = NaN;
     let pointPickPreviewLastY = NaN;
     let pointPickPreviewLastZ = NaN;
-    let axesHelper, gridHelper, axisLabelGroup;
+    let axesHelper, gridHelper, adaptiveGrid, axisLabelGroup;
     let mirrorHintGrid = null;
+    let mirrorHintAdaptiveGrid = null;
     let mirrorHintGridExpireAt = 0;
     let lockPlaneGuide = null;
     let raycaster, mouse;
@@ -8106,6 +8888,8 @@ function initPointsBuilderMain() {
     let defaultColorBuf = null;        // Float32Array：默认颜色缓存（与 position 等长）
     const DEFAULT_POINT_HEX = 0xffffff;
     const FOCUS_POINT_HEX = 0xffcc33;
+    const BEZIER_ANCHOR_HEX = 0x8d7bff;
+    const BEZIER_SELECTED_HEX = 0xff6b9a;
     const SYNC_POINT_HEX = 0x5dd6ff;
     const OFFSET_POINT_HEX = 0xff6ad5;
     const ADD_WITH_PREVIEW_HEX = 0x63f5c8;
@@ -8118,6 +8902,8 @@ function initPointsBuilderMain() {
     const ROTATE_POINT_HEX = 0x64f59d;
     const defaultPointColor = new THREE.Color(DEFAULT_POINT_HEX);
     const focusPointColor = new THREE.Color(FOCUS_POINT_HEX);
+    const bezierAnchorColor = new THREE.Color(BEZIER_ANCHOR_HEX);
+    const bezierSelectedColor = new THREE.Color(BEZIER_SELECTED_HEX);
     const syncPointColor = new THREE.Color(SYNC_POINT_HEX);
     const offsetPointColor = new THREE.Color(OFFSET_POINT_HEX);
     const addWithPreviewColor = new THREE.Color(ADD_WITH_PREVIEW_HEX);
@@ -8168,6 +8954,21 @@ function initPointsBuilderMain() {
     let offsetTargetIds = [];
     let offsetRefPoint = null;
     let offsetHoverPoint = null;
+    let offsetConstraintAxis = null;
+    let offsetConstraintSpace = "world";
+    let offsetConstraintVector = null;
+    let offsetConstraintLastKey = "";
+    let offsetConstraintLastAt = 0;
+    const OFFSET_AXIS_DOUBLE_TAP_MS = 320;
+    // Blender-style modal axis constraint shared by point picking and Bezier drags.
+    let transformConstraintOperation = null;
+    let transformConstraintOrigin = null;
+    let transformConstraintNodeId = null;
+    let transformConstraintAxis = null;
+    let transformConstraintSpace = "world";
+    let transformConstraintVector = null;
+    let transformConstraintLastKey = "";
+    let transformConstraintLastAt = 0;
     let rotateMode = false;
     let rotateTargetIds = [];
     let rotateBindings = [];
@@ -8505,6 +9306,10 @@ function initPointsBuilderMain() {
             compositionReferencePointsObj.material.size = Math.max(0.12, pointSize * 0.9);
             compositionReferencePointsObj.material.needsUpdate = true;
         }
+        if (compositionReferencePickObj?.material) {
+            compositionReferencePickObj.material.size = Math.max(0.12, pointSize * 0.9);
+            compositionReferencePickObj.material.needsUpdate = true;
+        }
         if (addWithPreviewObj && addWithPreviewObj.material) {
             addWithPreviewObj.material.size = Math.max(0.12, pointSize * 0.9);
             addWithPreviewObj.material.needsUpdate = true;
@@ -8564,13 +9369,17 @@ function initPointsBuilderMain() {
     }
 
     function getMirrorHintGridColor() {
-        const base = new THREE.Color(readCssColor("--grid-color", "#223344"));
+        const base = new THREE.Color(readCssColor("--grid-color", "#617d9b"));
         return base.lerp(new THREE.Color(1, 1, 1), MIRROR_HINT_GRID_COLOR_MIX);
     }
 
     function setMirrorHintGridOpacity(opacity) {
         if (!mirrorHintGrid) return;
         const alpha = clamp(Number(opacity), 0, 1);
+        if (mirrorHintAdaptiveGrid) {
+            mirrorHintAdaptiveGrid.setOpacity(alpha);
+            return;
+        }
         for (const mat of getGridHelperMaterials(mirrorHintGrid)) {
             if (!mat) continue;
             mat.transparent = true;
@@ -8584,6 +9393,10 @@ function initPointsBuilderMain() {
     function updateMirrorPlaneHintTheme() {
         if (!mirrorHintGrid) return;
         const color = getMirrorHintGridColor();
+        if (mirrorHintAdaptiveGrid) {
+            mirrorHintAdaptiveGrid.setColor(color);
+            return;
+        }
         for (const mat of getGridHelperMaterials(mirrorHintGrid)) {
             if (!mat || !mat.color) continue;
             mat.color.copy(color);
@@ -8594,19 +9407,32 @@ function initPointsBuilderMain() {
     function ensureMirrorPlaneHintGrid() {
         if (mirrorHintGrid || !scene) return mirrorHintGrid;
         const color = getMirrorHintGridColor();
-        mirrorHintGrid = new THREE.GridHelper(GRID_HELPER_SIZE, GRID_HELPER_DIVISIONS, color, color);
+        mirrorHintAdaptiveGrid = createAdaptiveGrid({
+            scene,
+            camera,
+            controls,
+            renderer,
+            color,
+            visible: false,
+            plane: mirrorPlane,
+            offset: MIRROR_HINT_GRID_OFFSET,
+        });
+        mirrorHintGrid = mirrorHintAdaptiveGrid?.mesh || null;
+        if (!mirrorHintGrid) return null;
         mirrorHintGrid.visible = false;
         mirrorHintGrid.renderOrder = 18;
-        applyGridTransformForPlane(mirrorHintGrid, mirrorPlane, MIRROR_HINT_GRID_OFFSET);
+        mirrorHintAdaptiveGrid.material.depthTest = false;
+        mirrorHintAdaptiveGrid.material.needsUpdate = true;
+        mirrorHintAdaptiveGrid.setPlane(mirrorPlane, MIRROR_HINT_GRID_OFFSET);
         setMirrorHintGridOpacity(0);
-        scene.add(mirrorHintGrid);
         return mirrorHintGrid;
     }
 
     function triggerMirrorPlaneHint(planeKey) {
         const helper = ensureMirrorPlaneHintGrid();
         if (!helper) return;
-        applyGridTransformForPlane(helper, planeKey, MIRROR_HINT_GRID_OFFSET);
+        if (mirrorHintAdaptiveGrid) mirrorHintAdaptiveGrid.setPlane(planeKey, MIRROR_HINT_GRID_OFFSET);
+        else applyGridTransformForPlane(helper, planeKey, MIRROR_HINT_GRID_OFFSET);
         updateMirrorPlaneHintTheme();
         mirrorHintGridExpireAt = performance.now() + MIRROR_HINT_GRID_DURATION_MS;
         helper.visible = true;
@@ -8629,11 +9455,11 @@ function initPointsBuilderMain() {
         }
         const t = clamp(remain / MIRROR_HINT_GRID_DURATION_MS, 0, 1);
         setMirrorHintGridOpacity(MIRROR_HINT_GRID_MAX_OPACITY * t * t);
+        if (mirrorHintAdaptiveGrid) mirrorHintAdaptiveGrid.update();
     }
 
     function updateGridForPlane() {
-        if (!gridHelper) return;
-        applyGridTransformForPlane(gridHelper, snapPlane, -0.01);
+        if (adaptiveGrid) adaptiveGrid.setPlane(snapPlane, -0.01);
         updateLockPlaneGuideVisual();
     }
 
@@ -8658,13 +9484,26 @@ function initPointsBuilderMain() {
         if (!scene) return;
         const guide = ensureLockPlaneGuide();
         if (!guide) return;
-        if (!lockPlaneActive || !lockPlaneBasePoint || !shouldApplyLockPlane()) {
+        const offsetGuideActive = !!(offsetMode && offsetRefPoint && offsetConstraintVector);
+        const transformGuideActive = !!(transformConstraintOperation
+            && transformConstraintOrigin && transformConstraintVector);
+        const planeGuideActive = !!(lockPlaneActive && lockPlaneBasePoint && shouldApplyLockPlane());
+        if (!offsetGuideActive && !transformGuideActive && !planeGuideActive) {
             guide.visible = false;
             return;
         }
 
-        const base = lockPlaneBasePoint;
-        const n = getPlaneNormalVector().clone().normalize();
+        const base = offsetGuideActive
+            ? offsetRefPoint
+            : transformGuideActive
+                ? transformConstraintOrigin
+                : lockPlaneBasePoint;
+        const guideVector = offsetGuideActive
+            ? offsetConstraintVector
+            : transformGuideActive
+                ? transformConstraintVector
+                : getPlaneNormalVector();
+        const n = new THREE.Vector3(guideVector.x, guideVector.y, guideVector.z).normalize();
         const halfLen = Math.max(1, Number(GRID_HELPER_SIZE) * 0.5);
         const tickStep = Math.max(0.001, Number(LOCK_AXIS_TICK_STEP) || 1);
         const tickEachSide = Math.max(0, Math.floor(halfLen / tickStep));
@@ -8814,14 +9653,15 @@ function initPointsBuilderMain() {
             const item = guide.nodes[dragState.nodeIndex];
             if (!item) return null;
             const prefix = dragState.role === "sh" ? "sh" : "eh";
-            return {
-                x: num(item.x) + num(item[`${prefix}x`]),
-                y: num(item.y) + num(item[`${prefix}y`]),
-                z: num(item.z) + num(item[`${prefix}z`])
-            };
+            const inferred = getBezierGuideHandleOffset(guide.nodes, dragState.nodeIndex, dragState.role, guide.closed);
+            return mapBezierGuidePointToDisplay({
+                x: num(item.x) + num(inferred.x),
+                y: num(item.y) + num(inferred.y),
+                z: num(item.z) + num(inferred.z)
+            }, dragState.nodeId);
         }
-        if (dragState.role === "sh" && guide.c1) return { x: guide.c1.x, y: guide.c1.y, z: guide.c1.z };
-        if (dragState.role === "eh" && guide.c2) return { x: guide.c2.x, y: guide.c2.y, z: guide.c2.z };
+        if (dragState.role === "sh" && guide.c1) return mapBezierGuidePointToDisplay(guide.c1, dragState.nodeId);
+        if (dragState.role === "eh" && guide.c2) return mapBezierGuidePointToDisplay(guide.c2, dragState.nodeId);
         return null;
     }
 
@@ -8864,6 +9704,56 @@ function initPointsBuilderMain() {
         const axisKey = getPlaneNormalAxisKey();
         p[axisKey] = snapValue(p[axisKey], getSnapStep());
         return p;
+    }
+
+    function mapOffsetPointFromRay(ray) {
+        if (!ray || !offsetMode || !offsetRefPoint || !offsetConstraintVector) return null;
+        const axis = normalizeOffsetConstraintVector(offsetConstraintVector);
+        if (!axis) return null;
+        const base = offsetRefPoint;
+        const o = ray.origin;
+        const d = ray.direction;
+        const w0 = new THREE.Vector3(base.x - o.x, base.y - o.y, base.z - o.z);
+        const axisVector = new THREE.Vector3(axis.x, axis.y, axis.z);
+        const a = d.dot(d);
+        const b = d.dot(axisVector);
+        const c = axisVector.dot(axisVector);
+        const d0 = d.dot(w0);
+        const e0 = axisVector.dot(w0);
+        const denom = a * c - b * b;
+        const amount = Math.abs(denom) < 1e-8
+            ? (c > 0 ? e0 / c : 0)
+            : (b * d0 - a * e0) / denom;
+        return {
+            x: base.x + axis.x * amount,
+            y: base.y + axis.y * amount,
+            z: base.z + axis.z * amount
+        };
+    }
+
+    function mapTransformPointFromRay(ray) {
+        if (!ray || !transformConstraintOperation || !transformConstraintOrigin || !transformConstraintVector) return null;
+        const axis = normalizeOffsetConstraintVector(transformConstraintVector);
+        if (!axis) return null;
+        const base = transformConstraintOrigin;
+        const o = ray.origin;
+        const d = ray.direction;
+        const w0 = new THREE.Vector3(base.x - o.x, base.y - o.y, base.z - o.z);
+        const axisVector = new THREE.Vector3(axis.x, axis.y, axis.z);
+        const a = d.dot(d);
+        const b = d.dot(axisVector);
+        const c = axisVector.dot(axisVector);
+        const d0 = d.dot(w0);
+        const e0 = axisVector.dot(w0);
+        const denom = a * c - b * b;
+        const amount = Math.abs(denom) < 1e-8
+            ? (c > 0 ? e0 / c : 0)
+            : (b * d0 - a * e0) / denom;
+        return {
+            x: base.x + axis.x * amount,
+            y: base.y + axis.y * amount,
+            z: base.z + axis.z * amount
+        };
     }
 
     function snapToGridOnPlane(p, step, planeKey) {
@@ -9042,6 +9932,16 @@ function initPointsBuilderMain() {
 
     function updateSnapModeStatus() {
         if (!statusSnapMode) return;
+        if (offsetMode && offsetConstraintVector) {
+            statusSnapMode.textContent = `移动轴：${offsetConstraintLabel()}`;
+            statusSnapMode.classList.remove("hidden");
+            return;
+        }
+        if (transformConstraintOperation && transformConstraintVector) {
+            statusSnapMode.textContent = `移动轴：${transformConstraintLabel()}`;
+            statusSnapMode.classList.remove("hidden");
+            return;
+        }
         if (!lockPlaneActive || !shouldApplyLockPlane()) {
             statusSnapMode.classList.add("hidden");
             return;
@@ -9139,7 +10039,7 @@ function initPointsBuilderMain() {
         scene = new THREE.Scene();
         compositionReferenceSceneReady = true;
 
-        camera = new THREE.PerspectiveCamera(55, threeHost.clientWidth / threeHost.clientHeight, 0.01, 5000);
+        camera = new THREE.PerspectiveCamera(55, threeHost.clientWidth / threeHost.clientHeight, 0.01, 1000000);
         camera.position.set(10, 10, 10);
 
         controls = new OrbitControls(camera, renderer.domElement);
@@ -9158,9 +10058,27 @@ function initPointsBuilderMain() {
         buildAxisLabels();
         if (chkAxes) axesHelper.visible = chkAxes.checked;
 
-        gridHelper = new THREE.GridHelper(GRID_HELPER_SIZE, GRID_HELPER_DIVISIONS, 0x223344, 0x223344);
-        gridHelper.position.y = -0.01;
-        scene.add(gridHelper);
+        adaptiveGrid = createAdaptiveGrid({
+            scene,
+            camera,
+            controls,
+            renderer,
+            color: readCssColor("--grid-color", "#617d9b"),
+            visible: chkGrid ? chkGrid.checked : true,
+            plane: snapPlane,
+            offset: -0.01,
+        });
+        gridHelper = adaptiveGrid?.mesh || null;
+        if (new URLSearchParams(window.location.search || "").has("__perfDebug")) {
+            globalThis.__pointsBuilderPreviewDebug = () => ({
+                gridVisible: gridHelper?.visible,
+                adaptive: !!adaptiveGrid,
+                material: adaptiveGrid?.material?.type,
+                uniforms: adaptiveGrid?.material?.uniforms,
+                camera: camera?.position?.toArray?.(),
+                target: controls?.target?.toArray?.(),
+            });
+        }
         ensureLockPlaneGuide();
         if (chkGrid) gridHelper.visible = chkGrid.checked;
         applySceneTheme();
@@ -9188,13 +10106,13 @@ function initPointsBuilderMain() {
         window.addEventListener("blur", onBezierPreviewModifierBlur);
         renderer.domElement.addEventListener("pointercancel", (ev) => {
             if (bezierHandleDrag && ev && ev.pointerId === bezierHandleDrag.pointerId) {
-                cancelBezierHandleDrag(ev, { suppressClick: true });
+                cancelBezierHandleDrag(ev, { restore: true, suppressClick: true });
             }
             if (bezierCreateState && ev && ev.pointerId === bezierCreateState.pointerId) {
-                finishBezierCreateDrag(ev, true);
+                cancelActiveTransformOperation();
             }
             if (bezierNodeMoveDrag && ev && ev.pointerId === bezierNodeMoveDrag.pointerId) {
-                finishBezierNodeMoveDrag(ev);
+                cancelBezierNodeMoveDrag(ev, { restore: true, suppressClick: true });
             }
             if (actionMenuRightTrack && ev && ev.pointerId === actionMenuRightTrack.pointerId) {
                 endActionMenuRightTrack(ev, true);
@@ -9207,6 +10125,7 @@ function initPointsBuilderMain() {
                 rotateDragStartPoint = null;
                 stopRotateMode({ silent: true });
             }
+            if (offsetMode) stopOffsetMode();
         });
         renderer.domElement.addEventListener("click", onCanvasClick);
         renderer.domElement.addEventListener("dblclick", onCanvasDblClick);
@@ -9217,7 +10136,8 @@ function initPointsBuilderMain() {
             saveSettingsToStorage();
         });
         chkGrid.addEventListener("change", () => {
-            gridHelper.visible = chkGrid.checked;
+            if (adaptiveGrid) adaptiveGrid.setVisible(chkGrid.checked);
+            else if (gridHelper) gridHelper.visible = chkGrid.checked;
             saveSettingsToStorage();
         });
         if (chkRealtimeKotlin) {
@@ -9357,6 +10277,8 @@ function initPointsBuilderMain() {
                 depthTest: false
             });
             bezierGuideLineObj = new THREE.LineSegments(geom, mat);
+            bezierGuideLineObj.frustumCulled = false;
+            bezierGuideLineObj.renderOrder = 1000;
             bezierGuideLineObj.visible = false;
             scene.add(bezierGuideLineObj);
         }
@@ -9371,6 +10293,8 @@ function initPointsBuilderMain() {
                 depthTest: false
             });
             bezierGuideCurveObj = new THREE.Line(geom, mat);
+            bezierGuideCurveObj.frustumCulled = false;
+            bezierGuideCurveObj.renderOrder = 1000;
             bezierGuideCurveObj.visible = false;
             scene.add(bezierGuideCurveObj);
         }
@@ -9388,6 +10312,8 @@ function initPointsBuilderMain() {
                 depthTest: false
             });
             bezierGuidePointsObj = new THREE.Points(geom, mat);
+            bezierGuidePointsObj.frustumCulled = false;
+            bezierGuidePointsObj.renderOrder = 1001;
             bezierGuidePointsObj.visible = false;
             scene.add(bezierGuidePointsObj);
         }
@@ -9405,6 +10331,8 @@ function initPointsBuilderMain() {
                 depthTest: false
             });
             bezierGuideAnchorObj = new THREE.Points(geom, mat);
+            bezierGuideAnchorObj.frustumCulled = false;
+            bezierGuideAnchorObj.renderOrder = 1002;
             bezierGuideAnchorObj.visible = false;
             scene.add(bezierGuideAnchorObj);
         }
@@ -9423,29 +10351,64 @@ function initPointsBuilderMain() {
         bezierNodeMoveDrag = null;
     }
 
+    const bezierGuideSegmentCache = new Map();
+
     function sampleBezierGuideNodes(nodes, count = 256) {
         const list = Array.isArray(nodes) ? nodes : [];
         if (!list.length) return [U.v(0, 0, 0)];
-        if (list.length === 1) return [U.v(num(list[0].x), num(list[0].y), num(list[0].z))];
-        const total = Math.max(32, Math.min(2048, Number(count) || 256));
-        const pointAt = (t) => {
-            const scaled = Math.max(0, Math.min(1, t)) * (list.length - 1);
-            const index = Math.min(list.length - 2, Math.floor(scaled));
-            const local = index === list.length - 2 && t >= 1 ? 1 : scaled - index;
-            const a = list[index] || {};
-            const b = list[index + 1] || {};
-            const p0 = U.v(num(a.x), num(a.y), num(a.z));
-            const p1 = U.add(p0, U.v(num(a.shx), num(a.shy), num(a.shz)));
-            const p3 = U.v(num(b.x), num(b.y), num(b.z));
-            const p2 = U.add(p3, U.v(num(b.ehx), num(b.ehy), num(b.ehz)));
-            const u = 1 - local;
-            return U.v(
-                u * u * u * p0.x + 3 * u * u * local * p1.x + 3 * u * local * local * p2.x + local * local * local * p3.x,
-                u * u * u * p0.y + 3 * u * u * local * p1.y + 3 * u * local * local * p2.y + local * local * local * p3.y,
-                u * u * u * p0.z + 3 * u * u * local * p1.z + 3 * u * local * local * p2.z + local * local * local * p3.z
-            );
-        };
-        return Array.from({ length: total }, (_, index) => pointAt(total === 1 ? 1 : index / (total - 1)));
+        return sampleAdaptiveBezierNodes(list, Math.max(1, Number(count) || 1), {
+            cache: bezierGuideSegmentCache,
+            maxSamples: 4096
+        });
+    }
+
+    function isNearBezierGuidePoint(a, b, epsilon = 1e-9) {
+        if (!a || !b) return false;
+        return Math.abs(num(a.x) - num(b.x)) <= epsilon
+            && Math.abs(num(a.y) - num(b.y)) <= epsilon
+            && Math.abs(num(a.z) - num(b.z)) <= epsilon;
+    }
+
+    function getBezierGuideHandleOffset(nodes, index, role, closed = false) {
+        const list = Array.isArray(nodes) ? nodes : [];
+        const item = list[index] || {};
+        const prefix = role === "sh" ? "sh" : "eh";
+        const explicit = U.v(num(item[`${prefix}x`]), num(item[`${prefix}y`]), num(item[`${prefix}z`]));
+        if (Math.abs(explicit.x) + Math.abs(explicit.y) + Math.abs(explicit.z) > 1e-9) return explicit;
+
+        const count = list.length;
+        const point = U.v(num(item.x), num(item.y), num(item.z));
+        if (count > 1) {
+            const prevIndex = index > 0 ? index - 1 : (closed ? count - 1 : -1);
+            const nextIndex = index + 1 < count ? index + 1 : (closed ? 0 : -1);
+            const preferredIndex = role === "sh" ? nextIndex : prevIndex;
+            const oppositeIndex = role === "sh" ? prevIndex : nextIndex;
+            const preferred = list[preferredIndex];
+            const opposite = list[oppositeIndex];
+            if (preferred) {
+                const toward = U.v(
+                    num(preferred.x) - point.x,
+                    num(preferred.y) - point.y,
+                    num(preferred.z) - point.z
+                );
+                const length = Math.hypot(toward.x, toward.y, toward.z);
+                if (length > 1e-9) return U.v(toward.x / 3, toward.y / 3, toward.z / 3);
+            }
+            if (opposite) {
+                const away = U.v(
+                    point.x - num(opposite.x),
+                    point.y - num(opposite.y),
+                    point.z - num(opposite.z)
+                );
+                const length = Math.hypot(away.x, away.y, away.z);
+                if (length > 1e-9) return U.v(away.x / 3, away.y / 3, away.z / 3);
+            }
+        }
+
+        // 单节点或重合节点没有可推断方向，仍给出一个可拾取的屏幕标记。
+        const fallback = role === "sh" ? 0.5 : -0.5;
+        const plane = typeof getPlaneInfo === "function" ? getPlaneInfo().axis : "XZ";
+        return plane === "ZY" ? U.v(0, 0, fallback) : U.v(fallback, 0, 0);
     }
 
     function makeBezierCreateNode(point) {
@@ -9465,8 +10428,18 @@ function initPointsBuilderMain() {
 
     function cancelBezierHandleDrag(ev = null, options = {}) {
         if (!bezierHandleDrag) return false;
+        const snapshot = bezierHandleDrag.snapshot;
+        const shouldRestore = options.restore === true;
         releaseBezierHandlePointer(bezierHandleDrag.pointerId);
         bezierHandleDrag = null;
+        clearTransformConstraint();
+        if (shouldRestore && snapshot) {
+            restoreTransformSnapshot(snapshot);
+            if (options.suppressClick) armCanvasClickSuppress(ev);
+            hideHoverMarker();
+            updateBezierGuidePreview();
+            return true;
+        }
         rebuildPreviewAndKotlin();
         renderAll();
         if (options.suppressClick) armCanvasClickSuppress(ev);
@@ -9487,9 +10460,11 @@ function initPointsBuilderMain() {
             nodeId,
             role: meta.role,
             nodeIndex: Number.isInteger(meta.nodeIndex) ? meta.nodeIndex : null,
-            symmetric: options.symmetric === true
+            symmetric: options.symmetric === true,
+            snapshot: cloneTransformSnapshot()
         };
         historyCapture(options.symmetric === true ? "bezier_handle_drag_symmetric" : "bezier_handle_drag");
+        beginTransformConstraint("bezier_handle", getBezierHandleWorldPointByDragState(bezierHandleDrag), nodeId);
         armCanvasClickSuppress(ev);
         hideActionMenu();
         return true;
@@ -9529,6 +10504,74 @@ function initPointsBuilderMain() {
         return null;
     }
 
+    function getBezierGuideDisplayPath(nodeId) {
+        if (!nodeId || String(nodeId).startsWith("__bezier_create_preview__")) return [];
+        const fullPath = findNodePathById(nodeId) || [];
+        const scopeCtx = typeof getCurrentCardScopeContext === "function"
+            ? getCurrentCardScopeContext()
+            : null;
+        const scopeId = scopeCtx?.scopeId || null;
+        if (!scopeId) return fullPath;
+        const scopeIndex = fullPath.findIndex((step) => step?.node?.id === scopeId);
+        return scopeIndex >= 0 ? fullPath.slice(scopeIndex + 1) : fullPath;
+    }
+
+    function mapBezierGuidePointToDisplay(point, nodeId) {
+        if (!point) return point;
+        const path = getBezierGuideDisplayPath(nodeId);
+        const worlds = mapLocalPointToWorldPoints(point, path);
+        return worlds?.[0] || {x: num(point.x), y: num(point.y), z: num(point.z)};
+    }
+
+    function mapBezierGuidePointToLocal(point, nodeId) {
+        if (!point) return point;
+        const path = getBezierGuideDisplayPath(nodeId);
+        if (!path.length) return {x: num(point.x), y: num(point.y), z: num(point.z)};
+        const last = path[path.length - 1];
+        return mapWorldPointThroughScopes(point, path.slice(0, -1), last.parentList, last.index);
+    }
+
+    function mapBezierGuideDeltaToLocal(delta, nodeId) {
+        if (!delta) return delta;
+        const path = getBezierGuideDisplayPath(nodeId);
+        return mapWorldDeltaToLocalDelta(delta, path, path.length - 1);
+    }
+
+    function transformBezierGuideForDisplay(rawGuide) {
+        if (!rawGuide || String(rawGuide.nodeId || "").startsWith("__bezier_create_preview__")) return rawGuide;
+        const nodeId = rawGuide.nodeId;
+        if (Array.isArray(rawGuide.nodes)) {
+            const nodes = rawGuide.nodes.map((item, index) => {
+                const anchor = U.v(num(item.x), num(item.y), num(item.z));
+                const sh = U.add(anchor, getBezierGuideHandleOffset(rawGuide.nodes, index, "sh", rawGuide.closed));
+                const eh = U.add(anchor, getBezierGuideHandleOffset(rawGuide.nodes, index, "eh", rawGuide.closed));
+                const displayAnchor = mapBezierGuidePointToDisplay(anchor, nodeId);
+                const displaySh = mapBezierGuidePointToDisplay(sh, nodeId);
+                const displayEh = mapBezierGuidePointToDisplay(eh, nodeId);
+                return {
+                    ...item,
+                    x: displayAnchor.x,
+                    y: displayAnchor.y,
+                    z: displayAnchor.z,
+                    shx: displaySh.x - displayAnchor.x,
+                    shy: displaySh.y - displayAnchor.y,
+                    shz: displaySh.z - displayAnchor.z,
+                    ehx: displayEh.x - displayAnchor.x,
+                    ehy: displayEh.y - displayAnchor.y,
+                    ehz: displayEh.z - displayAnchor.z
+                };
+            });
+            return {...rawGuide, nodes};
+        }
+        return {
+            ...rawGuide,
+            start: mapBezierGuidePointToDisplay(rawGuide.start, nodeId),
+            end: mapBezierGuidePointToDisplay(rawGuide.end, nodeId),
+            c1: mapBezierGuidePointToDisplay(rawGuide.c1, nodeId),
+            c2: mapBezierGuidePointToDisplay(rawGuide.c2, nodeId)
+        };
+    }
+
     function updateBezierGuidePreview() {
         if (!scene) return;
         if (linePickMode || pointPickMode || offsetMode || rotateMode) {
@@ -9539,7 +10582,7 @@ function initPointsBuilderMain() {
         const previewNodeId = (createState && createState.nodeId)
             ? createState.nodeId
             : (bezierSelectedNode?.nodeId || focusedNodeId);
-        let guide = getBezierGuideDataByNodeId(previewNodeId);
+        let guide = transformBezierGuideForDisplay(getBezierGuideDataByNodeId(previewNodeId));
         if ((!guide || (Array.isArray(guide.nodes) && guide.nodes.length === 0))
             && createState?.previewArmed
             && createState.phase === "pick_start"
@@ -9583,8 +10626,8 @@ function initPointsBuilderMain() {
             bezierGuideMeta = [];
             guide.nodes.forEach((item, index) => {
                 const point = U.v(num(item.x), num(item.y), num(item.z));
-                const c1 = U.add(point, U.v(num(item.shx), num(item.shy), num(item.shz)));
-                const c2 = U.add(point, U.v(num(item.ehx), num(item.ehy), num(item.ehz)));
+                const c1 = U.add(point, getBezierGuideHandleOffset(guide.nodes, index, "sh", guide.closed));
+                const c2 = U.add(point, getBezierGuideHandleOffset(guide.nodes, index, "eh", guide.closed));
                 bezierGuideMeta.push({ role: "anchor", nodeId: guide.nodeId, nodeIndex: index, point });
                 bezierGuideMeta.push({ role: "sh", nodeId: guide.nodeId, nodeIndex: index, point: c1 });
                 bezierGuideMeta.push({ role: "eh", nodeId: guide.nodeId, nodeIndex: index, point: c2 });
@@ -9604,30 +10647,58 @@ function initPointsBuilderMain() {
             // W 是钢笔工具：未按 Ctrl 时保留节点和曲柄控制点，但隐藏采样曲线。
             bezierGuideCurveObj.visible = !createState || createState.previewArmed;
             const handleArray = [];
-            guide.nodes.forEach((item) => {
+            guide.nodes.forEach((item, index) => {
                 const point = U.v(num(item.x), num(item.y), num(item.z));
-                const c1 = U.add(point, U.v(num(item.shx), num(item.shy), num(item.shz)));
-                const c2 = U.add(point, U.v(num(item.ehx), num(item.ehy), num(item.ehz)));
+                const c1 = U.add(point, getBezierGuideHandleOffset(guide.nodes, index, "sh", guide.closed));
+                const c2 = U.add(point, getBezierGuideHandleOffset(guide.nodes, index, "eh", guide.closed));
                 handleArray.push(point, c1, point, c2);
             });
             bezierGuideLineObj.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(handleArray.flatMap((p) => [p.x, p.y, p.z])), 3));
             bezierGuideLineObj.geometry.computeBoundingSphere();
             bezierGuideLineObj.visible = true;
         } else {
+            const start = guide.start;
+            const end = guide.end;
+            const segment = U.v(
+                num(end.x) - num(start.x),
+                num(end.y) - num(start.y),
+                num(end.z) - num(start.z)
+            );
+            const segmentLength = Math.hypot(segment.x, segment.y, segment.z);
+            const fallbackAxis = typeof getPlaneInfo === "function" && getPlaneInfo().axis === "ZY"
+                ? U.v(0, 0, 0.5)
+                : U.v(0.5, 0, 0);
+            const fallbackHandle = segmentLength > 1e-9
+                ? U.v(segment.x / 3, segment.y / 3, segment.z / 3)
+                : fallbackAxis;
+            const startHandle = isNearBezierGuidePoint(start, guide.c1)
+                ? U.v(
+                    num(start.x) + fallbackHandle.x,
+                    num(start.y) + fallbackHandle.y,
+                    num(start.z) + fallbackHandle.z
+                )
+                : guide.c1;
+            const endHandle = isNearBezierGuidePoint(end, guide.c2)
+                ? U.v(
+                    num(end.x) - fallbackHandle.x,
+                    num(end.y) - fallbackHandle.y,
+                    num(end.z) - fallbackHandle.z
+                )
+                : guide.c2;
             bezierGuideMeta = [
                 { role: "anchor", nodeId: guide.nodeId, point: guide.start },
                 { role: "anchor", nodeId: guide.nodeId, point: guide.end },
-                { role: "sh", nodeId: guide.nodeId, point: guide.c1 },
-                { role: "eh", nodeId: guide.nodeId, point: guide.c2 }
+                { role: "sh", nodeId: guide.nodeId, point: startHandle },
+                { role: "eh", nodeId: guide.nodeId, point: endHandle }
             ];
             const oldLineValues = new Float32Array(12);
             const linePos = new THREE.BufferAttribute(oldLineValues, 3);
             bezierGuideLineObj.geometry.setAttribute("position", linePos);
             const lp = linePos.array;
             lp[0] = guide.start.x; lp[1] = guide.start.y; lp[2] = guide.start.z;
-            lp[3] = guide.c1.x; lp[4] = guide.c1.y; lp[5] = guide.c1.z;
+            lp[3] = startHandle.x; lp[4] = startHandle.y; lp[5] = startHandle.z;
             lp[6] = guide.end.x; lp[7] = guide.end.y; lp[8] = guide.end.z;
-            lp[9] = guide.c2.x; lp[10] = guide.c2.y; lp[11] = guide.c2.z;
+            lp[9] = endHandle.x; lp[10] = endHandle.y; lp[11] = endHandle.z;
             linePos.needsUpdate = true;
             bezierGuideLineObj.visible = true;
             const curve = sampleBezierGuideNodes([
@@ -9647,11 +10718,11 @@ function initPointsBuilderMain() {
         const pa = pointPos.array;
         const ca = pointColor.array;
         const colors = {
-            anchor: focusPointColor,
+            anchor: bezierAnchorColor,
             sh: pointPickPreviewColor,
             eh: new THREE.Color(0xff5ca8),
             start: defaultPointColor,
-            end: focusPointColor
+            end: bezierAnchorColor
         };
         if (pa.length !== bezierGuideMeta.length * 3) {
             bezierGuidePointsObj.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(bezierGuideMeta.length * 3), 3));
@@ -9674,6 +10745,7 @@ function initPointsBuilderMain() {
         }
         nextPointPos.needsUpdate = true;
         nextPointColor.needsUpdate = true;
+        bezierGuidePointsObj.geometry.computeBoundingSphere();
         bezierGuidePointsObj.material.size = 13;
         bezierGuidePointsObj.visible = true;
 
@@ -9703,7 +10775,7 @@ function initPointsBuilderMain() {
             const selected = !!meta.nodeId
                 && Number.isInteger(meta.nodeIndex)
                 && bezierSelectedNodesByOwner.get(meta.nodeId)?.has(meta.nodeIndex);
-            const color = selected ? new THREE.Color(0xffe066) : focusPointColor;
+            const color = selected ? bezierSelectedColor : bezierAnchorColor;
             anchorColor[base] = color.r;
             anchorColor[base + 1] = color.g;
             anchorColor[base + 2] = color.b;
@@ -9771,16 +10843,17 @@ function initPointsBuilderMain() {
     function buildBezierCreateStatus() {
         if (!bezierCreateState) return "";
         const info = getPlaneInfo().label;
+        const axisHint = transformConstraintVector ? `，约束 ${transformConstraintLabel()}` : "，拖动中可按 X/Y/Z 约束";
         if (bezierCreateState.phase === "pick_start") {
-            return `${info} Bezier 创建：Ctrl + 左键添加起点`;
+            return `${info} Bezier 创建：Ctrl + 左键添加起点${axisHint}`;
         }
         if (bezierCreateState.phase === "pick_end") {
             const start = bezierCreateState.start;
-            return `${info} Bezier 创建：已选 start (${U.fmt(start.x)}, ${U.fmt(start.y)}, ${U.fmt(start.z)})，Ctrl + 左键添加终点`;
+            return `${info} Bezier 创建：已选 start (${U.fmt(start.x)}, ${U.fmt(start.y)}, ${U.fmt(start.z)})，Ctrl + 左键添加终点${axisHint}`;
         }
         if (bezierCreateState.phase === "pick_next") {
             const count = Number(bezierCreateState.nodeCount) || 1;
-            return `${info} 空间贝塞尔创建：已添加 ${count} 个点，Ctrl + 左键继续添加，Esc / 右键双击结束`;
+            return `${info} 空间贝塞尔创建：已添加 ${count} 个点，Ctrl + 左键继续添加，Esc / 右键双击结束${axisHint}`;
         }
         return `${info} Bezier 创建中`;
     }
@@ -9802,6 +10875,7 @@ function initPointsBuilderMain() {
             }
         } catch {}
         bezierCreateState = null;
+        if (transformConstraintOperation === "bezier_create") clearTransformConstraint();
         hideHoverMarker();
         if (!keepGuide || !nodeId) {
             hideBezierGuidePreview();
@@ -10163,6 +11237,8 @@ function initPointsBuilderMain() {
         if (!mapped || !selected.length) return false;
         const anchor = selected.find((row) => row.node.id === nodeId && row.index === meta.nodeIndex);
         if (!anchor) return false;
+        const anchorLocal = {x: num(anchor.item.x), y: num(anchor.item.y), z: num(anchor.item.z)};
+        const anchorDisplay = mapBezierGuidePointToDisplay(anchorLocal, nodeId);
         const dom = renderer && renderer.domElement;
         if (dom?.setPointerCapture) {
             try { dom.setPointerCapture(ev.pointerId); } catch {}
@@ -10172,15 +11248,17 @@ function initPointsBuilderMain() {
             pointerId: ev.pointerId,
             anchorNodeId: nodeId,
             anchorNodeIndex: meta.nodeIndex,
-            startMapped: { x: num(anchor.item.x), y: num(anchor.item.y), z: num(anchor.item.z) },
+            startMapped: anchorDisplay,
             starts: selected.map((row) => ({
                 nodeId: row.node.id,
                 index: row.index,
                 x: num(row.item.x),
                 y: num(row.item.y),
                 z: num(row.item.z)
-            }))
+            })),
+            snapshot: cloneTransformSnapshot()
         };
+        beginTransformConstraint("bezier_node", bezierNodeMoveDrag.startMapped, nodeId);
         armCanvasClickSuppress(ev);
         return true;
     }
@@ -10189,14 +11267,20 @@ function initPointsBuilderMain() {
         if (!bezierNodeMoveDrag || !ev || ev.pointerId !== bezierNodeMoveDrag.pointerId) return false;
         const mapped = getMappedPointFromEvent(ev);
         if (!mapped) return false;
-        const dx = mapped.x - bezierNodeMoveDrag.startMapped.x;
-        const dy = mapped.y - bezierNodeMoveDrag.startMapped.y;
-        const dz = mapped.z - bezierNodeMoveDrag.startMapped.z;
+        const worldDelta = {
+            x: mapped.x - bezierNodeMoveDrag.startMapped.x,
+            y: mapped.y - bezierNodeMoveDrag.startMapped.y,
+            z: mapped.z - bezierNodeMoveDrag.startMapped.z
+        };
         for (const start of bezierNodeMoveDrag.starts || []) {
             const ctx = findNodeContextById(start.nodeId);
             const nodes = Array.isArray(ctx?.node?.params?.nodes) ? ctx.node.params.nodes : [];
             const item = nodes[start.index];
             if (!item) continue;
+            const localDelta = mapBezierGuideDeltaToLocal(worldDelta, start.nodeId);
+            const dx = localDelta.x;
+            const dy = localDelta.y;
+            const dz = localDelta.z;
             item.x = start.x + dx;
             item.y = start.y + dy;
             item.z = start.z + dz;
@@ -10213,8 +11297,28 @@ function initPointsBuilderMain() {
             if (dom?.hasPointerCapture?.(bezierNodeMoveDrag.pointerId)) dom.releasePointerCapture(bezierNodeMoveDrag.pointerId);
         } catch {}
         bezierNodeMoveDrag = null;
+        clearTransformConstraint();
         rebuildPreviewAndKotlin();
         renderAll();
+        return true;
+    }
+
+    function cancelBezierNodeMoveDrag(ev = null, options = {}) {
+        if (!bezierNodeMoveDrag) return false;
+        const drag = bezierNodeMoveDrag;
+        const dom = renderer && renderer.domElement;
+        try {
+            if (dom?.hasPointerCapture?.(drag.pointerId)) dom.releasePointerCapture(drag.pointerId);
+        } catch {}
+        bezierNodeMoveDrag = null;
+        clearTransformConstraint();
+        if (options.restore === true && drag.snapshot) {
+            restoreTransformSnapshot(drag.snapshot);
+        } else {
+            rebuildPreviewAndKotlin();
+            renderAll();
+        }
+        if (options.suppressClick) armCanvasClickSuppress(ev);
         return true;
     }
 
@@ -10222,13 +11326,17 @@ function initPointsBuilderMain() {
         if (!bezierCreateState || !mapped || !ev) return false;
         const state = bezierCreateState;
         if (state.pointerId !== null && state.pointerId !== undefined) return false;
+        const displayMapped = {x: num(mapped.x), y: num(mapped.y), z: num(mapped.z)};
+        const localMapped = state.nodeId
+            ? mapBezierGuidePointToLocal(displayMapped, state.nodeId)
+            : displayMapped;
         if (state.phase === "pick_start") {
-            state.start = { x: mapped.x, y: mapped.y, z: mapped.z };
+            state.start = { x: localMapped.x, y: localMapped.y, z: localMapped.z };
             if (state.targetNodeId) {
                 const targetNodes = getBezierCreateNodes(state.targetNodeId);
                 if (!targetNodes) return false;
                 historyCapture("add_bezier_node");
-                targetNodes.push({ x: mapped.x, y: mapped.y, z: mapped.z, shx: 0, shy: 0, shz: 0, ehx: 0, ehy: 0, ehz: 0 });
+                targetNodes.push({ x: localMapped.x, y: localMapped.y, z: localMapped.z, shx: 0, shy: 0, shz: 0, ehx: 0, ehy: 0, ehz: 0 });
                 state.nodeId = state.targetNodeId;
                 ensureAxisEverywhere();
                 renderAll();
@@ -10242,11 +11350,11 @@ function initPointsBuilderMain() {
         } else if (state.phase === "pick_end" || state.phase === "pick_next") {
             const nodeId = state.nodeId;
             if (!nodeId) return false;
-            if (!appendBezierCreateNode(nodeId, mapped)) return false;
+            if (!appendBezierCreateNode(nodeId, localMapped)) return false;
             const nodes = getBezierCreateNodes(nodeId);
             state.activeNodeIndex = Math.max(0, (nodes?.length || 1) - 1);
             state.nodeCount = nodes?.length || state.nodeCount;
-            state.start = { x: mapped.x, y: mapped.y, z: mapped.z };
+            state.start = { x: localMapped.x, y: localMapped.y, z: localMapped.z };
             state.dragRole = "eh";
             state.phase = "drag_end";
         } else {
@@ -10254,7 +11362,9 @@ function initPointsBuilderMain() {
         }
         state.pointerId = ev.pointerId;
         state.previewArmed = true;
-        state.lastMapped = { x: mapped.x, y: mapped.y, z: mapped.z };
+        state.lastMapped = displayMapped;
+        state.dragSnapshot = cloneTransformSnapshot();
+        beginTransformConstraint("bezier_create", mapBezierGuidePointToDisplay(state.start, state.nodeId), state.nodeId);
         const dom = renderer && renderer.domElement;
         if (dom?.setPointerCapture) {
             try { dom.setPointerCapture(ev.pointerId); } catch {}
@@ -10262,8 +11372,8 @@ function initPointsBuilderMain() {
         armCanvasClickSuppress(ev);
         ensureHoverMarker();
         setHoverMarkerColor(pointPickPreviewColor.getHex());
-        showHoverMarker(mapped);
-        updateBezierCreateHover(mapped);
+        showHoverMarker(displayMapped);
+        updateBezierCreateHover(displayMapped);
         refreshBezierCreateStatus();
         return true;
     }
@@ -10299,6 +11409,7 @@ function initPointsBuilderMain() {
         state.activeNodeIndex = null;
         state.lastMapped = mapped || state.lastMapped;
         state.previewArmed = !!(ev && ev.ctrlKey);
+        if (transformConstraintOperation === "bezier_create") clearTransformConstraint();
         if (!state.previewArmed) hideHoverMarker();
         rebuildPreviewAndKotlin();
         renderAll();
@@ -10313,7 +11424,8 @@ function initPointsBuilderMain() {
             return;
         }
         if (bezierCreateState.phase === "drag_start" || bezierCreateState.phase === "drag_end") {
-            if (setBezierCreateHandle(bezierCreateState.nodeId, bezierCreateState.activeNodeIndex, bezierCreateState.dragRole, mapped)) {
+            const localMapped = mapBezierGuidePointToLocal(mapped, bezierCreateState.nodeId);
+            if (setBezierCreateHandle(bezierCreateState.nodeId, bezierCreateState.activeNodeIndex, bezierCreateState.dragRole, localMapped)) {
                 rebuildPreviewAndKotlin();
                 updateBezierGuidePreview();
             }
@@ -10364,6 +11476,7 @@ function initPointsBuilderMain() {
     function startBezierCreate() {
         // W 是持续工作的钢笔工具；重复 keydown（按住 W 时浏览器会产生）不能重置当前曲线。
         if (bezierCreateState) return true;
+        const operationSnapshot = cloneTransformSnapshot();
         hideActionMenu();
         hideQuickSyncPanel();
         if (offsetMode) stopOffsetMode();
@@ -10387,7 +11500,8 @@ function initPointsBuilderMain() {
             dragRole: null,
             activeNodeIndex: null,
             lastMapped: null,
-            previewArmed: false
+            previewArmed: false,
+            operationSnapshot
         };
         const selectedBezierCtx = focusedNodeId ? findNodeContextById(focusedNodeId) : null;
         const selectedBezierNode = selectedBezierCtx?.node;
@@ -10414,10 +11528,11 @@ function initPointsBuilderMain() {
 
     function applyBezierGuideDragPoint(mapped) {
         if (!bezierHandleDrag || !mapped) return;
+        const localMapped = mapBezierGuidePointToLocal(mapped, bezierHandleDrag.nodeId);
         const ok = setBezierHandleRelative(
             bezierHandleDrag.nodeId,
             bezierHandleDrag.role,
-            mapped,
+            localMapped,
             bezierHandleDrag.nodeIndex,
             { symmetric: bezierHandleDrag.symmetric === true }
         );
@@ -10898,35 +12013,290 @@ function initPointsBuilderMain() {
         return offsetTargetId ? [offsetTargetId] : [];
     }
 
+    function normalizeOffsetConstraintVector(axis) {
+        if (!axis || !Number.isFinite(axis.x) || !Number.isFinite(axis.y) || !Number.isFinite(axis.z)) return null;
+        const normalized = U.norm(axis);
+        return U.len(normalized) > 1e-9 ? normalized : null;
+    }
+
+    function applyForwardLinearTransformsToDirection(direction, transforms) {
+        if (!direction || !Array.isArray(transforms) || !transforms.length) return direction;
+        const vector = new THREE.Vector3(direction.x, direction.y, direction.z);
+        for (const transform of transforms) {
+            if (transform.type === "scale" && Number.isFinite(transform.factor)) {
+                vector.multiplyScalar(transform.factor);
+            } else if (transform.type === "rot" && transform.quat) {
+                vector.applyQuaternion(transform.quat);
+            }
+        }
+        return { x: vector.x, y: vector.y, z: vector.z };
+    }
+
+    function mapLocalDirectionToWorldDirection(direction, path) {
+        if (!direction || !Array.isArray(path) || !path.length) return direction;
+        const originPoints = mapLocalPointToWorldPoints({ x: 0, y: 0, z: 0 }, path);
+        const tipPoints = mapLocalPointToWorldPoints(direction, path);
+        const origin = Array.isArray(originPoints) ? originPoints[0] : null;
+        const tip = Array.isArray(tipPoints) ? tipPoints[0] : null;
+        if (origin && tip
+            && Number.isFinite(origin.x) && Number.isFinite(origin.y) && Number.isFinite(origin.z)
+            && Number.isFinite(tip.x) && Number.isFinite(tip.y) && Number.isFinite(tip.z)) {
+            return {
+                x: tip.x - origin.x,
+                y: tip.y - origin.y,
+                z: tip.z - origin.z
+            };
+        }
+        let result = { x: direction.x, y: direction.y, z: direction.z };
+        for (let i = path.length - 1; i >= 0; i--) {
+            const step = path[i];
+            if (!step) continue;
+            result = applyForwardLinearTransformsToDirection(
+                result,
+                collectPostPointForwardTransformsForList(step.parentList, step.index)
+            );
+        }
+        return result;
+    }
+
+    function resolveOffsetLocalAxis(axisKey) {
+        const targetIds = getActiveOffsetTargetIds();
+        const targetId = targetIds[0] || null;
+        const path = targetId ? findNodePathById(targetId) : null;
+        const basis = axisKey === "X"
+            ? U.v(1, 0, 0)
+            : axisKey === "Z"
+                ? U.v(0, 0, 1)
+                : U.v(0, 1, 0);
+        const targetCtx = targetId ? findNodeContextById(targetId) : null;
+        const innerTransforms = targetCtx?.node && isBuilderContainerKind(targetCtx.node.kind)
+            ? collectPostPointForwardTransformsForList(targetCtx.node.children, -1)
+            : [];
+        const innerDirection = applyForwardLinearTransformsToDirection(basis, innerTransforms);
+        return normalizeOffsetConstraintVector(mapLocalDirectionToWorldDirection(innerDirection, path));
+    }
+
+    function offsetConstraintLabel() {
+        if (!offsetConstraintAxis || !offsetConstraintVector) return "自由";
+        return `${offsetConstraintSpace === "local" ? "局部" : "世界"}${offsetConstraintAxis}`;
+    }
+
+    function transformConstraintLabel() {
+        if (!transformConstraintAxis || !transformConstraintVector) return "自由";
+        return `${transformConstraintSpace === "local" ? "局部" : "世界"}${transformConstraintAxis}`;
+    }
+
+    function clearTransformConstraint() {
+        transformConstraintOperation = null;
+        transformConstraintOrigin = null;
+        transformConstraintNodeId = null;
+        transformConstraintAxis = null;
+        transformConstraintSpace = "world";
+        transformConstraintVector = null;
+        transformConstraintLastKey = "";
+        transformConstraintLastAt = 0;
+        updateSnapModeStatus();
+        updateLockPlaneGuideVisual();
+    }
+
+    function beginTransformConstraint(operation, origin = null, nodeId = null) {
+        clearTransformConstraint();
+        transformConstraintOperation = operation || null;
+        transformConstraintNodeId = nodeId || null;
+        transformConstraintOrigin = origin
+            ? {x: num(origin.x), y: num(origin.y), z: num(origin.z)}
+            : null;
+        updateSnapModeStatus();
+        updateLockPlaneGuideVisual();
+    }
+
+    function resolveTransformLocalAxis(axisKey, nodeId = transformConstraintNodeId) {
+        const key = String(axisKey || "").toUpperCase();
+        const basis = key === "X" ? U.v(1, 0, 0) : key === "Z" ? U.v(0, 0, 1) : U.v(0, 1, 0);
+        if (!nodeId) return basis;
+        const path = typeof getBezierGuideDisplayPath === "function"
+            ? getBezierGuideDisplayPath(nodeId)
+            : findNodePathById(nodeId);
+        if (!Array.isArray(path) || !path.length) return basis;
+        const targetCtx = findNodeContextById(nodeId);
+        const innerTransforms = targetCtx?.node && isBuilderContainerKind(targetCtx.node.kind)
+            ? collectPostPointForwardTransformsForList(targetCtx.node.children, -1)
+            : [];
+        const innerDirection = applyForwardLinearTransformsToDirection(basis, innerTransforms);
+        return normalizeOffsetConstraintVector(mapLocalDirectionToWorldDirection(innerDirection, path)) || basis;
+    }
+
+    function setTransformAxisConstraint(axisKey, timestamp = Date.now()) {
+        if (!transformConstraintOperation) {
+            return offsetMode ? setOffsetAxisConstraint(axisKey, timestamp) : false;
+        }
+        const key = String(axisKey || "").toUpperCase();
+        if (!["X", "Y", "Z"].includes(key)) return false;
+        const now = Number.isFinite(timestamp) ? timestamp : Date.now();
+        const isDoubleTap = transformConstraintLastKey === key
+            && now - transformConstraintLastAt <= OFFSET_AXIS_DOUBLE_TAP_MS;
+        transformConstraintLastKey = key;
+        transformConstraintLastAt = now;
+        const worldAxis = key === "X" ? U.v(1, 0, 0) : key === "Y" ? U.v(0, 1, 0) : U.v(0, 0, 1);
+        transformConstraintSpace = isDoubleTap ? "local" : "world";
+        transformConstraintVector = isDoubleTap ? resolveTransformLocalAxis(key) : worldAxis;
+        transformConstraintAxis = key;
+        updateSnapModeStatus();
+        updateLockPlaneGuideVisual();
+        if (pointPickMode) refreshPointPickStatus();
+        if (bezierCreateState) refreshBezierCreateStatus();
+        return true;
+    }
+
+    function constrainTransformDelta(delta) {
+        if (!delta || !transformConstraintVector) return delta;
+        const axis = normalizeOffsetConstraintVector(transformConstraintVector);
+        if (!axis) return delta;
+        return U.mul(axis, U.dot(delta, axis));
+    }
+
+    function constrainTransformPoint(point, origin = null) {
+        if (!point) return point;
+        if (!transformConstraintOrigin && origin) {
+            transformConstraintOrigin = {x: num(origin.x), y: num(origin.y), z: num(origin.z)};
+        }
+        if (!transformConstraintVector || !transformConstraintOrigin) return point;
+        const delta = constrainTransformDelta({
+            x: num(point.x) - transformConstraintOrigin.x,
+            y: num(point.y) - transformConstraintOrigin.y,
+            z: num(point.z) - transformConstraintOrigin.z
+        });
+        return {
+            x: transformConstraintOrigin.x + delta.x,
+            y: transformConstraintOrigin.y + delta.y,
+            z: transformConstraintOrigin.z + delta.z
+        };
+    }
+
+    function cloneTransformSnapshot() {
+        return {state: deepClone(state), focusedNodeId: focusedNodeId || null};
+    }
+
+    function restoreTransformSnapshot(snapshot) {
+        if (!snapshot?.state) return false;
+        isRestoringHistory = true;
+        try {
+            state = normalizeState(deepClone(snapshot.state));
+            focusedNodeId = snapshot.focusedNodeId || null;
+        } finally {
+            isRestoringHistory = false;
+        }
+        clearTransformConstraint();
+        renderAll();
+        return true;
+    }
+
+    function cancelActiveTransformOperation() {
+        if (bezierHandleDrag) return cancelBezierHandleDrag(null, {restore: true, suppressClick: true});
+        if (bezierNodeMoveDrag) return cancelBezierNodeMoveDrag(null, {restore: true, suppressClick: true});
+        if (bezierCreateState) {
+            const snapshot = bezierCreateState.operationSnapshot || bezierCreateState.dragSnapshot;
+            if (snapshot) {
+                stopBezierCreate({keepGuide: false});
+                return restoreTransformSnapshot(snapshot);
+            }
+            stopBezierCreate({keepGuide: false});
+            clearTransformConstraint();
+            return true;
+        }
+        if (pointPickMode) {
+            stopPointPick();
+            return true;
+        }
+        if (offsetMode) {
+            stopOffsetMode();
+            return true;
+        }
+        if (transformConstraintOperation) {
+            clearTransformConstraint();
+            return true;
+        }
+        return false;
+    }
+
+    function constrainOffsetDelta(delta) {
+        if (!delta || !offsetConstraintVector) return delta;
+        const axis = offsetConstraintVector;
+        const amount = U.dot(delta, axis);
+        return U.mul(axis, amount);
+    }
+
+    function refreshOffsetStatus() {
+        if (!offsetMode) return;
+        const targetIds = getActiveOffsetTargetIds();
+        const groupTip = targetIds.length > 1 ? `（${targetIds.length}项）` : "";
+        setLinePickStatus(`${getPlaneInfo().label} 偏移模式${groupTip}：约束 ${offsetConstraintLabel()}；左键确定位置，X/Y/Z 轴约束，双击切换局部轴，Esc / V / 右键双击退出`);
+    }
+
+    function setOffsetAxisConstraint(axisKey, timestamp = Date.now()) {
+        if (!offsetMode) return false;
+        const key = String(axisKey || "").toUpperCase();
+        if (!["X", "Y", "Z"].includes(key)) return false;
+        const now = Number.isFinite(timestamp) ? timestamp : Date.now();
+        const isDoubleTap = offsetConstraintLastKey === key
+            && now - offsetConstraintLastAt <= OFFSET_AXIS_DOUBLE_TAP_MS;
+        offsetConstraintLastKey = key;
+        offsetConstraintLastAt = now;
+
+        if (isDoubleTap) {
+            const localAxis = resolveOffsetLocalAxis(key);
+            offsetConstraintSpace = localAxis ? "local" : "world";
+            offsetConstraintVector = localAxis || (key === "X" ? U.v(1, 0, 0) : key === "Y" ? U.v(0, 1, 0) : U.v(0, 0, 1));
+        } else {
+            offsetConstraintSpace = "world";
+            offsetConstraintVector = key === "X" ? U.v(1, 0, 0) : key === "Y" ? U.v(0, 1, 0) : U.v(0, 0, 1);
+        }
+        offsetConstraintAxis = key;
+        refreshOffsetStatus();
+        updateSnapModeStatus();
+        updateLockPlaneGuideVisual();
+        updateOffsetPreview(offsetHoverPoint);
+        return true;
+    }
+
     function updateOffsetPreview(targetPoint) {
         if (!offsetMode || !offsetRefPoint || !targetPoint || !scene) {
             hideOffsetPreview();
             return;
         }
         const targetIds = getActiveOffsetTargetIds();
-        if (!targetIds.length || !lastPoints || !lastPoints.length) {
+        if (!targetIds.length) {
             hideOffsetPreview();
             return;
         }
-        const ranges = [];
-        let count = 0;
+        const targetSet = new Set(targetIds);
+        const previewBasePoints = [];
         for (const id of targetIds) {
             const segRanges = getPointSegmentRanges(nodePointSegments.get(id));
             if (!segRanges.length) continue;
-            ranges.push(...segRanges);
-            count += segRanges.reduce((sum, range) => sum + (range.end - range.start), 0);
+            for (const range of segRanges) {
+                for (let i = range.start; i < range.end; i++) {
+                    const point = lastPoints?.[i];
+                    if (point) previewBasePoints.push(point);
+                }
+            }
         }
-        if (!ranges.length || count <= 0) {
+        for (const point of (lastMaskPreviewPoints || [])) {
+            if (point && targetSet.has(point.nodeId)) previewBasePoints.push(point);
+        }
+        const count = previewBasePoints.length;
+        if (!count || !shouldShowOffsetPreview(count)) {
             hideOffsetPreview();
             return;
         }
-        if (!shouldShowOffsetPreview(count)) {
-            hideOffsetPreview();
-            return;
-        }
-        const dx = targetPoint.x - offsetRefPoint.x;
-        const dy = targetPoint.y - offsetRefPoint.y;
-        const dz = targetPoint.z - offsetRefPoint.z;
+        const constrainedDelta = constrainOffsetDelta({
+            x: targetPoint.x - offsetRefPoint.x,
+            y: targetPoint.y - offsetRefPoint.y,
+            z: targetPoint.z - offsetRefPoint.z
+        });
+        const dx = constrainedDelta.x;
+        const dy = constrainedDelta.y;
+        const dz = constrainedDelta.z;
         if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz)) {
             hideOffsetPreview();
             return;
@@ -10946,19 +12316,10 @@ function initPointsBuilderMain() {
             geom.setAttribute("position", new THREE.BufferAttribute(offsetPreviewBuf, 3));
         }
         let o = 0;
-        for (const range of ranges) {
-            for (let i = range.start; i < range.end; i++) {
-                const p = lastPoints[i];
-                if (!p) {
-                    offsetPreviewBuf[o++] = 0;
-                    offsetPreviewBuf[o++] = 0;
-                    offsetPreviewBuf[o++] = 0;
-                    continue;
-                }
-                offsetPreviewBuf[o++] = p.x + dx;
-                offsetPreviewBuf[o++] = p.y + dy;
-                offsetPreviewBuf[o++] = p.z + dz;
-            }
+        for (const p of previewBasePoints) {
+            offsetPreviewBuf[o++] = num(p.x) + dx;
+            offsetPreviewBuf[o++] = num(p.y) + dy;
+            offsetPreviewBuf[o++] = num(p.z) + dz;
         }
         const posAttr = geom.getAttribute("position");
         if (posAttr) posAttr.needsUpdate = true;
@@ -11287,7 +12648,44 @@ function ownerIdForPointIndex(i) {
 function getNodeSegmentCenter(id) {
     if (!id) return null;
     const seg = nodePointSegments.get(id);
-    if (!seg || !lastPoints || !lastPoints.length) return null;
+    if (!seg || !lastPoints || !lastPoints.length) {
+        const maskPoints = Array.isArray(lastMaskPreviewPoints)
+            ? lastMaskPreviewPoints.filter((point) => point && point.nodeId === id)
+            : [];
+        if (maskPoints.length) {
+            let mx = 0, my = 0, mz = 0;
+            for (const point of maskPoints) {
+                mx += num(point.x);
+                my += num(point.y);
+                mz += num(point.z);
+            }
+            return {
+                x: mx / maskPoints.length,
+                y: my / maskPoints.length,
+                z: mz / maskPoints.length
+            };
+        }
+        const ctx = findNodeContextById(id);
+        const kind = ctx?.node?.kind;
+        if (kind === "clear_as_ball_mask" || kind === "clear_as_round_xz_mask") {
+            const path = findNodePathById(id);
+            const params = ctx.node.params || {};
+            const localOrigin = {
+                x: num(params.ox),
+                y: num(params.oy),
+                z: num(params.oz)
+            };
+            const worldOrigins = mapLocalPointToWorldPoints(localOrigin, path) || [];
+            if (worldOrigins.length) {
+                return {
+                    x: worldOrigins.reduce((sum, point) => sum + num(point.x), 0) / worldOrigins.length,
+                    y: worldOrigins.reduce((sum, point) => sum + num(point.y), 0) / worldOrigins.length,
+                    z: worldOrigins.reduce((sum, point) => sum + num(point.z), 0) / worldOrigins.length
+                };
+            }
+        }
+        return null;
+    }
     let sx = 0, sy = 0, sz = 0;
     let count = 0;
     for (const range of getPointSegmentRanges(seg)) {
@@ -11897,8 +13295,11 @@ function getParticleSnapFromEvent(ev) {
     const hitThreshold = Math.max(0.12, (pointSize || 0.2) * 0.6);
     raycaster.params.Points.threshold = Math.min(hitThreshold, particleSnapRange);
     const pickTargets = [pointsObj];
-    if (compositionReferencePointsObj && compositionReferencePointsObj.visible && lastCompositionReferencePoints.length) {
-        pickTargets.push(compositionReferencePointsObj);
+    const compositionReferenceSnapTarget = compositionReferencePickObj?.visible
+        ? compositionReferencePickObj
+        : (compositionReferencePointsObj?.visible ? compositionReferencePointsObj : null);
+    if (compositionReferenceSnapTarget && lastCompositionReferencePoints.length) {
+        pickTargets.push(compositionReferenceSnapTarget);
     }
     const filteredPickTargets = pickTargets.filter(Boolean);
     if (geometryCenterObj && geometryCenterObj.visible) {
@@ -11913,7 +13314,7 @@ function getParticleSnapFromEvent(ev) {
         const point = lastGeometryCenterPoints[idx] || null;
         return point ? { point, fromHit: true, source: point.helperType || "helper" } : null;
     }
-    if (hit.object === compositionReferencePointsObj) {
+    if (hit.object === compositionReferencePointsObj || hit.object === compositionReferencePickObj) {
         const point = lastCompositionReferencePoints[idx] || null;
         return point ? { point, fromHit: true, source: "composition_reference" } : null;
     }
@@ -11927,13 +13328,26 @@ function getMappedPointFromEvent(ev) {
     mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     mouse.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
     raycaster.setFromCamera(mouse, camera);
+    if (offsetMode && offsetConstraintVector && offsetRefPoint) {
+        return mapOffsetPointFromRay(raycaster.ray);
+    }
+    if (transformConstraintOperation && transformConstraintVector && transformConstraintOrigin) {
+        return mapTransformPointFromRay(raycaster.ray);
+    }
     if (lockPlaneActive && lockPlaneBasePoint && shouldApplyLockPlane()) {
-        return mapPickPointLockedFromRay(raycaster.ray);
+        return transformConstraintOperation
+            ? constrainTransformPoint(mapPickPointLockedFromRay(raycaster.ray))
+            : mapPickPointLockedFromRay(raycaster.ray);
     }
     const particle = getParticleSnapFromEvent(ev);
     const hit = new THREE.Vector3();
     if (!raycaster.ray.intersectPlane(pickPlane, hit)) return null;
-    return mapPickPoint(hit, particle);
+    const mapped = mapPickPoint(hit, particle);
+    if (transformConstraintOperation && !transformConstraintOrigin && mapped) {
+        transformConstraintOrigin = {x: mapped.x, y: mapped.y, z: mapped.z};
+        updateLockPlaneGuideVisual();
+    }
+    return transformConstraintOperation ? constrainTransformPoint(mapped) : mapped;
 }
 
 function ensureViewBoxEl() {
@@ -12286,10 +13700,12 @@ function collectBezierNodeSelectionsInRect(rect) {
             if (!node) continue;
             if (node.id && isEditableBezierNodeKind(node.kind)) {
                 const nodes = Array.isArray(node.params?.nodes) ? node.params.nodes : [];
+                const displayGuide = transformBezierGuideForDisplay(getBezierGuideDataByNodeId(node.id));
                 const selected = [];
                 for (let index = 0; index < nodes.length; index++) {
                     const item = nodes[index];
-                    const screen = projectPointToClient({ x: num(item.x), y: num(item.y), z: num(item.z) });
+                    const displayItem = displayGuide?.nodes?.[index] || item;
+                    const screen = projectPointToClient({ x: num(displayItem.x), y: num(displayItem.y), z: num(displayItem.z) });
                     if (!screen) continue;
                     if (screen.x >= rect.left && screen.x <= rect.right && screen.y >= rect.top && screen.y <= rect.bottom) {
                         selected.push(index);
@@ -12409,7 +13825,9 @@ function finishViewBoxSelection(ev) {
     if (!active || !rect) return false;
     if ((rect.right - rect.left) < 3 && (rect.bottom - rect.top) < 3) return false;
     const selection = collectViewBoxSelection(rect);
-    const bezierNodesByOwner = collectBezierNodeSelectionsInRect(rect);
+    const bezierNodesByOwner = bezierCreateState
+        ? collectBezierNodeSelectionsInRect(rect)
+        : new Map();
     const selectionLevel = resolveBezierBoxSelectionLevel(selection.ownerIds, bezierNodesByOwner);
     if (selectionLevel === "nodes") {
         clearCardSelectionForBezierNodes();
@@ -13612,7 +15030,12 @@ function onCanvasDblClick(ev) {
         applyArrowPan();
         updateAxisLabelScale();
         controls.update();
-        if (lockPlaneActive && lockPlaneBasePoint) updateLockPlaneGuideVisual();
+        if (adaptiveGrid) adaptiveGrid.update();
+        if ((lockPlaneActive && lockPlaneBasePoint)
+            || (offsetMode && offsetConstraintVector && offsetRefPoint)
+            || (transformConstraintOperation && transformConstraintVector && transformConstraintOrigin)) {
+            updateLockPlaneGuideVisual();
+        }
         updateMirrorPlaneHint();
         renderer.render(scene, camera);
     }
@@ -13714,17 +15137,18 @@ function onCanvasDblClick(ev) {
 
     function buildPointPickStatus() {
         const info = getPlaneInfo().label;
+        const axisHint = transformConstraintVector ? `，当前约束 ${transformConstraintLabel()}` : "，X/Y/Z 单击约束轴";
         if (typeof pointPickCallback === "function") {
             const label = String(pointPickCallbackLabel || "预设原点").trim() || "预设原点";
             if (pointPickCallback.__localRotateAnchor) {
-                return `${info} 点拾取[${label}]：左键确定锚点，右键取消`;
+                return `${info} 点拾取[${label}]：左键确定锚点，右键取消${axisHint}`;
             }
             const rotateHint = pointPickCallbackRotate ? "，确认后自动进入旋转" : "，按旋转快捷键可在确认后旋转";
-            return `${info} 点拾取[${label}]：左键确定，右键取消${rotateHint}`;
+            return `${info} 点拾取[${label}]：左键确定，右键取消${rotateHint}${axisHint}`;
         }
         const label = pointPickTargetLabel(pointPickTarget);
-        if (label) return `${info} 点拾取[${label}]：左键确定，右键取消`;
-        return `${info} 点拾取：请先选择目标坐标组，再左键确定，右键取消`;
+        if (label) return `${info} 点拾取[${label}]：左键确定，右键取消${axisHint}`;
+        return `${info} 点拾取：请先选择目标坐标组，再左键确定，右键取消${axisHint}`;
     }
 
     function refreshPointPickStatus() {
@@ -13735,6 +15159,20 @@ function onCanvasDblClick(ev) {
     function setPointPickTarget(target) {
         pointPickTarget = target || null;
         if (pointPickTarget) activeVecTarget = pointPickTarget;
+        if (transformConstraintOperation === "point_pick" && pointPickTarget && !transformConstraintOrigin) {
+            const nodeId = resolvePointPickTargetNodeId(pointPickTarget);
+            transformConstraintNodeId = nodeId || null;
+            const local = pointPickTarget.obj && pointPickTarget.keys
+                ? {x: num(pointPickTarget.obj[pointPickTarget.keys.x]), y: num(pointPickTarget.obj[pointPickTarget.keys.y]), z: num(pointPickTarget.obj[pointPickTarget.keys.z])}
+                : null;
+            const path = nodeId ? findNodePathById(nodeId) : null;
+            const worlds = local && Array.isArray(path) ? mapLocalPointToWorldPoints(local, path) : null;
+            transformConstraintOrigin = worlds?.[0] || local || null;
+            if (transformConstraintSpace === "local" && transformConstraintAxis) {
+                transformConstraintVector = resolveTransformLocalAxis(transformConstraintAxis, nodeId);
+            }
+            updateLockPlaneGuideVisual();
+        }
         if (pointPickMode && pointPickTarget && pointPickHoverPoint) queuePointPickPreview(pointPickHoverPoint);
         else if (!pointPickTarget) hidePointPickPreview();
         refreshPointPickStatus();
@@ -14329,6 +15767,7 @@ function collectSyntheticVecTargetsForNode(node) {
         setLockPlaneActive(false);
         lastPickBasePoint = null;
         lastPickMappedPoint = null;
+        beginTransformConstraint("point_pick");
         if (typeof options.onPick === "function") {
             _rClickT = 0;
             pointPickPendingMapped = null;
@@ -14511,6 +15950,7 @@ function collectSyntheticVecTargetsForNode(node) {
         pointPickCallbackLabel = "";
         pointPickCallbackRotate = false;
         _rClickT = 0;
+        if (transformConstraintOperation === "point_pick") clearTransformConstraint();
         hideLinePickStatus();
     }
 
@@ -14555,6 +15995,8 @@ function collectSyntheticVecTargetsForNode(node) {
         "add_polygon_in_circle",
         "add_round_shape",
         "add_fourier_series",
+        "clear_as_ball_mask",
+        "clear_as_round_xz_mask",
         "add_with"
     ]);
 
@@ -14652,6 +16094,7 @@ function collectSyntheticVecTargetsForNode(node) {
     function startOffsetMode(nodeId, options = {}) {
         hideActionMenu();
         hideQuickSyncPanel();
+        if (bezierHandleDrag || bezierNodeMoveDrag || bezierCreateState) return;
         const srcIds = Array.isArray(options.ids) && options.ids.length
             ? options.ids
             : (nodeId ? [nodeId] : []);
@@ -14682,6 +16125,11 @@ function collectSyntheticVecTargetsForNode(node) {
         offsetMode = true;
         offsetTargetIds = usableIds;
         offsetTargetId = usableIds[0] || null;
+        offsetConstraintAxis = null;
+        offsetConstraintSpace = "world";
+        offsetConstraintVector = null;
+        offsetConstraintLastKey = "";
+        offsetConstraintLastAt = 0;
         offsetRefPoint = {
             x: sx / usableIds.length,
             y: sy / usableIds.length,
@@ -14689,8 +16137,9 @@ function collectSyntheticVecTargetsForNode(node) {
         };
         offsetHoverPoint = null;
         hideOffsetPreview();
-        const groupTip = usableIds.length > 1 ? `（${usableIds.length}项）` : "";
-        setLinePickStatus(`${getPlaneInfo().label} 偏移模式${groupTip}：左键确定位置，Esc / V / 右键双击 退出`);
+        refreshOffsetStatus();
+        updateSnapModeStatus();
+        updateLockPlaneGuideVisual();
         ensureHoverMarker();
         setHoverMarkerColor(offsetPointColor.getHex());
         hoverMarker.visible = false;
@@ -14705,8 +16154,15 @@ function collectSyntheticVecTargetsForNode(node) {
         offsetTargetIds = [];
         offsetRefPoint = null;
         offsetHoverPoint = null;
+        offsetConstraintAxis = null;
+        offsetConstraintSpace = "world";
+        offsetConstraintVector = null;
+        offsetConstraintLastKey = "";
+        offsetConstraintLastAt = 0;
         hideHoverMarker();
         hideOffsetPreview();
+        updateSnapModeStatus();
+        updateLockPlaneGuideVisual();
         hideLinePickStatus();
         updateFocusColors();
         updateBezierGuidePreview();
@@ -14769,9 +16225,14 @@ function collectSyntheticVecTargetsForNode(node) {
             stopOffsetMode();
             return;
         }
-        const dx = target.x - offsetRefPoint.x;
-        const dy = target.y - offsetRefPoint.y;
-        const dz = target.z - offsetRefPoint.z;
+        const constrainedDelta = constrainOffsetDelta({
+            x: target.x - offsetRefPoint.x,
+            y: target.y - offsetRefPoint.y,
+            z: target.z - offsetRefPoint.z
+        });
+        const dx = constrainedDelta.x;
+        const dy = constrainedDelta.y;
+        const dz = constrainedDelta.z;
         if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz)) return;
         if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) < 1e-9) {
             stopOffsetMode();
@@ -14786,6 +16247,33 @@ function collectSyntheticVecTargetsForNode(node) {
         }
         if (changed) renderAll();
         stopOffsetMode();
+    }
+
+    function resetOffsetForTargetIds(ids) {
+        const targetIds = normalizeOffsetTargetIds(Array.isArray(ids) ? ids : []);
+        if (!targetIds.length) return false;
+        const center = averageSegmentCenterForNodeIds(targetIds);
+        if (!center) {
+            showToast("无法重置：所选图形没有点", "error");
+            return false;
+        }
+        const worldDelta = { x: -center.x, y: -center.y, z: -center.z };
+        if (Math.abs(worldDelta.x) + Math.abs(worldDelta.y) + Math.abs(worldDelta.z) < 1e-9) {
+            showToast("所选图形已在原点", "info");
+            return true;
+        }
+        historyCapture("offset_reset_origin");
+        let changed = false;
+        for (const id of targetIds) {
+            if (applyOffsetToTargetId(id, worldDelta)) changed = true;
+        }
+        if (changed) {
+            renderAll();
+            showToast("已将所选图形中心重置到原点", "success");
+        } else {
+            showToast("无法重置：目标包含不可直接移动的表达式", "error");
+        }
+        return changed;
     }
 
     function normalizeRotateTargetIds(ids) {
@@ -15218,7 +16706,9 @@ function collectSyntheticVecTargetsForNode(node) {
         mouse.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
         raycaster.setFromCamera(mouse, camera);
         let mapped = null;
-        if (lockPlaneActive && lockPlaneBasePoint && shouldApplyLockPlane()) {
+        if (offsetMode && offsetConstraintVector && offsetRefPoint) {
+            mapped = mapOffsetPointFromRay(raycaster.ray);
+        } else if (lockPlaneActive && lockPlaneBasePoint && shouldApplyLockPlane()) {
             mapped = mapPickPointLockedFromRay(raycaster.ray);
         } else {
             const particle = getParticleSnapFromEvent(ev);
@@ -15227,6 +16717,7 @@ function collectSyntheticVecTargetsForNode(node) {
                 mapped = mapPickPoint(hit, particle);
             }
         }
+        if (mapped && transformConstraintOperation) mapped = constrainTransformPoint(mapped);
         if (mapped) {
             updatePickHoverFromMapped(mapped, ev.pointerId, ev);
             lastPickBasePoint = mapped ? {x: mapped.x, y: mapped.y, z: mapped.z} : null;
@@ -15878,6 +17369,11 @@ function collectSyntheticVecTargetsForNode(node) {
         focusCardById,
         beginRenameNode,
         addRotateForTargetIds,
+        setOffsetAxisConstraint,
+        setTransformAxisConstraint,
+        getTransformConstraintOperation: () => transformConstraintOperation,
+        cancelActiveTransformOperation,
+        resetOffsetForTargetIds,
         startOffsetMode,
         addKindInContext,
         hideActionMenu,

@@ -297,7 +297,7 @@ export function initHotkeysSystem(ctx) {
         {id: "lockPlaneHold", title: "锁定平面坐标（仅移动法线轴）", desc: "默认 X"},
         {id: "copyFocused", title: "复制当前聚焦卡片", desc: "默认 Ctrl/Cmd + D"},
         {id: "mirrorCopy", title: "镜像复制（直线/三角形/Bezier/Offset）", desc: "默认 Ctrl/Cmd + Shift + M"},
-        {id: "triggerFocusedMove", title: "触发聚焦卡片移动", desc: "默认 V"},
+        {id: "triggerFocusedMove", title: "触发聚焦卡片移动", desc: "默认 V；Shift+V 重置到原点"},
         {id: "triggerFocusedRotate", title: "触发聚焦卡片旋转", desc: "默认 R"},
         {id: "triggerFocusedLocalRotate", title: "触发聚焦卡片本地旋转", desc: "默认 F"},
         {id: "deleteFocused", title: "删除当前聚焦卡片", desc: "默认 Backspace"},
