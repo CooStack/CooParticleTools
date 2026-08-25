@@ -9,6 +9,54 @@ export function createBuilderTools(ctx) {
         return Number.isFinite(next) ? next : fallback;
     };
 
+    function evaluateBezierPath(nodes, count) {
+        const list = Array.isArray(nodes) ? nodes : [];
+        const total = Math.max(1, int(count, 16));
+        if (!list.length) return Array.from({ length: total }, () => U.v(0, 0, 0));
+        if (list.length === 1) return Array.from({ length: total }, () => U.v(num(list[0].x), num(list[0].y), num(list[0].z)));
+        const pointAt = (t) => {
+            const scaled = Math.max(0, Math.min(1, t)) * (list.length - 1);
+            const index = Math.min(list.length - 2, Math.floor(scaled));
+            const local = index === list.length - 2 && t >= 1 ? 1 : scaled - index;
+            const a = list[index];
+            const b = list[index + 1];
+            const p0 = U.v(num(a.x), num(a.y), num(a.z));
+            const p1 = U.add(p0, U.v(num(a.shx), num(a.shy), num(a.shz)));
+            const p3 = U.v(num(b.x), num(b.y), num(b.z));
+            const p2 = U.add(p3, U.v(num(b.ehx), num(b.ehy), num(b.ehz)));
+            const u = 1 - local;
+            return U.v(
+                u * u * u * p0.x + 3 * u * u * local * p1.x + 3 * u * local * local * p2.x + local * local * local * p3.x,
+                u * u * u * p0.y + 3 * u * u * local * p1.y + 3 * u * local * local * p2.y + local * local * local * p3.y,
+                u * u * u * p0.z + 3 * u * u * local * p1.z + 3 * u * local * local * p2.z + local * local * local * p3.z
+            );
+        };
+        const dense = Array.from({ length: Math.min(16384, Math.max(256, total * 256)) }, (_, i) => pointAt(i / (Math.min(16384, Math.max(256, total * 256)) - 1)));
+        const lengths = [0];
+        for (let i = 1; i < dense.length; i++) lengths.push(lengths[i - 1] + U.len(U.sub(dense[i], dense[i - 1])));
+        const full = lengths[lengths.length - 1];
+        if (!(full > 1e-9)) return Array.from({ length: total }, () => ({ ...dense[0] }));
+        return Array.from({ length: total }, (_, i) => {
+            const target = full * i / (total - 1);
+            let hi = lengths.findIndex((value) => value >= target);
+            if (hi <= 0) return { ...dense[0] };
+            if (hi < 0) hi = lengths.length - 1;
+            const lo = hi - 1;
+            const span = lengths[hi] - lengths[lo];
+            const ratio = span > 1e-9 ? (target - lengths[lo]) / span : 0;
+            return U.v(dense[lo].x + (dense[hi].x - dense[lo].x) * ratio, dense[lo].y + (dense[hi].y - dense[lo].y) * ratio, dense[lo].z + (dense[hi].z - dense[lo].z) * ratio);
+        });
+    }
+
+    function closeBezierPathNodes(nodes) {
+        const list = Array.isArray(nodes) ? nodes : [];
+        if (list.length < 2) return list;
+        const first = list[0];
+        const last = list[list.length - 1];
+        if (num(first.x) === num(last.x) && num(first.y) === num(last.y) && num(first.z) === num(last.z)) return list;
+        return [...list, { ...first }];
+    }
+
     function getSegmentRanges(seg) {
         if (!seg) return [];
         if (Array.isArray(seg.ranges)) {
@@ -317,6 +365,20 @@ export function createBuilderTools(ctx) {
                 if (!n) continue;
 
                 // 特殊：addBuilder/withBuilder 需要递归并把子段位移到父数组区间
+                if (n.kind === "apply_bezier_distribution") {
+                    const before = targetCtx.points.length;
+                    const child = evalBuilderWithMeta(n.children || [], U.v(0, 1, 0));
+                    const sourceNodes = n.params?.closed ? closeBezierPathNodes(n.params?.nodes) : n.params?.nodes;
+                    const path = evaluateBezierPath(sourceNodes, n.params?.count || 16);
+                    for (const pathPoint of path) {
+                        for (const sourcePoint of (child.points || [])) {
+                            targetCtx.points.push({ x: sourcePoint.x + pathPoint.x, y: sourcePoint.y + pathPoint.y, z: sourcePoint.z + pathPoint.z });
+                        }
+                    }
+                    const after = targetCtx.points.length;
+                    if (after > before) segments.set(n.id, { start: before + baseOffset, end: after + baseOffset });
+                    continue;
+                }
                 if (n.kind === "add_builder" || n.kind === "with_builder") {
                     const before = targetCtx.points.length;
                     const child = evalBuilderWithMeta(n.children || [], U.v(0, 1, 0));
@@ -510,16 +572,12 @@ export function createBuilderTools(ctx) {
                 const def = KIND && KIND[n.kind];
                 if (!def || !def.kotlin) continue;
 
-            if (n.kind === "add_builder" || n.kind === "with_builder" || n.kind === "add_with" || n.kind === "clear_as_mask") {
-                lines.push(...def.kotlin(n, emitCtx, indent, emitNodesKotlinLines));
-                continue;
+            const result = def.kotlin(n, emitCtx, indent, emitNodesKotlinLines);
+            if (Array.isArray(result)) {
+                lines.push(...result);
+            } else if (result) {
+                lines.push(`${indent}${result}`);
             }
-            if (n.kind === "add_fourier_series") {
-                lines.push(...def.kotlin(n, emitCtx, indent));
-                continue;
-            }
-            const call = def.kotlin(n, emitCtx);
-            lines.push(`${indent}${call}`);
         }
         return lines;
     }

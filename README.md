@@ -155,7 +155,7 @@ plugins/my-plugin/
 ```
 
 `plugin.py`:
-
+  
 ```python
 def register(context):
     @context.route("GET", "/ping")

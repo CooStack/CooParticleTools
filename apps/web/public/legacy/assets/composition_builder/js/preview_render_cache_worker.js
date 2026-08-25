@@ -7,7 +7,7 @@ import {
     normalizeAngleOffsetEaseName,
     normalizeAngleOffsetEaseSpecialParams
 } from "./angle_offset_utils.js";
-import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260824_14";
+import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260825_15";
 
 const U = globalThis.Utils;
 

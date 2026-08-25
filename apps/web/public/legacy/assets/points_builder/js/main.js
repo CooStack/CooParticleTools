@@ -1,13 +1,13 @@
 import * as THREE from "three";
 import {OrbitControls} from "three/addons/controls/OrbitControls.js";
-import { createCardInputs, initCardSystem } from "./cards.js?v=20260820_2";
+import { createCardInputs, initCardSystem } from "./cards.js?v=20260825_5";
 import { initFilterSystem } from "./filters.js?v=20260429_7";
 import { initHotkeysSystem } from "./hotkeys.js?v=20260505_1";
-import { createKindDefs } from "./kinds.js?v=20260820_2";
-import { APP_THEME_KEY, watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
-import { createBuilderTools } from "./builder.js?v=20260429_9";
+import { createKindDefs } from "./kinds.js?v=20260825_5";
+import { ALL_THEMES, APP_THEME_KEY, normalizeTheme, watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
+import { createBuilderTools } from "./builder.js?v=20260825_5";
 import { initLayoutSystem } from "./layout.js?v=20260429_1";
-import { createNodeHelpers } from "./nodes.js?v=20260316_1";
+import { createNodeHelpers } from "./nodes.js?v=20260825_4";
 import {
     collectPointsBuilderIds,
     createPointsBuilderNode,
@@ -18,19 +18,22 @@ import {
     normalizePointsBuilderState,
     normalizePointsBuilderVariables,
     reassignPointsBuilderIds
-} from "./model.js?v=20260824_2";
+} from "./model.js?v=20260825_4";
 import { toggleFullscreen } from "./viewer.js";
-import { createPickerModule } from "./main-picker.js?v=20260502_4";
-import { initGlobalShortcuts } from "./main-shortcuts.js?v=20260505_1";
+import { createPickerModule } from "./main-picker.js?v=20260825_4";
+import { initGlobalShortcuts } from "./main-shortcuts.js?v=20260825_5";
 import { initTopbarAndBoot } from "./main-topbar-boot.js?v=20260505_1";
 import { createPreviewDistanceTool } from "../../src/js/shared/preview-distance-tool.js";
+import { getCompositionReferenceSnapshot } from "../../shared/js/composition-reference-storage.js?v=20260825_1";
 import {
     getRandomPresetGroupOptions,
     pickRandomPresetIdsForGroup
 } from "./preset-random.js";
 import {
+    mergeBezierNodeSelectionMaps,
+    resolveBezierBoxSelectionLevel,
     shouldUseFocusedPointColor
-} from "./card-selection.js";
+} from "./card-selection.js?v=20260825_2";
 import {
     sanitizeFileBase,
     loadProjectName,
@@ -92,6 +95,11 @@ function initPointsBuilderMain() {
     // DOM
     // -------------------------
     const elCardsRoot = document.getElementById("cardsRoot");
+    const elCompositionReferenceRoot = document.getElementById("compositionReferenceRoot");
+    const elBuilderColumnTitleLabel = document.getElementById("builderColumnTitleLabel");
+    const elBuilderColumnFootnote = document.getElementById("builderColumnFootnote");
+    const btnBuilderColumnTab = document.getElementById("btnBuilderColumnTab");
+    const btnCompositionColumnTab = document.getElementById("btnCompositionColumnTab");
     const elKotlinOut = document.getElementById("kotlinOut");
 
     // 用户要求：右侧 Kotlin 代码栏只读（可复制，不可编辑）
@@ -1078,23 +1086,18 @@ function initPointsBuilderMain() {
         });
     }
 
-    const THEMES = [
-        { id: "dark-1", label: "夜岚" },
-        { id: "dark-2", label: "深潮" },
-        { id: "dark-3", label: "焰砂" },
-        { id: "light-1", label: "雾蓝" },
-        { id: "light-2", label: "杏露" },
-        { id: "light-3", label: "薄荷" },
-        { id: "glass-dark-blue", label: "玻璃·深蓝" },
-        { id: "glass-dark-green", label: "玻璃·深绿" },
-        { id: "glass-dark-violet", label: "玻璃·深紫" },
-        { id: "glass-dark-neutral", label: "玻璃·黑" },
-        { id: "glass-light-blue", label: "玻璃·浅蓝" },
-        { id: "glass-light-green", label: "玻璃·浅绿" },
-        { id: "glass-light-violet", label: "玻璃·浅紫" },
-        { id: "glass-light-neutral", label: "玻璃·白" }
-    ];
-    const THEME_ORDER = THEMES.map(t => t.id);
+    /*
+     * The theme list and normalizer come from the shared store, not from a copy
+     * here.
+     *
+     * This file used to keep its own THEMES array that still contained dark-2 /
+     * dark-3 / light-2 / light-3, and its own normalizeTheme() that treated them
+     * as valid. The shared normalizer collapses them to dark-1 / light-1, so
+     * PointsBuilder would write "dark-2" into the shared key and every other tool
+     * would read it back as "dark-1" — the tools genuinely disagreed about the
+     * current theme, and those ids have no stylesheet either.
+     */
+    const THEME_ORDER = ALL_THEMES;
     // Shared with every other tool so the theme is global, not per-builder.
     const THEME_KEY = APP_THEME_KEY;
     const GRID_HELPER_SIZE = 256;
@@ -1106,12 +1109,12 @@ function initPointsBuilderMain() {
     const LOCK_AXIS_TICK_STEP = 1;
     const LOCK_AXIS_TICK_HALF_LEN = 0.28;
     const LOCK_AXIS_GUIDE_COLOR = 0x6cff98;
-    const hasTheme = (id) => THEMES.some(t => t.id === id);
-    const normalizeTheme = (id) => {
-        if (id === "dark") return "dark-1";
-        if (id === "light") return "light-1";
-        return hasTheme(id) ? id : "dark-1";
-    };
+    /*
+     * normalizeTheme is the shared one (imported above), not a local copy. The
+     * copy that used to live here sent the retired light ids to dark-1, so a
+     * project saved under light-2 opened in a dark theme; the shared normalizer
+     * maps them to light-1, which is what every other tool already does.
+     */
     const readCssColor = (name, fallback) => {
         if (!document || !document.body) return fallback;
         const v = getComputedStyle(document.body).getPropertyValue(name).trim();
@@ -1213,6 +1216,28 @@ function initPointsBuilderMain() {
         cache: new Map(),
         version: 0
     };
+    const isCompositionPointsBuilder = !!(document.body?.classList?.contains("composition-no-kotlin"));
+    const COMPOSITION_REFERENCE_VISIBILITY_KEY = "cpb_composition_reference_visibility_v1";
+    const COMPOSITION_REFERENCE_ONLY_CURRENT_KEY = "cpb_composition_reference_only_current_v1";
+    const COMPOSITION_REFERENCE_SHOW_CURRENT_KEY = "cpb_composition_reference_show_current_v1";
+    const COMPOSITION_REFERENCE_OPACITY_KEY = "cpb_composition_reference_opacity_v1";
+    const COMPOSITION_REFERENCE_COLLAPSED_KEY = "cpb_composition_reference_collapsed_v1";
+    let compositionReferenceState = null;
+    let compositionReferenceSnapshot = null;
+    let compositionReferenceStatus = "";
+    let compositionReferenceCardId = "";
+    let compositionReferenceCurrentSourcePoints = null;
+    let compositionReferenceCurrentAnchorRefs = [];
+    let compositionReferenceFrameIndex = 0;
+    let compositionReferenceOnlyCurrent = false;
+    let compositionReferenceShowCurrent = false;
+    let compositionReferenceOpacity = 0.3;
+    let activeBuilderColumn = "builder";
+    let compositionReferenceVisibility = Object.create(null);
+    let compositionReferenceCollapsed = Object.create(null);
+    let compositionReferenceSceneReady = false;
+    let compositionReferenceHydrating = false;
+    let compositionReferenceHydrationToken = 0;
     const CONTEXT_NUMERIC_TYPES = new Set(["Int", "Long", "Float", "Double"]);
     const CONTEXT_VECTOR_TYPES = new Set(["Vec3", "RelativeLocation", "Vector3f"]);
 
@@ -1510,6 +1535,13 @@ function initPointsBuilderMain() {
     }
 
     function loadCompositionNumericContext() {
+        compositionReferenceHydrationToken += 1;
+        compositionReferenceHydrating = false;
+        const previousFrameTicks = Array.isArray(compositionReferenceSnapshot?.frameTicks)
+            ? compositionReferenceSnapshot.frameTicks
+            : [];
+        const previousFrameIndex = Math.max(0, Math.trunc(Number(compositionReferenceFrameIndex) || 0));
+        const previousFrameTick = Number(previousFrameTicks?.[previousFrameIndex] ?? previousFrameIndex);
         let payload = null;
         try {
             const raw = localStorage.getItem(PB_COMP_CONTEXT_KEY);
@@ -1524,6 +1556,658 @@ function initPointsBuilderMain() {
         compositionNumericContext.vectorOptions = Array.isArray(next.vectorOptions) ? next.vectorOptions : [];
         compositionNumericContext.cache.clear();
         compositionNumericContext.version += 1;
+        compositionReferenceState = payload?.compositionState && typeof payload.compositionState === "object"
+            ? payload.compositionState
+            : null;
+        compositionReferenceSnapshot = payload?.compositionReference && typeof payload.compositionReference === "object"
+            ? payload.compositionReference
+            : null;
+        compositionReferenceStatus = String(payload?.compositionReferenceStatus || "");
+        compositionReferenceCardId = String(payload?.cardId || new URLSearchParams(location.search).get("card") || "").trim();
+        const snapshotMatchesCurrentCard = String(payload?.compositionReference?.currentCardId || "") === compositionReferenceCardId;
+        compositionReferenceCurrentSourcePoints = snapshotMatchesCurrentCard && Array.isArray(payload?.compositionReference?.currentSourcePoints)
+            ? payload.compositionReference.currentSourcePoints.map((point) => ({
+                x: num(point?.x),
+                y: num(point?.y),
+                z: num(point?.z)
+            }))
+            : null;
+        compositionReferenceCurrentAnchorRefs = Array.isArray(payload?.compositionReference?.currentAnchorRefs)
+            ? payload.compositionReference.currentAnchorRefs.map((index) => {
+                const value = Math.trunc(Number(index));
+                return Number.isFinite(value) && value >= 0 ? value : -1;
+            })
+            : [];
+        const nextFrameTicks = Array.isArray(compositionReferenceSnapshot?.frameTicks)
+            ? compositionReferenceSnapshot.frameTicks
+            : [];
+        if (nextFrameTicks.length > 1 && Number.isFinite(previousFrameTick)) {
+            let nearestIndex = 0;
+            let nearestDistance = Number.POSITIVE_INFINITY;
+            for (let index = 0; index < nextFrameTicks.length; index++) {
+                const distance = Math.abs(Number(nextFrameTicks[index]) - previousFrameTick);
+                if (distance < nearestDistance) {
+                    nearestDistance = distance;
+                    nearestIndex = index;
+                }
+            }
+            compositionReferenceFrameIndex = nearestIndex;
+        } else if (Number.isFinite(previousFrameTick) && Number(compositionReferenceSnapshot?.totalTicks || 0) > 1) {
+            compositionReferenceFrameIndex = Math.max(0, Math.min(
+                Math.max(0, Math.trunc(Number(compositionReferenceSnapshot.totalTicks) || 1) - 1),
+                Math.trunc(previousFrameTick)
+            ));
+        } else {
+            compositionReferenceFrameIndex = 0;
+        }
+        compositionReferenceOnlyCurrent = loadCompositionReferenceOnlyCurrent();
+        compositionReferenceShowCurrent = loadCompositionReferenceShowCurrent();
+        compositionReferenceOpacity = loadCompositionReferenceOpacity();
+        loadCompositionReferenceVisibility();
+        loadCompositionReferenceCollapsed();
+        renderCompositionReferencePanel();
+        rebuildCompositionReferencePreview();
+        if (compositionReferenceSnapshot?.storage === "indexeddb"
+            && String(compositionReferenceSnapshot.storageKey || "").trim()
+            && !(Array.isArray(compositionReferenceSnapshot.frames) && compositionReferenceSnapshot.frames.length)) {
+            hydrateCompositionReferenceSnapshot(compositionReferenceSnapshot.storageKey);
+        }
+    }
+
+    function loadCompositionReferenceOnlyCurrent() {
+        try {
+            return localStorage.getItem(COMPOSITION_REFERENCE_ONLY_CURRENT_KEY) === "true";
+        } catch {
+            return false;
+        }
+    }
+
+    function saveCompositionReferenceOnlyCurrent() {
+        try {
+            localStorage.setItem(COMPOSITION_REFERENCE_ONLY_CURRENT_KEY, compositionReferenceOnlyCurrent ? "true" : "false");
+        } catch {
+        }
+    }
+
+    function loadCompositionReferenceShowCurrent() {
+        try {
+            return localStorage.getItem(COMPOSITION_REFERENCE_SHOW_CURRENT_KEY) === "true";
+        } catch {
+            return false;
+        }
+    }
+
+    function saveCompositionReferenceShowCurrent() {
+        try {
+            localStorage.setItem(COMPOSITION_REFERENCE_SHOW_CURRENT_KEY, compositionReferenceShowCurrent ? "true" : "false");
+        } catch {
+        }
+    }
+
+    async function hydrateCompositionReferenceSnapshot(storageKey) {
+        const token = ++compositionReferenceHydrationToken;
+        compositionReferenceHydrating = true;
+        renderCompositionReferencePanel();
+        try {
+            const stored = await getCompositionReferenceSnapshot(storageKey);
+            if (token !== compositionReferenceHydrationToken) return;
+            if (!stored || !Array.isArray(stored.frames) || !stored.frames.length) {
+                throw new Error("Composition reference snapshot is empty");
+            }
+            compositionReferenceSnapshot = {
+                ...compositionReferenceSnapshot,
+                frames: stored.frames,
+                visibleMasks: Array.isArray(stored.visibleMasks) ? stored.visibleMasks : []
+            };
+            compositionReferenceHydrating = false;
+            compositionReferenceStatus = "ready";
+            renderCompositionReferencePanel();
+            rebuildCompositionReferencePreview();
+        } catch (error) {
+            if (token !== compositionReferenceHydrationToken) return;
+            compositionReferenceHydrating = false;
+            compositionReferenceStatus = "storage_unavailable";
+            renderCompositionReferencePanel();
+            rebuildCompositionReferencePreview();
+            console.warn("load Composition reference snapshot failed:", error);
+        }
+    }
+
+    function loadCompositionReferenceOpacity() {
+        try {
+            const value = Number(localStorage.getItem(COMPOSITION_REFERENCE_OPACITY_KEY));
+            return Number.isFinite(value) ? Math.max(0.05, Math.min(1, value)) : 0.3;
+        } catch {
+            return 0.3;
+        }
+    }
+
+    function saveCompositionReferenceOpacity() {
+        try {
+            localStorage.setItem(COMPOSITION_REFERENCE_OPACITY_KEY, String(compositionReferenceOpacity));
+        } catch {
+        }
+    }
+
+    function loadCompositionReferenceVisibility() {
+        compositionReferenceVisibility = Object.create(null);
+        try {
+            const raw = localStorage.getItem(COMPOSITION_REFERENCE_VISIBILITY_KEY);
+            const parsed = raw ? JSON.parse(raw) : null;
+            if (parsed && typeof parsed === "object") {
+                for (const [key, value] of Object.entries(parsed)) {
+                    compositionReferenceVisibility[String(key)] = value !== false;
+                }
+            }
+        } catch {
+        }
+    }
+
+    function saveCompositionReferenceVisibility() {
+        try {
+            localStorage.setItem(COMPOSITION_REFERENCE_VISIBILITY_KEY, JSON.stringify(compositionReferenceVisibility));
+        } catch {
+        }
+    }
+
+    function loadCompositionReferenceCollapsed() {
+        compositionReferenceCollapsed = Object.create(null);
+        try {
+            const raw = localStorage.getItem(COMPOSITION_REFERENCE_COLLAPSED_KEY);
+            const parsed = raw ? JSON.parse(raw) : null;
+            if (parsed && typeof parsed === "object") {
+                for (const [key, value] of Object.entries(parsed)) {
+                    compositionReferenceCollapsed[String(key)] = value === true;
+                }
+            }
+        } catch {
+        }
+    }
+
+    function saveCompositionReferenceCollapsed() {
+        try {
+            localStorage.setItem(COMPOSITION_REFERENCE_COLLAPSED_KEY, JSON.stringify(compositionReferenceCollapsed));
+        } catch {
+        }
+    }
+
+    function escapeReferenceText(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    function compositionReferenceNodeId(cardId, path = []) {
+        const id = String(cardId || "").trim();
+        const normalizedPath = Array.isArray(path) ? path.map((value) => Math.max(0, Math.trunc(Number(value) || 0))) : [];
+        return normalizedPath.length ? `${id}::shape:${normalizedPath.join(".")}` : id;
+    }
+
+    function compositionReferenceTargetPath(targetRaw) {
+        const target = String(targetRaw || "root");
+        if (!target.startsWith("tree_node:")) return [];
+        try {
+            const path = JSON.parse(target.slice("tree_node:".length));
+            return Array.isArray(path) ? path.map((value) => Math.max(0, Math.trunc(Number(value) || 0))) : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function isCompositionReferenceDescendant(idRaw, ancestorRaw) {
+        const id = String(idRaw || "");
+        const ancestor = String(ancestorRaw || "");
+        if (!id || !ancestor) return false;
+        if (id === ancestor) return true;
+        return ancestor.includes("::shape:")
+            ? id.startsWith(`${ancestor}.`)
+            : id.startsWith(`${ancestor}::shape:`);
+    }
+
+    function decodeCompositionReferenceFrame(raw, expectedLength = 0) {
+        if (raw instanceof Float32Array) return expectedLength > 0 && raw.length !== expectedLength ? null : raw;
+        if (raw instanceof ArrayBuffer) {
+            const view = new Float32Array(raw);
+            return expectedLength > 0 && view.length !== expectedLength ? null : view;
+        }
+        if (Array.isArray(raw)) {
+            const view = Float32Array.from(raw, (value) => Number(value) || 0);
+            return expectedLength > 0 && view.length !== expectedLength ? null : view;
+        }
+        if (typeof raw !== "string" || !raw) return null;
+        try {
+            const binary = atob(raw);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i) & 0xff;
+            if (bytes.byteLength % 4 !== 0) return null;
+            const view = new Float32Array(bytes.buffer);
+            if (expectedLength > 0 && view.length !== expectedLength) return null;
+            return view;
+        } catch {
+            return null;
+        }
+    }
+
+    function decodeCompositionReferenceMask(raw, expectedLength = 0) {
+        if (raw instanceof Uint8Array) return raw;
+        if (Array.isArray(raw)) return Uint8Array.from(raw, (value) => value ? 1 : 0);
+        if (typeof raw !== "string" || !raw) return null;
+        try {
+            const binary = atob(raw);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i) & 0xff;
+            if (expectedLength > 0 && bytes.length !== expectedLength) return null;
+            return bytes;
+        } catch {
+            return null;
+        }
+    }
+
+    function compositionReferenceGroups() {
+        const cards = Array.isArray(compositionReferenceState?.cards) ? compositionReferenceState.cards : [];
+        const snapshotGroups = Array.isArray(compositionReferenceSnapshot?.groups)
+            ? compositionReferenceSnapshot.groups
+            : [];
+        const currentOwnerId = String(compositionReferenceSnapshot?.currentOwnerId || "")
+            || compositionReferenceNodeId(
+                compositionReferenceCardId,
+                compositionReferenceTargetPath(compositionReferenceSnapshot?.currentTarget || "root")
+            );
+        const countById = new Map(snapshotGroups.map((group) => [String(group?.id || ""), Math.max(0, Math.trunc(Number(group?.pointCount) || 0))]));
+        const rows = [];
+        const appendTree = (card, index, parentId = null, depth = 0, path = [], isCurrentCard = false, rootCardId = "") => {
+            const rootId = rootCardId || String(card?.id || `card-${index}`);
+            const nodePath = Array.isArray(path) ? path.slice() : [];
+            const rowId = nodePath.length ? compositionReferenceNodeId(rootId, nodePath) : rootId;
+            const children = Array.isArray(card?.shapeChildren)
+                ? card.shapeChildren
+                : (Array.isArray(card?.children) ? card.children : []);
+            const isRoot = nodePath.length === 0;
+            rows.push({
+                id: rowId,
+                parentId,
+                depth,
+                path: nodePath,
+                name: String(card?.name || (isRoot ? `卡片 ${index + 1}` : `子节点 ${nodePath[nodePath.length - 1] + 1}`)),
+                dataType: String(card?.type || card?.dataType || "single"),
+                isCurrent: rowId === currentOwnerId,
+                isCurrentCard: isCurrentCard || (isRoot && rootId === compositionReferenceCardId),
+                isCurrentTarget: rowId === currentOwnerId,
+                childIds: children.map((_, childIndex) => compositionReferenceNodeId(rootId, nodePath.concat(childIndex)))
+            });
+            children.forEach((child, childIndex) => appendTree(
+                child,
+                index,
+                rowId,
+                depth + 1,
+                nodePath.concat(childIndex),
+                isCurrentCard || (isRoot && rootId === compositionReferenceCardId),
+                rootId
+            ));
+        };
+        cards.forEach((card, index) => appendTree(card, index));
+        const ownerIds = Array.from(countById.keys());
+        const countForRow = (row) => ownerIds
+            .filter((ownerId) => isCompositionReferenceDescendant(ownerId, row.id))
+            .reduce((sum, ownerId) => sum + (countById.get(ownerId) || 0), 0);
+        const selfVisible = new Map();
+        for (const row of rows) {
+            selfVisible.set(row.id, compositionReferenceVisibility[row.id] !== false);
+        }
+        const effectiveVisible = new Map();
+        for (const row of rows) {
+            const parentVisible = row.parentId ? effectiveVisible.get(row.parentId) !== false : true;
+            effectiveVisible.set(row.id, parentVisible && selfVisible.get(row.id) !== false);
+        }
+        return rows.map((row) => {
+            const isCurrent = row.isCurrent;
+            const currentCardVisible = compositionReferenceShowCurrent || compositionReferenceOnlyCurrent;
+            return {
+                ...row,
+                pointCount: countForRow(row),
+                visible: row.isCurrentCard
+                    ? (currentCardVisible && effectiveVisible.get(row.id) === true)
+                    : (compositionReferenceOnlyCurrent
+                        ? false
+                        : (effectiveVisible.get(row.id) === true
+                            && (!isCompositionReferenceDescendant(row.id, currentOwnerId) || compositionReferenceShowCurrent)))
+            };
+        });
+    }
+
+    function renderCompositionReferencePanel() {
+        if (!elCompositionReferenceRoot || !isCompositionPointsBuilder) return;
+        const groups = compositionReferenceGroups();
+        if (!groups.length) {
+            elCompositionReferenceRoot.innerHTML = '<div class="composition-reference-empty">当前没有可用的 Composition 快照。</div>';
+            return;
+        }
+        const hasStoredSnapshot = !!(compositionReferenceSnapshot?.storage === "indexeddb"
+            && String(compositionReferenceSnapshot.storageKey || "").trim());
+        const hasSnapshot = !!(compositionReferenceSnapshot
+            && ((Array.isArray(compositionReferenceSnapshot.frames) && compositionReferenceSnapshot.frames.length)
+                || hasStoredSnapshot));
+        const sampled = compositionReferenceSnapshot?.sampled === true;
+        const frameSampled = compositionReferenceSnapshot?.frameSampled === true;
+        const frames = Array.isArray(compositionReferenceSnapshot?.frames) ? compositionReferenceSnapshot.frames : [];
+        const rawFrameTicks = Array.isArray(compositionReferenceSnapshot?.frameTicks)
+            ? compositionReferenceSnapshot.frameTicks
+            : [];
+        // A pending fallback has one cached frame but still exposes the complete
+        // Composition cycle so the user can scrub immediately.
+        const isVirtualTimeline = frames.length === 1
+            && Number(compositionReferenceSnapshot?.totalTicks || 0) > 1
+            && rawFrameTicks.length <= 1;
+        const timelineCount = isVirtualTimeline
+            ? Math.max(1, Math.trunc(Number(compositionReferenceSnapshot?.totalTicks) || 1))
+            : (frames.length || Math.max(1, Math.trunc(Number(compositionReferenceSnapshot?.frameCount || compositionReferenceSnapshot?.totalTicks) || 1)));
+        const safeFrameIndex = timelineCount > 0
+            ? Math.max(0, Math.min(timelineCount - 1, Math.trunc(Number(compositionReferenceFrameIndex) || 0)))
+            : 0;
+        compositionReferenceFrameIndex = safeFrameIndex;
+        const frameTick = isVirtualTimeline
+            ? safeFrameIndex
+            : Number(rawFrameTicks?.[safeFrameIndex] ?? safeFrameIndex);
+        const controls = `<section class="composition-reference-controls" aria-label="Composition 预览控制">
+            <div class="composition-reference-controls-head">
+                <div>
+                    <div class="composition-reference-controls-title">Composition 预览</div>
+                    <div class="composition-reference-controls-subtitle">静态帧 · 手动切换</div>
+                </div>
+                <output class="composition-reference-frame-label" data-reference-frame-label>帧 ${timelineCount ? safeFrameIndex + 1 : 0} / ${timelineCount || 0} · Tick ${Number.isFinite(frameTick) ? frameTick : 0}</output>
+            </div>
+            <label class="composition-reference-current-only">
+                <input type="checkbox" data-reference-only-current ${compositionReferenceOnlyCurrent ? "checked" : ""}/>
+                <span>只显示当前卡片</span>
+            </label>
+            <label class="composition-reference-current-only">
+                <input type="checkbox" data-reference-show-current ${compositionReferenceShowCurrent || compositionReferenceOnlyCurrent ? "checked" : ""} ${compositionReferenceOnlyCurrent ? "disabled" : ""}/>
+                <span>显示当前卡片 Composition 预览</span>
+            </label>
+            <label class="composition-reference-opacity">
+                <span>参考不透明度</span>
+                <input type="range" min="0.05" max="1" step="0.05" value="${compositionReferenceOpacity}" data-reference-opacity aria-label="参考不透明度"/>
+                <output data-reference-opacity-label>${Math.round(compositionReferenceOpacity * 100)}%</output>
+            </label>
+            <div class="composition-reference-frame-controls">
+                <button class="btn composition-reference-frame-btn" type="button" data-reference-frame-action="prev" ${timelineCount <= 1 ? "disabled" : ""}>上一帧</button>
+                <input class="composition-reference-frame-range" type="range" min="0" max="${Math.max(0, timelineCount - 1)}" step="1" value="${safeFrameIndex}" data-reference-frame-range aria-label="Composition 预览进度" ${timelineCount ? "" : "disabled"}/>
+                <button class="btn composition-reference-frame-btn" type="button" data-reference-frame-action="next" ${timelineCount <= 1 ? "disabled" : ""}>下一帧</button>
+            </div>
+        </section>`;
+        const groupsById = new Map(groups.map((group) => [group.id, group]));
+        const renderGroup = (group) => {
+            const title = group.isCurrent
+                ? `${group.depth > 0 ? "当前节点" : "当前卡片"} · ${group.name}`
+                : group.name;
+            const typeLabel = group.dataType === "single" ? "Single" : group.dataType;
+            const meta = group.isCurrent
+                ? "Composition 位置"
+                : `${sampled ? "抽样 " : ""}${group.pointCount} 点 · ${typeLabel}`;
+            const eyePath = group.visible
+                ? '<path d="M2 12s3.2-5 10-5 10 5 10 5-3.2 5-10 5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.4"/>'
+                : '<path d="m3 3 18 18"/><path d="M10.6 6.2A10.8 10.8 0 0 1 12 6c6.8 0 10 6 10 6a18.5 18.5 0 0 1-3.2 3.8M6.2 6.2C3.5 8 2 12 2 12s3.2 6 10 6c1.3 0 2.4-.2 3.4-.6"/>';
+            const eyeDisabled = group.isCurrentCard || compositionReferenceOnlyCurrent;
+            const childGroups = (group.childIds || []).map((id) => groupsById.get(id)).filter(Boolean);
+            const hasChildren = childGroups.length > 0;
+            const collapsed = hasChildren && compositionReferenceCollapsed[group.id] === true;
+            const collapseIcon = collapsed
+                ? '<path d="m9 6 6 6-6 6"/>'
+                : '<path d="m6 9 6 6 6-6"/>';
+            return `<section class="composition-reference-group${collapsed ? " collapsed" : ""}" data-reference-group="${escapeReferenceText(group.id)}" data-reference-depth="${group.depth || 0}" style="--reference-depth:${group.depth || 0}">
+                <div class="composition-reference-group-head">
+                    ${hasChildren ? `<button class="composition-reference-collapse" type="button" data-reference-collapse="${escapeReferenceText(group.id)}" aria-label="${collapsed ? "展开" : "折叠"} ${escapeReferenceText(title)}" title="${collapsed ? "展开节点" : "折叠节点"}"><svg viewBox="0 0 24 24" aria-hidden="true">${collapseIcon}</svg></button>` : '<span class="composition-reference-collapse-spacer" aria-hidden="true"></span>'}
+                    <div class="composition-reference-group-title" title="${escapeReferenceText(title)}">${escapeReferenceText(title)}</div>
+                    <div class="composition-reference-group-meta">${escapeReferenceText(meta)}</div>
+                    <button class="composition-reference-eye${group.visible ? " visible" : ""}" type="button" data-reference-eye="${escapeReferenceText(group.id)}" ${eyeDisabled ? "disabled" : ""} aria-label="${group.isCurrentCard ? "当前编辑卡片" : `${group.visible ? "隐藏" : "显示"} ${escapeReferenceText(group.name)}`}" title="${group.isCurrentCard ? "当前编辑卡片由上方开关控制" : (compositionReferenceOnlyCurrent ? "已启用只显示当前卡片" : (group.visible ? "隐藏" : "显示"))}"><svg viewBox="0 0 24 24" aria-hidden="true">${eyePath}</svg></button>
+                </div>
+                ${group.isCurrent ? `<div class="composition-reference-placeholder">当前编辑内容保留在主场景；Composition 位置参考默认隐藏，可通过上方开关显示。</div>` : ""}
+                ${hasChildren ? `<div class="composition-reference-children${collapsed ? " collapsed" : ""}">${childGroups.map(renderGroup).join("")}</div>` : ""}
+            </section>`;
+        };
+        const html = groups.filter((group) => !group.parentId).map(renderGroup).join("");
+        const pendingNote = compositionReferenceStatus === "pending" || compositionReferenceHydrating
+            ? '<div class="composition-reference-note">参考快照正在后台更新；当前先显示已有帧，完成后会自动替换。</div>'
+            : "";
+        const snapshotNote = `${pendingNote}<div class="composition-reference-note">参考层${sampled ? `已从 ${escapeReferenceText(compositionReferenceSnapshot?.sourcePointTotal || 0)} 点中抽样` : "包含最终展开"}显示${frameSampled ? `；完整周期 ${escapeReferenceText(compositionReferenceSnapshot?.totalTicks || 0)} Tick 已均匀取样` : ""}；点位淡化且不可选中，但会参与粒子吸附。</div>`;
+        const unavailableNote = compositionReferenceStatus === "storage_limit"
+            ? '<div class="composition-reference-empty">Composition 参考快照过大，未能写入本地存储。</div>'
+            : compositionReferenceStatus === "storage_unavailable"
+                ? '<div class="composition-reference-empty">完整 Composition 参考快照存储不可用，未加载参考点。</div>'
+            : compositionReferenceStatus === "pending"
+                ? '<div class="composition-reference-note">参考快照正在后台更新；当前先显示已有快照，完成后会自动替换。</div>'
+            : '<div class="composition-reference-empty">Composition 预览尚未生成快照。</div>';
+        elCompositionReferenceRoot.innerHTML = `${controls}${html}${hasSnapshot ? snapshotNote : unavailableNote}`;
+        const onlyCurrent = elCompositionReferenceRoot.querySelector("[data-reference-only-current]");
+        onlyCurrent?.addEventListener("change", () => {
+            compositionReferenceOnlyCurrent = !!onlyCurrent.checked;
+            saveCompositionReferenceOnlyCurrent();
+            renderCompositionReferencePanel();
+            rebuildCompositionReferencePreview();
+        });
+        const showCurrent = elCompositionReferenceRoot.querySelector("[data-reference-show-current]");
+        showCurrent?.addEventListener("change", () => {
+            compositionReferenceShowCurrent = !!showCurrent.checked;
+            saveCompositionReferenceShowCurrent();
+            renderCompositionReferencePanel();
+            rebuildCompositionReferencePreview();
+        });
+        const frameRange = elCompositionReferenceRoot.querySelector("[data-reference-frame-range]");
+        frameRange?.addEventListener("input", () => {
+            setCompositionReferenceFrame(Number(frameRange.value));
+        });
+        frameRange?.addEventListener("change", () => {
+            setCompositionReferenceFrame(Number(frameRange.value));
+        });
+        const opacityRange = elCompositionReferenceRoot.querySelector("[data-reference-opacity]");
+        opacityRange?.addEventListener("input", () => {
+            const value = Number(opacityRange.value);
+            compositionReferenceOpacity = Number.isFinite(value)
+                ? Math.max(0.05, Math.min(1, value))
+                : 0.3;
+            saveCompositionReferenceOpacity();
+            if (compositionReferencePointsObj?.material) {
+                compositionReferencePointsObj.material.opacity = compositionReferenceOpacity;
+                compositionReferencePointsObj.material.needsUpdate = true;
+            }
+            const label = elCompositionReferenceRoot.querySelector("[data-reference-opacity-label]");
+            if (label) label.textContent = `${Math.round(compositionReferenceOpacity * 100)}%`;
+        });
+        elCompositionReferenceRoot.querySelectorAll("[data-reference-frame-action]").forEach((button) => {
+            button.addEventListener("click", () => {
+                const delta = button.dataset.referenceFrameAction === "prev" ? -1 : 1;
+                setCompositionReferenceFrame(compositionReferenceFrameIndex + delta);
+            });
+        });
+        elCompositionReferenceRoot.querySelectorAll("[data-reference-eye]").forEach((button) => {
+            button.addEventListener("click", () => {
+                const id = String(button.dataset.referenceEye || "");
+                if (!id) return;
+                compositionReferenceVisibility[id] = compositionReferenceVisibility[id] === false;
+                saveCompositionReferenceVisibility();
+                renderCompositionReferencePanel();
+                rebuildCompositionReferencePreview();
+            });
+        });
+        elCompositionReferenceRoot.querySelectorAll("[data-reference-collapse]").forEach((button) => {
+            button.addEventListener("click", () => {
+                const id = String(button.dataset.referenceCollapse || "");
+                if (!id) return;
+                compositionReferenceCollapsed[id] = compositionReferenceCollapsed[id] !== true;
+                saveCompositionReferenceCollapsed();
+                renderCompositionReferencePanel();
+            });
+        });
+    }
+
+    function setCompositionReferenceFrame(nextIndex) {
+        const frames = Array.isArray(compositionReferenceSnapshot?.frames) ? compositionReferenceSnapshot.frames : [];
+        const frameTicks = Array.isArray(compositionReferenceSnapshot?.frameTicks)
+            ? compositionReferenceSnapshot.frameTicks
+            : [];
+        const isVirtualTimeline = frames.length === 1
+            && Number(compositionReferenceSnapshot?.totalTicks || 0) > 1
+            && frameTicks.length <= 1;
+        const timelineCount = isVirtualTimeline
+            ? Math.max(1, Math.trunc(Number(compositionReferenceSnapshot?.totalTicks) || 1))
+            : (frames.length || Math.max(1, Math.trunc(Number(compositionReferenceSnapshot?.frameCount || compositionReferenceSnapshot?.totalTicks) || 1)));
+        const requested = Number(nextIndex);
+        const normalized = Number.isFinite(requested) ? Math.trunc(requested) : 0;
+        compositionReferenceFrameIndex = Math.max(0, Math.min(timelineCount - 1, normalized));
+        if (frames.length) {
+            rebuildCompositionReferencePreview(compositionReferenceFrameIndex);
+        } else if (compositionReferenceHydrating) {
+            // Keep the requested frame while IndexedDB is loading; hydration uses this index.
+            lastCompositionReferencePoints = [];
+        }
+        const label = elCompositionReferenceRoot?.querySelector?.("[data-reference-frame-label]");
+        const range = elCompositionReferenceRoot?.querySelector?.("[data-reference-frame-range]");
+        const tick = isVirtualTimeline
+            ? compositionReferenceFrameIndex
+            : Number(frameTicks?.[compositionReferenceFrameIndex] ?? compositionReferenceFrameIndex);
+        if (label) label.textContent = `帧 ${compositionReferenceFrameIndex + 1} / ${timelineCount} · Tick ${Number.isFinite(tick) ? tick : 0}`;
+        if (range) range.value = String(compositionReferenceFrameIndex);
+    }
+
+    function setBuilderColumnPage(page) {
+        if (!isCompositionPointsBuilder) return;
+        activeBuilderColumn = page === "composition" ? "composition" : "builder";
+        const showBuilder = activeBuilderColumn === "builder";
+        if (elCardsRoot) {
+            elCardsRoot.hidden = !showBuilder;
+            elCardsRoot.classList.toggle("composition-page-hidden", !showBuilder);
+        }
+        if (elCompositionReferenceRoot) {
+            elCompositionReferenceRoot.hidden = showBuilder;
+            elCompositionReferenceRoot.classList.toggle("composition-page-hidden", showBuilder);
+        }
+        if (elBuilderColumnFootnote) {
+            elBuilderColumnFootnote.classList.toggle("composition-page-hidden", !showBuilder);
+        }
+        if (elBuilderColumnTitleLabel) elBuilderColumnTitleLabel.textContent = showBuilder ? "构建列" : "Composition 参考";
+        for (const [button, active] of [[btnBuilderColumnTab, activeBuilderColumn === "builder"], [btnCompositionColumnTab, activeBuilderColumn === "composition"]]) {
+            if (!button) continue;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-selected", active ? "true" : "false");
+        }
+        renderCompositionReferencePanel();
+        rebuildCompositionReferencePreview();
+    }
+
+    function ensureCompositionReferencePointsObj() {
+        if (compositionReferencePointsObj || !scene) return;
+        const geom = new THREE.BufferGeometry();
+        const mat = new THREE.PointsMaterial({
+            size: Math.max(0.12, pointSize * 0.9),
+            sizeAttenuation: true,
+            color: 0x7ea8b8,
+            transparent: true,
+            opacity: compositionReferenceOpacity,
+            depthWrite: false,
+            vertexColors: false
+        });
+        compositionReferencePointsObj = new THREE.Points(geom, mat);
+        compositionReferencePointsObj.visible = false;
+        scene.add(compositionReferencePointsObj);
+    }
+
+    function rebuildCompositionReferencePreview(frameIndex = null) {
+        if (!isCompositionPointsBuilder || !compositionReferenceSceneReady) return;
+        ensureCompositionReferencePointsObj();
+        if (!compositionReferencePointsObj) return;
+        const snapshot = compositionReferenceSnapshot;
+        const frames = Array.isArray(snapshot?.frames) ? snapshot.frames : [];
+        const owners = Array.isArray(snapshot?.owners) ? snapshot.owners : [];
+        const visibleMasks = Array.isArray(snapshot?.visibleMasks) ? snapshot.visibleMasks : [];
+        if (!frames.length || !owners.length) {
+            compositionReferencePointsObj.visible = false;
+            lastCompositionReferencePoints = [];
+            return;
+        }
+        const groups = compositionReferenceGroups();
+        const visibleIds = new Set(groups
+            .filter((group) => group.visible)
+            .map((group) => group.id));
+        const requestedIndex = frameIndex == null ? compositionReferenceFrameIndex : frameIndex;
+        const frameTicks = Array.isArray(snapshot?.frameTicks) ? snapshot.frameTicks : [];
+        const isVirtualTimeline = frames.length === 1
+            && Number(snapshot?.totalTicks || 0) > 1
+            && frameTicks.length <= 1;
+        const timelineCount = isVirtualTimeline
+            ? Math.max(1, Math.trunc(Number(snapshot?.totalTicks) || 1))
+            : frames.length;
+        const index = Math.max(0, Math.min(timelineCount - 1, Math.trunc(Number(requestedIndex) || 0)));
+        compositionReferenceFrameIndex = index;
+        const requestedTick = isVirtualTimeline
+            ? index
+            : Number(frameTicks?.[index] ?? index);
+        let sourceFrameIndex = 0;
+        if (!isVirtualTimeline && frames.length > 1) {
+            let bestDistance = Number.POSITIVE_INFINITY;
+            for (let i = 0; i < frames.length; i++) {
+                const tick = Number(frameTicks?.[i] ?? i);
+                const distance = Math.abs(tick - requestedTick);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    sourceFrameIndex = i;
+                }
+            }
+        }
+        const flat = decodeCompositionReferenceFrame(frames[sourceFrameIndex], owners.length * 3);
+        const visibleMask = decodeCompositionReferenceMask(visibleMasks[sourceFrameIndex], owners.length);
+        const points = [];
+        for (let i = 0; i < owners.length; i++) {
+            const owner = String(owners[i] || "");
+            if (!visibleIds.has(owner)) continue;
+            if (visibleMask && visibleMask[i] === 0) continue;
+            const offset = i * 3;
+            const x = Number(flat?.[offset]);
+            const y = Number(flat?.[offset + 1]);
+            const z = Number(flat?.[offset + 2]);
+            if (![x, y, z].every(Number.isFinite)) continue;
+            let nextX = x;
+            let nextY = y;
+            let nextZ = z;
+            if (isCompositionReferenceDescendant(owner, compositionReferenceCardId)
+                && compositionReferenceCurrentSourcePoints?.length
+                && compositionReferenceCurrentAnchorRefs.length > i
+                && lastPoints?.length) {
+                const sourceIndex = compositionReferenceCurrentAnchorRefs[i];
+                const baseline = compositionReferenceCurrentSourcePoints[sourceIndex];
+                const current = lastPoints[sourceIndex];
+                if (baseline && current) {
+                    nextX += num(current.x) - num(baseline.x);
+                    nextY += num(current.y) - num(baseline.y);
+                    nextZ += num(current.z) - num(baseline.z);
+                }
+            }
+            points.push({ x: nextX, y: nextY, z: nextZ, ownerId: owner });
+        }
+        lastCompositionReferencePoints = points;
+        if (!points.length) {
+            compositionReferencePointsObj.visible = false;
+            return;
+        }
+        const geom = compositionReferencePointsObj.geometry;
+        if (!compositionReferencePointsBuf || compositionReferencePointCount !== points.length) {
+            compositionReferencePointsBuf = new Float32Array(points.length * 3);
+            compositionReferencePointCount = points.length;
+            geom.setAttribute("position", new THREE.BufferAttribute(compositionReferencePointsBuf, 3));
+        }
+        for (let i = 0; i < points.length; i++) {
+            compositionReferencePointsBuf[i * 3] = points[i].x;
+            compositionReferencePointsBuf[i * 3 + 1] = points[i].y;
+            compositionReferencePointsBuf[i * 3 + 2] = points[i].z;
+        }
+        const position = geom.getAttribute("position");
+        if (position) position.needsUpdate = true;
+        geom.computeBoundingSphere();
+        compositionReferencePointsObj.material.size = Math.max(0.12, pointSize * 0.9);
+        compositionReferencePointsObj.material.opacity = compositionReferenceOpacity;
+        compositionReferencePointsObj.visible = true;
     }
 
     function hasCompositionNumericContext() {
@@ -1658,10 +2342,16 @@ function initPointsBuilderMain() {
     }
 
     loadCompositionNumericContext();
+    if (isCompositionPointsBuilder) {
+        btnBuilderColumnTab?.addEventListener("click", () => setBuilderColumnPage("builder"));
+        btnCompositionColumnTab?.addEventListener("click", () => setBuilderColumnPage("composition"));
+        setBuilderColumnPage("builder");
+    }
     window.addEventListener("storage", (e) => {
         const key = String(e?.key || "");
         if (!key || !key.endsWith(PB_COMP_CONTEXT_KEY)) return;
         loadCompositionNumericContext();
+        rebuildPreviewAndKotlin();
     });
 
     function clamp(v, min, max) {
@@ -2096,9 +2786,28 @@ function initPointsBuilderMain() {
             setSnapPriorityOrder(DEFAULT_SETTINGS_PAYLOAD.snapPriority, { skipSave: true });
         }
         if (payload.theme) {
-            const next = normalizeTheme(payload.theme);
-            applyTheme(next);
-            localStorage.setItem(THEME_KEY, next);
+            /*
+             * The global theme wins; a payload theme is only a migration fallback.
+             *
+             * This used to apply payload.theme unconditionally *and* write it into
+             * the shared key. Since DEFAULT_SETTINGS_PAYLOAD.theme is "dark-1",
+             * any profile that had ever saved settings would open PointsBuilder on
+             * dark-1 while every other tool was on the user's real choice — and
+             * because it wrote that back, the choice was destroyed rather than
+             * merely ignored. Same bug composition's seedBuilderSandbox() had; the
+             * theme is a device preference, not per-tool settings.
+             */
+            let storedTheme = "";
+            try {
+                storedTheme = localStorage.getItem(THEME_KEY) || "";
+            } catch {
+                storedTheme = "";
+            }
+            if (!storedTheme) {
+                const next = normalizeTheme(payload.theme);
+                applyTheme(next);
+                localStorage.setItem(THEME_KEY, next);
+            }
         }
         if (payload.showAxes !== undefined && chkAxes) {
             chkAxes.checked = !!payload.showAxes;
@@ -6445,6 +7154,7 @@ function initPointsBuilderMain() {
         try {
             stopLinePick?.(); // 取消拾取模式，避免状态错乱
             stopPointPick?.();
+            stopBezierCreate?.();
         } catch {}
         try {
             state = normalizeState(deepClone(snap.state));
@@ -7332,6 +8042,9 @@ function initPointsBuilderMain() {
     let renderer, scene, camera, controls;
     let initialCameraState = null;
     let pointsObj = null;
+    let compositionReferencePointsObj = null;
+    let compositionReferencePointsBuf = null;
+    let compositionReferencePointCount = 0;
     let addWithPreviewObj = null;
     let addWithPreviewBuf = null;
     let addWithPreviewCount = 0;
@@ -7376,6 +8089,7 @@ function initPointsBuilderMain() {
     let mirrorPlane = "XZ";
     let hoverMarker = null;   // ✅ 实时跟随的红点
     let lastPoints = [];      // ✅ 当前预览点，用于“吸附到最近点”
+    let lastCompositionReferencePoints = [];
     let lastAddWithPreviewPoints = [];
     let lastGeometryCenterPoints = [];
     let lastMaskPreviewPoints = [];
@@ -7468,10 +8182,18 @@ function initPointsBuilderMain() {
     let rotateHistoryCaptured = false;
     let rotateManualInput = "";
     let bezierGuidePointsObj = null;
+    let bezierGuideAnchorObj = null;
     let bezierGuideLineObj = null;
+    let bezierGuideCurveObj = null;
     let bezierGuideMeta = [];
+    let bezierGuideAnchorMeta = [];
     let bezierGuideNodeId = null;
     let bezierHandleDrag = null;
+    let bezierSelectedNode = null;
+    let bezierSelectedNodesByOwner = new Map();
+    let bezierNodeMoveDrag = null;
+    let bezierRotateTargetId = null;
+    let bezierRotateSnapshots = null;
     const panKeyState = {ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false};
     const PAN_KEY_SPEED = 0.0025;
     const _panDir = new THREE.Vector3();
@@ -7779,6 +8501,10 @@ function initPointsBuilderMain() {
             pointsObj.material.size = pointSize;
             pointsObj.material.needsUpdate = true;
         }
+        if (compositionReferencePointsObj && compositionReferencePointsObj.material) {
+            compositionReferencePointsObj.material.size = Math.max(0.12, pointSize * 0.9);
+            compositionReferencePointsObj.material.needsUpdate = true;
+        }
         if (addWithPreviewObj && addWithPreviewObj.material) {
             addWithPreviewObj.material.size = Math.max(0.12, pointSize * 0.9);
             addWithPreviewObj.material.needsUpdate = true;
@@ -8084,8 +8810,18 @@ function initPointsBuilderMain() {
         if (!dragState || !dragState.nodeId || !dragState.role) return null;
         const guide = getBezierGuideDataByNodeId(dragState.nodeId);
         if (!guide) return null;
-        if (dragState.role === "sh") return { x: guide.c1.x, y: guide.c1.y, z: guide.c1.z };
-        if (dragState.role === "eh") return { x: guide.c2.x, y: guide.c2.y, z: guide.c2.z };
+        if (Array.isArray(guide.nodes) && Number.isInteger(dragState.nodeIndex)) {
+            const item = guide.nodes[dragState.nodeIndex];
+            if (!item) return null;
+            const prefix = dragState.role === "sh" ? "sh" : "eh";
+            return {
+                x: num(item.x) + num(item[`${prefix}x`]),
+                y: num(item.y) + num(item[`${prefix}y`]),
+                z: num(item.z) + num(item[`${prefix}z`])
+            };
+        }
+        if (dragState.role === "sh" && guide.c1) return { x: guide.c1.x, y: guide.c1.y, z: guide.c1.z };
+        if (dragState.role === "eh" && guide.c2) return { x: guide.c2.x, y: guide.c2.y, z: guide.c2.z };
         return null;
     }
 
@@ -8160,13 +8896,14 @@ function initPointsBuilderMain() {
     }
 
     function nearestPointCandidate(ref, maxDist = particleSnapRange, planeKey = getPlaneInfo().axis) {
-        if (!lastPoints || lastPoints.length === 0) return null;
+        const referencePoints = compositionReferencePointsObj?.visible ? (lastCompositionReferencePoints || []) : [];
+        if ((!lastPoints || lastPoints.length === 0) && referencePoints.length === 0) return null;
         const plane = planeKey || getPlaneInfo().axis;
         const normalAxis = getPlaneNormalAxisKeyByPlane(plane);
         const refNormal = Number(ref?.[normalAxis]);
         let best = null;
         let bestD2 = Infinity;
-        for (const q of lastPoints) {
+        for (const q of [...(lastPoints || []), ...referencePoints]) {
             if (!q) continue;
             const qNormal = Number(q[normalAxis]);
             if (Number.isFinite(refNormal) && Number.isFinite(qNormal) && Math.abs(qNormal - refNormal) > maxDist) {
@@ -8400,6 +9137,7 @@ function initPointsBuilderMain() {
         threeHost.appendChild(renderer.domElement);
 
         scene = new THREE.Scene();
+        compositionReferenceSceneReady = true;
 
         camera = new THREE.PerspectiveCamera(55, threeHost.clientWidth / threeHost.clientHeight, 0.01, 5000);
         camera.position.set(10, 10, 10);
@@ -8445,9 +9183,18 @@ function initPointsBuilderMain() {
         renderer.domElement.addEventListener("pointerdown", onPointerDown);
         renderer.domElement.addEventListener("pointermove", onPointerMove);
         renderer.domElement.addEventListener("pointerup", onPointerUp);
+        window.addEventListener("keydown", onBezierPreviewModifierKeyDown, true);
+        window.addEventListener("keyup", onBezierPreviewModifierKeyUp, true);
+        window.addEventListener("blur", onBezierPreviewModifierBlur);
         renderer.domElement.addEventListener("pointercancel", (ev) => {
             if (bezierHandleDrag && ev && ev.pointerId === bezierHandleDrag.pointerId) {
                 cancelBezierHandleDrag(ev, { suppressClick: true });
+            }
+            if (bezierCreateState && ev && ev.pointerId === bezierCreateState.pointerId) {
+                finishBezierCreateDrag(ev, true);
+            }
+            if (bezierNodeMoveDrag && ev && ev.pointerId === bezierNodeMoveDrag.pointerId) {
+                finishBezierNodeMoveDrag(ev);
             }
             if (actionMenuRightTrack && ev && ev.pointerId === actionMenuRightTrack.pointerId) {
                 endActionMenuRightTrack(ev, true);
@@ -8606,44 +9353,145 @@ function initPointsBuilderMain() {
                 color: 0x5dd6ff,
                 transparent: true,
                 opacity: 0.5,
-                depthWrite: false
+                depthWrite: false,
+                depthTest: false
             });
             bezierGuideLineObj = new THREE.LineSegments(geom, mat);
             bezierGuideLineObj.visible = false;
             scene.add(bezierGuideLineObj);
+        }
+        if (!bezierGuideCurveObj) {
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3), 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: 0x9cf2ff,
+                transparent: true,
+                opacity: 0.9,
+                depthWrite: false,
+                depthTest: false
+            });
+            bezierGuideCurveObj = new THREE.Line(geom, mat);
+            bezierGuideCurveObj.visible = false;
+            scene.add(bezierGuideCurveObj);
         }
         if (!bezierGuidePointsObj) {
             const geom = new THREE.BufferGeometry();
             geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(12), 3));
             geom.setAttribute("color", new THREE.BufferAttribute(new Float32Array(12), 3));
             const mat = new THREE.PointsMaterial({
-                size: Math.max(pointSize * 2.4, 0.28),
-                sizeAttenuation: true,
+                size: 13,
+                sizeAttenuation: false,
                 vertexColors: true,
                 transparent: true,
                 opacity: 0.95,
-                depthWrite: false
+                depthWrite: false,
+                depthTest: false
             });
             bezierGuidePointsObj = new THREE.Points(geom, mat);
             bezierGuidePointsObj.visible = false;
             scene.add(bezierGuidePointsObj);
+        }
+        if (!bezierGuideAnchorObj) {
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3), 3));
+            geom.setAttribute("color", new THREE.BufferAttribute(new Float32Array(3), 3));
+            const mat = new THREE.PointsMaterial({
+                size: 18,
+                sizeAttenuation: false,
+                vertexColors: true,
+                transparent: true,
+                opacity: 1,
+                depthWrite: false,
+                depthTest: false
+            });
+            bezierGuideAnchorObj = new THREE.Points(geom, mat);
+            bezierGuideAnchorObj.visible = false;
+            scene.add(bezierGuideAnchorObj);
         }
     }
 
     function hideBezierGuidePreview() {
         bezierGuideNodeId = null;
         bezierGuideMeta = [];
+        bezierGuideAnchorMeta = [];
         if (bezierGuideLineObj) bezierGuideLineObj.visible = false;
+        if (bezierGuideCurveObj) bezierGuideCurveObj.visible = false;
         if (bezierGuidePointsObj) bezierGuidePointsObj.visible = false;
+        if (bezierGuideAnchorObj) bezierGuideAnchorObj.visible = false;
+        bezierSelectedNode = null;
+        bezierSelectedNodesByOwner = new Map();
+        bezierNodeMoveDrag = null;
+    }
+
+    function sampleBezierGuideNodes(nodes, count = 256) {
+        const list = Array.isArray(nodes) ? nodes : [];
+        if (!list.length) return [U.v(0, 0, 0)];
+        if (list.length === 1) return [U.v(num(list[0].x), num(list[0].y), num(list[0].z))];
+        const total = Math.max(32, Math.min(2048, Number(count) || 256));
+        const pointAt = (t) => {
+            const scaled = Math.max(0, Math.min(1, t)) * (list.length - 1);
+            const index = Math.min(list.length - 2, Math.floor(scaled));
+            const local = index === list.length - 2 && t >= 1 ? 1 : scaled - index;
+            const a = list[index] || {};
+            const b = list[index + 1] || {};
+            const p0 = U.v(num(a.x), num(a.y), num(a.z));
+            const p1 = U.add(p0, U.v(num(a.shx), num(a.shy), num(a.shz)));
+            const p3 = U.v(num(b.x), num(b.y), num(b.z));
+            const p2 = U.add(p3, U.v(num(b.ehx), num(b.ehy), num(b.ehz)));
+            const u = 1 - local;
+            return U.v(
+                u * u * u * p0.x + 3 * u * u * local * p1.x + 3 * u * local * local * p2.x + local * local * local * p3.x,
+                u * u * u * p0.y + 3 * u * u * local * p1.y + 3 * u * local * local * p2.y + local * local * local * p3.y,
+                u * u * u * p0.z + 3 * u * u * local * p1.z + 3 * u * local * local * p2.z + local * local * local * p3.z
+            );
+        };
+        return Array.from({ length: total }, (_, index) => pointAt(total === 1 ? 1 : index / (total - 1)));
+    }
+
+    function makeBezierCreateNode(point) {
+        const p = point || U.v(0, 0, 0);
+        return {
+            x: num(p.x),
+            y: num(p.y),
+            z: num(p.z),
+            shx: 0,
+            shy: 0,
+            shz: 0,
+            ehx: 0,
+            ehy: 0,
+            ehz: 0
+        };
     }
 
     function cancelBezierHandleDrag(ev = null, options = {}) {
         if (!bezierHandleDrag) return false;
         releaseBezierHandlePointer(bezierHandleDrag.pointerId);
         bezierHandleDrag = null;
+        rebuildPreviewAndKotlin();
+        renderAll();
         if (options.suppressClick) armCanvasClickSuppress(ev);
         hideHoverMarker();
         updateBezierGuidePreview();
+        return true;
+    }
+
+    function beginBezierHandleDrag(ev, meta, options = {}) {
+        const nodeId = meta?.nodeId || bezierGuideNodeId;
+        if (!ev || ev.button !== 0 || !nodeId || !meta || (meta.role !== "sh" && meta.role !== "eh")) return false;
+        const dom = renderer && renderer.domElement;
+        if (dom?.setPointerCapture) {
+            try { dom.setPointerCapture(ev.pointerId); } catch {}
+        }
+        bezierHandleDrag = {
+            pointerId: ev.pointerId,
+            nodeId,
+            role: meta.role,
+            nodeIndex: Number.isInteger(meta.nodeIndex) ? meta.nodeIndex : null,
+            symmetric: options.symmetric === true
+        };
+        historyCapture(options.symmetric === true ? "bezier_handle_drag_symmetric" : "bezier_handle_drag");
+        armCanvasClickSuppress(ev);
+        hideActionMenu();
         return true;
     }
 
@@ -8667,6 +9515,17 @@ function initPointsBuilderMain() {
             const c2 = U.add(end, U.v(num(p.ehx), num(p.ehy), num(p.ehz)));
             return { nodeId, kind: node.kind, start, end, c1, c2 };
         }
+        if (node.kind === "add_bezier_curve_multi" || node.kind === "apply_bezier_distribution" || node.kind === "add_bezier_circle_preset") {
+            const nodes = Array.isArray(p.nodes) ? p.nodes : [];
+            if (p.closed && node.kind !== "add_bezier_circle_preset") connectBezierClosure(node);
+            const handles = [];
+            nodes.forEach((item, index) => {
+                const point = U.v(num(item.x), num(item.y), num(item.z));
+                handles.push({ role: "sh", nodeIndex: index, point: U.add(point, U.v(num(item.shx), num(item.shy), num(item.shz))) });
+                handles.push({ role: "eh", nodeIndex: index, point: U.add(point, U.v(num(item.ehx), num(item.ehy), num(item.ehz))) });
+            });
+            return { nodeId, kind: node.kind, nodes, handles, closed: node.kind === "add_bezier_circle_preset" || !!p.closed };
+        }
         return null;
     }
 
@@ -8676,60 +9535,205 @@ function initPointsBuilderMain() {
             hideBezierGuidePreview();
             return;
         }
-        const previewNodeId = (bezierCreateState && bezierCreateState.nodeId) ? bezierCreateState.nodeId : focusedNodeId;
-        const guide = getBezierGuideDataByNodeId(previewNodeId);
+        const createState = bezierCreateState;
+        const previewNodeId = (createState && createState.nodeId)
+            ? createState.nodeId
+            : (bezierSelectedNode?.nodeId || focusedNodeId);
+        let guide = getBezierGuideDataByNodeId(previewNodeId);
+        if ((!guide || (Array.isArray(guide.nodes) && guide.nodes.length === 0))
+            && createState?.previewArmed
+            && createState.phase === "pick_start"
+            && createState.lastMapped) {
+            guide = {
+                nodeId: "__bezier_create_preview__",
+                kind: "add_bezier_curve_multi",
+                nodes: [makeBezierCreateNode(createState.lastMapped)]
+            };
+        }
         if (!guide) {
             hideBezierGuidePreview();
             return;
         }
+        if (Array.isArray(guide.nodes) && guide.nodes.length === 0) {
+            hideBezierGuidePreview();
+            return;
+        }
+        if (guide.nodes && createState && createState.pointerId === null && createState.lastMapped
+            && createState.previewArmed
+            && (createState.phase === "pick_end" || createState.phase === "pick_next")) {
+            const nodes = guide.nodes.map((item) => ({ ...item }));
+            const prev = nodes[nodes.length - 1];
+            if (prev) {
+                const dx = num(createState.lastMapped.x) - num(prev.x);
+                const dy = num(createState.lastMapped.y) - num(prev.y);
+                const dz = num(createState.lastMapped.z) - num(prev.z);
+                if (Math.abs(num(prev.shx)) + Math.abs(num(prev.shy)) + Math.abs(num(prev.shz)) < 1e-9) {
+                    prev.shx = dx / 3;
+                    prev.shy = dy / 3;
+                    prev.shz = dz / 3;
+                }
+                nodes.push({ x: createState.lastMapped.x, y: createState.lastMapped.y, z: createState.lastMapped.z, shx: 0, shy: 0, shz: 0, ehx: -dx / 3, ehy: -dy / 3, ehz: -dz / 3 });
+                guide.nodes = nodes;
+            }
+        }
         ensureBezierGuideObjects();
         if (!bezierGuideLineObj || !bezierGuidePointsObj) return;
         bezierGuideNodeId = guide.nodeId;
-        bezierGuideMeta = [
-            { role: "start", point: guide.start },
-            { role: "end", point: guide.end },
-            { role: "sh", point: guide.c1 },
-            { role: "eh", point: guide.c2 }
-        ];
-        const linePos = bezierGuideLineObj.geometry.getAttribute("position");
-        const lp = linePos.array;
-        lp[0] = guide.start.x; lp[1] = guide.start.y; lp[2] = guide.start.z;
-        lp[3] = guide.c1.x; lp[4] = guide.c1.y; lp[5] = guide.c1.z;
-        lp[6] = guide.end.x; lp[7] = guide.end.y; lp[8] = guide.end.z;
-        lp[9] = guide.c2.x; lp[10] = guide.c2.y; lp[11] = guide.c2.z;
-        linePos.needsUpdate = true;
-        bezierGuideLineObj.visible = true;
+        if (guide.nodes) {
+            bezierGuideMeta = [];
+            guide.nodes.forEach((item, index) => {
+                const point = U.v(num(item.x), num(item.y), num(item.z));
+                const c1 = U.add(point, U.v(num(item.shx), num(item.shy), num(item.shz)));
+                const c2 = U.add(point, U.v(num(item.ehx), num(item.ehy), num(item.ehz)));
+                bezierGuideMeta.push({ role: "anchor", nodeId: guide.nodeId, nodeIndex: index, point });
+                bezierGuideMeta.push({ role: "sh", nodeId: guide.nodeId, nodeIndex: index, point: c1 });
+                bezierGuideMeta.push({ role: "eh", nodeId: guide.nodeId, nodeIndex: index, point: c2 });
+            });
+            const sampleNodes = guide.closed && guide.nodes.length > 1
+                ? [...guide.nodes, { ...guide.nodes[0] }]
+                : guide.nodes;
+            const curve = sampleBezierGuideNodes(sampleNodes, 512);
+            const curveArray = new Float32Array(curve.length * 3);
+            curve.forEach((point, index) => {
+                curveArray[index * 3] = point.x;
+                curveArray[index * 3 + 1] = point.y;
+                curveArray[index * 3 + 2] = point.z;
+            });
+            bezierGuideCurveObj.geometry.setAttribute("position", new THREE.BufferAttribute(curveArray, 3));
+            bezierGuideCurveObj.geometry.computeBoundingSphere();
+            // W 是钢笔工具：未按 Ctrl 时保留节点和曲柄控制点，但隐藏采样曲线。
+            bezierGuideCurveObj.visible = !createState || createState.previewArmed;
+            const handleArray = [];
+            guide.nodes.forEach((item) => {
+                const point = U.v(num(item.x), num(item.y), num(item.z));
+                const c1 = U.add(point, U.v(num(item.shx), num(item.shy), num(item.shz)));
+                const c2 = U.add(point, U.v(num(item.ehx), num(item.ehy), num(item.ehz)));
+                handleArray.push(point, c1, point, c2);
+            });
+            bezierGuideLineObj.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(handleArray.flatMap((p) => [p.x, p.y, p.z])), 3));
+            bezierGuideLineObj.geometry.computeBoundingSphere();
+            bezierGuideLineObj.visible = true;
+        } else {
+            bezierGuideMeta = [
+                { role: "anchor", nodeId: guide.nodeId, point: guide.start },
+                { role: "anchor", nodeId: guide.nodeId, point: guide.end },
+                { role: "sh", nodeId: guide.nodeId, point: guide.c1 },
+                { role: "eh", nodeId: guide.nodeId, point: guide.c2 }
+            ];
+            const oldLineValues = new Float32Array(12);
+            const linePos = new THREE.BufferAttribute(oldLineValues, 3);
+            bezierGuideLineObj.geometry.setAttribute("position", linePos);
+            const lp = linePos.array;
+            lp[0] = guide.start.x; lp[1] = guide.start.y; lp[2] = guide.start.z;
+            lp[3] = guide.c1.x; lp[4] = guide.c1.y; lp[5] = guide.c1.z;
+            lp[6] = guide.end.x; lp[7] = guide.end.y; lp[8] = guide.end.z;
+            lp[9] = guide.c2.x; lp[10] = guide.c2.y; lp[11] = guide.c2.z;
+            linePos.needsUpdate = true;
+            bezierGuideLineObj.visible = true;
+            const curve = sampleBezierGuideNodes([
+                { x: guide.start.x, y: guide.start.y, z: guide.start.z, shx: guide.c1.x - guide.start.x, shy: guide.c1.y - guide.start.y, shz: guide.c1.z - guide.start.z },
+                { x: guide.end.x, y: guide.end.y, z: guide.end.z, ehx: guide.c2.x - guide.end.x, ehy: guide.c2.y - guide.end.y, ehz: guide.c2.z - guide.end.z }
+            ], 256);
+            const curveArray = new Float32Array(curve.length * 3);
+            curve.forEach((point, index) => { curveArray[index * 3] = point.x; curveArray[index * 3 + 1] = point.y; curveArray[index * 3 + 2] = point.z; });
+            bezierGuideCurveObj.geometry.setAttribute("position", new THREE.BufferAttribute(curveArray, 3));
+            bezierGuideCurveObj.geometry.computeBoundingSphere();
+            // 旧版两点贝塞尔也遵循相同的预览显示规则。
+            bezierGuideCurveObj.visible = !createState || createState.previewArmed;
+        }
 
         const pointPos = bezierGuidePointsObj.geometry.getAttribute("position");
         const pointColor = bezierGuidePointsObj.geometry.getAttribute("color");
         const pa = pointPos.array;
         const ca = pointColor.array;
-        const colors = [
-            defaultPointColor,
-            focusPointColor,
-            pointPickPreviewColor,
-            pointPickPreviewColor
-        ];
+        const colors = {
+            anchor: focusPointColor,
+            sh: pointPickPreviewColor,
+            eh: new THREE.Color(0xff5ca8),
+            start: defaultPointColor,
+            end: focusPointColor
+        };
+        if (pa.length !== bezierGuideMeta.length * 3) {
+            bezierGuidePointsObj.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(bezierGuideMeta.length * 3), 3));
+            bezierGuidePointsObj.geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(bezierGuideMeta.length * 3), 3));
+        }
+        const nextPointPos = bezierGuidePointsObj.geometry.getAttribute("position");
+        const nextPointColor = bezierGuidePointsObj.geometry.getAttribute("color");
+        const nextPa = nextPointPos.array;
+        const nextCa = nextPointColor.array;
         for (let i = 0; i < bezierGuideMeta.length; i++) {
             const meta = bezierGuideMeta[i];
             const base = i * 3;
-            pa[base + 0] = meta.point.x;
-            pa[base + 1] = meta.point.y;
-            pa[base + 2] = meta.point.z;
-            const color = colors[i] || defaultPointColor;
-            ca[base + 0] = color.r;
-            ca[base + 1] = color.g;
-            ca[base + 2] = color.b;
+            nextPa[base + 0] = meta.point.x;
+            nextPa[base + 1] = meta.point.y;
+            nextPa[base + 2] = meta.point.z;
+            const color = colors[meta.role] || defaultPointColor;
+            nextCa[base + 0] = color.r;
+            nextCa[base + 1] = color.g;
+            nextCa[base + 2] = color.b;
         }
-        pointPos.needsUpdate = true;
-        pointColor.needsUpdate = true;
-        bezierGuidePointsObj.material.size = Math.max(pointSize * 2.4, 0.28);
+        nextPointPos.needsUpdate = true;
+        nextPointColor.needsUpdate = true;
+        bezierGuidePointsObj.material.size = 13;
         bezierGuidePointsObj.visible = true;
+
+        const anchors = bezierGuideMeta.filter((meta) => meta && meta.role === "anchor");
+        const anchorKeys = new Set(anchors
+            .filter((meta) => meta.nodeId && Number.isInteger(meta.nodeIndex))
+            .map((meta) => `${meta.nodeId}:${meta.nodeIndex}`));
+        for (const selected of getSelectedBezierNodeContexts()) {
+            const key = `${selected.node.id}:${selected.index}`;
+            if (anchorKeys.has(key)) continue;
+            anchorKeys.add(key);
+            anchors.push({
+                role: "anchor",
+                nodeId: selected.node.id,
+                nodeIndex: selected.index,
+                point: U.v(num(selected.item.x), num(selected.item.y), num(selected.item.z))
+            });
+        }
+        bezierGuideAnchorMeta = anchors;
+        const anchorPos = new Float32Array(Math.max(1, anchors.length) * 3);
+        const anchorColor = new Float32Array(Math.max(1, anchors.length) * 3);
+        anchors.forEach((meta, index) => {
+            const base = index * 3;
+            anchorPos[base] = meta.point.x;
+            anchorPos[base + 1] = meta.point.y;
+            anchorPos[base + 2] = meta.point.z;
+            const selected = !!meta.nodeId
+                && Number.isInteger(meta.nodeIndex)
+                && bezierSelectedNodesByOwner.get(meta.nodeId)?.has(meta.nodeIndex);
+            const color = selected ? new THREE.Color(0xffe066) : focusPointColor;
+            anchorColor[base] = color.r;
+            anchorColor[base + 1] = color.g;
+            anchorColor[base + 2] = color.b;
+        });
+        bezierGuideAnchorObj.geometry.setAttribute("position", new THREE.BufferAttribute(anchorPos, 3));
+        bezierGuideAnchorObj.geometry.setAttribute("color", new THREE.BufferAttribute(anchorColor, 3));
+        bezierGuideAnchorObj.geometry.computeBoundingSphere();
+        bezierGuideAnchorObj.visible = anchors.length > 0;
+    }
+
+    function pickBezierGuideAnchorFromEvent(ev) {
+        if (!bezierGuideAnchorMeta || !bezierGuideAnchorMeta.length || !renderer || !camera) return null;
+        const radiusPx = Math.max(28, Math.min(64, (Number(pointSize) || 0.2) * 72));
+        let best = null;
+        let bestDist = Number.POSITIVE_INFINITY;
+        for (const meta of bezierGuideAnchorMeta) {
+            if (!meta || meta.role !== "anchor" || !Number.isInteger(meta.nodeIndex)) continue;
+            const client = projectPointToClient(meta.point);
+            if (!client) continue;
+            const dist = Math.hypot((ev.clientX || 0) - client.x, (ev.clientY || 0) - client.y);
+            if (dist > radiusPx || dist >= bestDist) continue;
+            best = { ...meta, distancePx: dist };
+            bestDist = dist;
+        }
+        return best || null;
     }
 
     function pickBezierGuideHandleFromEvent(ev) {
         if (!bezierGuideMeta || !bezierGuideMeta.length || !renderer || !camera) return null;
-        const radiusPx = Math.max(18, Math.min(34, (Number(pointSize) || 0.2) * 56));
+        const radiusPx = Math.max(36, Math.min(96, (Number(pointSize) || 0.2) * 96));
         let best = null;
         let bestDist = Number.POSITIVE_INFINITY;
         for (const meta of bezierGuideMeta) {
@@ -8738,10 +9742,20 @@ function initPointsBuilderMain() {
             if (!client) continue;
             const dist = Math.hypot((ev.clientX || 0) - client.x, (ev.clientY || 0) - client.y);
             if (dist > radiusPx || dist >= bestDist) continue;
-            best = meta;
+            best = { ...meta, distancePx: dist };
             bestDist = dist;
         }
         return best || null;
+    }
+
+    function pickBezierGuideControlFromEvent(ev) {
+        const anchor = pickBezierGuideAnchorFromEvent(ev);
+        const handle = pickBezierGuideHandleFromEvent(ev);
+        if (!anchor) return handle ? { type: "handle", meta: handle } : null;
+        if (!handle) return { type: "anchor", meta: anchor };
+        return handle.distancePx < anchor.distancePx
+            ? { type: "handle", meta: handle }
+            : { type: "anchor", meta: anchor };
     }
 
     function syncVecEditorInputs(nodeId, prefix, point) {
@@ -8758,17 +9772,15 @@ function initPointsBuilderMain() {
         if (!bezierCreateState) return "";
         const info = getPlaneInfo().label;
         if (bezierCreateState.phase === "pick_start") {
-            return `${info} Bezier 创建：请点 start`;
+            return `${info} Bezier 创建：Ctrl + 左键添加起点`;
         }
         if (bezierCreateState.phase === "pick_end") {
             const start = bezierCreateState.start;
-            return `${info} Bezier 创建：已选 start (${U.fmt(start.x)}, ${U.fmt(start.y)}, ${U.fmt(start.z)})，请点 end`;
+            return `${info} Bezier 创建：已选 start (${U.fmt(start.x)}, ${U.fmt(start.y)}, ${U.fmt(start.z)})，Ctrl + 左键添加终点`;
         }
-        if (bezierCreateState.phase === "drag_start_handle") {
-            return `${info} Bezier 创建：移动鼠标调整 start 曲柄，左键确认`;
-        }
-        if (bezierCreateState.phase === "drag_end_handle") {
-            return `${info} Bezier 创建：移动鼠标调整 end 曲柄，左键确认`;
+        if (bezierCreateState.phase === "pick_next") {
+            const count = Number(bezierCreateState.nodeCount) || 1;
+            return `${info} 空间贝塞尔创建：已添加 ${count} 个点，Ctrl + 左键继续添加，Esc / 右键双击结束`;
         }
         return `${info} Bezier 创建中`;
     }
@@ -8781,19 +9793,86 @@ function initPointsBuilderMain() {
     function stopBezierCreate(options = {}) {
         if (!bezierCreateState) return false;
         const keepGuide = options.keepGuide === true;
+        const nodeId = bezierCreateState.nodeId;
+        const pointerId = bezierCreateState.pointerId;
+        const dom = renderer && renderer.domElement;
+        try {
+            if (pointerId !== null && pointerId !== undefined && dom?.hasPointerCapture?.(pointerId)) {
+                dom.releasePointerCapture(pointerId);
+            }
+        } catch {}
         bezierCreateState = null;
         hideHoverMarker();
-        if (!keepGuide) hideBezierGuidePreview();
+        if (!keepGuide || !nodeId) {
+            hideBezierGuidePreview();
+        } else {
+            try { focusCardById(nodeId, false, true, true); } catch {}
+            requestAnimationFrame(() => updateBezierGuidePreview());
+        }
         hideLinePickStatus();
         return true;
     }
 
-    function setBezierHandleRelative(nodeId, role, mapped) {
+    function setBezierCreatePreviewArmed(armed, mapped = null) {
+        const state = bezierCreateState;
+        if (!state) return false;
+        if (!armed && state.pointerId !== null && state.pointerId !== undefined) return false;
+        state.previewArmed = !!armed;
+        if (mapped) state.lastMapped = { x: mapped.x, y: mapped.y, z: mapped.z };
+        if (!state.previewArmed) {
+            hideHoverMarker();
+            updateBezierGuidePreview();
+            return true;
+        }
+        if (!state.lastMapped) return true;
+        ensureHoverMarker();
+        setHoverMarkerColor(colorForPickIndex(Math.max(0, Number(state.nodeCount) || 0)));
+        updateBezierCreateHover(state.lastMapped);
+        return true;
+    }
+
+    function isControlModifierEvent(ev) {
+        return ev?.key === "Control" || ev?.code === "ControlLeft" || ev?.code === "ControlRight";
+    }
+
+    function onBezierPreviewModifierKeyDown(ev) {
+        if (!isControlModifierEvent(ev) || !bezierCreateState || bezierCreateState.pointerId !== null) return;
+        setBezierCreatePreviewArmed(true);
+    }
+
+    function onBezierPreviewModifierKeyUp(ev) {
+        if (!isControlModifierEvent(ev) || !bezierCreateState) return;
+        setBezierCreatePreviewArmed(false);
+    }
+
+    function onBezierPreviewModifierBlur() {
+        if (!bezierCreateState) return;
+        setBezierCreatePreviewArmed(false);
+    }
+
+    function setBezierHandleRelative(nodeId, role, mapped, nodeIndex = null, options = {}) {
         if (!nodeId || !role || !mapped) return false;
         const ctx = findNodeContextById(nodeId);
         if (!ctx || !ctx.node) return false;
         const node = ctx.node;
         const p = node.params || (node.params = {});
+        if ((node.kind === "add_bezier_curve_multi" || node.kind === "apply_bezier_distribution" || node.kind === "add_bezier_circle_preset") && Number.isInteger(nodeIndex)) {
+            const item = Array.isArray(p.nodes) ? p.nodes[nodeIndex] : null;
+            if (!item) return false;
+            const anchor = U.v(num(item.x), num(item.y), num(item.z));
+            const rel = U.sub(mapped, anchor);
+            const prefix = role === "sh" ? "sh" : "eh";
+            item[`${prefix}x`] = rel.x;
+            item[`${prefix}y`] = rel.y;
+            item[`${prefix}z`] = rel.z;
+            if (options.symmetric === true) {
+                const opposite = prefix === "sh" ? "eh" : "sh";
+                item[`${opposite}x`] = -rel.x;
+                item[`${opposite}y`] = -rel.y;
+                item[`${opposite}z`] = -rel.z;
+            }
+            return true;
+        }
         const anchor = role === "sh"
             ? (node.kind === "add_bezier_curve" ? U.v(0, 0, 0) : U.v(num(p.sx), num(p.sy), num(p.sz)))
             : U.v(num(p.ex), num(p.ey), num(p.ez));
@@ -8806,31 +9885,18 @@ function initPointsBuilderMain() {
         return true;
     }
 
-    function insertBezierCreateNode(start, end) {
+    function insertBezierCreateNode(point) {
         const pickCtx = (typeof getInsertContextFromFocus === "function") ? getInsertContextFromFocus() : null;
         const list = pickCtx && Array.isArray(pickCtx.list) ? pickCtx.list : state.root.children;
         const at = pickCtx && pickCtx.insertIndex != null ? pickCtx.insertIndex : list.length;
-        const dx = end.x - start.x;
-        const dy = end.y - start.y;
-        const dz = end.z - start.z;
-        const nn = makeNode("add_bezier_4", {
+        const nn = makeNode("add_bezier_curve_multi", {
             params: {
-                sx: start.x,
-                sy: start.y,
-                sz: start.z,
-                ex: end.x,
-                ey: end.y,
-                ez: end.z,
-                shx: dx / 3,
-                shy: dy / 3,
-                shz: dz / 3,
-                ehx: -dx / 3,
-                ehy: -dy / 3,
-                ehz: -dz / 3,
+                nodes: [{ x: point.x, y: point.y, z: point.z, shx: 0, shy: 0, shz: 0, ehx: 0, ehy: 0, ehz: 0 }],
                 count: 100
             }
         });
         const idx = Math.max(0, Math.min(at, list.length));
+        historyCapture("create_bezier_card");
         list.splice(idx, 0, nn);
         ensureAxisEverywhere();
         renderAll();
@@ -8841,19 +9907,425 @@ function initPointsBuilderMain() {
         return nn.id;
     }
 
+    function insertEmptyBezierCreateNode() {
+        const pickCtx = (typeof getInsertContextFromFocus === "function") ? getInsertContextFromFocus() : null;
+        const list = pickCtx && Array.isArray(pickCtx.list) ? pickCtx.list : state.root.children;
+        const at = pickCtx && pickCtx.insertIndex != null ? pickCtx.insertIndex : list.length;
+        const nn = makeNode("add_bezier_curve_multi", {
+            params: { nodes: [], count: 100 }
+        });
+        const idx = Math.max(0, Math.min(at, list.length));
+        historyCapture("create_bezier_card");
+        list.splice(idx, 0, nn);
+        ensureAxisEverywhere();
+        renderAll();
+        requestAnimationFrame(() => {
+            try { focusCardById(nn.id, false, true, true); } catch {}
+            updateBezierGuidePreview();
+        });
+        return nn.id;
+    }
+
+    function appendBezierCreateNode(nodeId, point) {
+        const ctx = findNodeContextById(nodeId);
+        const nodes = ctx?.node?.params?.nodes;
+        if (!Array.isArray(nodes)) return false;
+        const prev = nodes[nodes.length - 1];
+        const dx = point.x - num(prev?.x);
+        const dy = point.y - num(prev?.y);
+        const dz = point.z - num(prev?.z);
+        historyCapture("add_bezier_node");
+        if (prev && Math.abs(num(prev.shx)) + Math.abs(num(prev.shy)) + Math.abs(num(prev.shz)) < 1e-9) {
+            prev.shx = dx / 3;
+            prev.shy = dy / 3;
+            prev.shz = dz / 3;
+        }
+        nodes.push({ x: point.x, y: point.y, z: point.z, shx: 0, shy: 0, shz: 0, ehx: -dx / 3, ehy: -dy / 3, ehz: -dz / 3 });
+        ensureAxisEverywhere();
+        renderAll();
+        return true;
+    }
+
+    function connectBezierClosure(node) {
+        const nodes = Array.isArray(node?.params?.nodes) ? node.params.nodes : [];
+        if (nodes.length < 2) return false;
+        const first = nodes[0];
+        const last = nodes[nodes.length - 1];
+        const dx = num(first.x) - num(last.x);
+        const dy = num(first.y) - num(last.y);
+        const dz = num(first.z) - num(last.z);
+        const lastHandleLength = Math.abs(num(last.shx)) + Math.abs(num(last.shy)) + Math.abs(num(last.shz));
+        const firstHandleLength = Math.abs(num(first.ehx)) + Math.abs(num(first.ehy)) + Math.abs(num(first.ehz));
+        if (lastHandleLength < 1e-9) {
+            last.shx = dx / 3;
+            last.shy = dy / 3;
+            last.shz = dz / 3;
+        }
+        if (firstHandleLength < 1e-9) {
+            first.ehx = -dx / 3;
+            first.ehy = -dy / 3;
+            first.ehz = -dz / 3;
+        }
+        return true;
+    }
+
+    function getBezierCreateNodes(nodeId) {
+        const ctx = findNodeContextById(nodeId);
+        return Array.isArray(ctx?.node?.params?.nodes) ? ctx.node.params.nodes : null;
+    }
+
+    function setBezierCreateHandle(nodeId, nodeIndex, role, mapped) {
+        const nodes = getBezierCreateNodes(nodeId);
+        const item = Number.isInteger(nodeIndex) ? nodes?.[nodeIndex] : null;
+        if (!item || !mapped) return false;
+        const anchor = U.v(num(item.x), num(item.y), num(item.z));
+        const rel = U.sub(mapped, anchor);
+        const prefix = role === "sh" ? "sh" : "eh";
+        item[`${prefix}x`] = rel.x;
+        item[`${prefix}y`] = rel.y;
+        item[`${prefix}z`] = rel.z;
+        return true;
+    }
+
+    function getSelectedBezierNodeContext() {
+        const selected = getSelectedBezierNodeContexts();
+        if (!selected.length) return null;
+        if (!bezierSelectedNode) return selected[0];
+        return selected.find((row) => row.node.id === bezierSelectedNode.nodeId && row.index === bezierSelectedNode.nodeIndex)
+            || selected[0];
+    }
+
+    function getSelectedBezierNodeContexts() {
+        const selected = [];
+        for (const [ownerId, indices] of bezierSelectedNodesByOwner.entries()) {
+            const ctx = findNodeContextById(ownerId);
+            const node = ctx?.node;
+            const nodes = Array.isArray(node?.params?.nodes) ? node.params.nodes : [];
+            for (const index of indices) {
+                if (!Number.isInteger(index) || !nodes[index]) continue;
+                selected.push({ ctx, node, item: nodes[index], index });
+            }
+        }
+        return selected;
+    }
+
+    function isEditableBezierNodeKind(kind) {
+        return kind === "add_bezier_curve_multi"
+            || kind === "apply_bezier_distribution"
+            || kind === "add_bezier_circle_preset";
+    }
+
+    function getFocusedBezierEditContext() {
+        if (!focusedNodeId) return null;
+        const ctx = findNodeContextById(focusedNodeId);
+        if (!ctx?.node || !isEditableBezierNodeKind(ctx.node.kind)) return null;
+        if (!Array.isArray(ctx.node.params?.nodes)) return null;
+        return ctx;
+    }
+
+    function clearBezierNodeSelection(options = {}) {
+        bezierSelectedNode = null;
+        bezierSelectedNodesByOwner = new Map();
+        bezierNodeMoveDrag = null;
+        if (options.refresh !== false) updateBezierGuidePreview();
+    }
+
+    function isBezierNodeSelected(nodeId, nodeIndex) {
+        return !!nodeId && Number.isInteger(nodeIndex) && !!bezierSelectedNodesByOwner.get(nodeId)?.has(nodeIndex);
+    }
+
+    function setBezierNodeSelections(selectionMap, options = {}) {
+        const valid = new Map();
+        if (selectionMap instanceof Map) {
+            for (const [nodeId, indices] of selectionMap.entries()) {
+                const ctx = findNodeContextById(nodeId);
+                const nodes = Array.isArray(ctx?.node?.params?.nodes) ? ctx.node.params.nodes : [];
+                const source = indices instanceof Set ? indices : (Array.isArray(indices) ? indices : []);
+                const bucket = new Set(Array.from(source).filter((index) => Number.isInteger(index) && !!nodes[index]));
+                if (bucket.size) valid.set(nodeId, bucket);
+            }
+        }
+        bezierSelectedNodesByOwner = mergeBezierNodeSelectionMaps(
+            bezierSelectedNodesByOwner,
+            valid,
+            options.additive === true
+        );
+        const primary = options.primary;
+        if (primary && isBezierNodeSelected(primary.nodeId, primary.nodeIndex)) {
+            bezierSelectedNode = { nodeId: primary.nodeId, nodeIndex: primary.nodeIndex };
+        } else {
+            const firstOwner = bezierSelectedNodesByOwner.entries().next();
+            if (firstOwner.done) {
+                bezierSelectedNode = null;
+            } else {
+                const firstIndex = firstOwner.value[1].values().next();
+                bezierSelectedNode = firstIndex.done
+                    ? null
+                    : { nodeId: firstOwner.value[0], nodeIndex: firstIndex.value };
+            }
+        }
+        updateBezierGuidePreview();
+        return valid.size > 0 || bezierSelectedNodesByOwner.size === 0;
+    }
+
+    function setBezierNodeSelection(nodeId, indices, options = {}) {
+        if (!nodeId) return false;
+        return setBezierNodeSelections(new Map([[nodeId, indices]]), options);
+    }
+
+    function clearCardSelectionForBezierNodes() {
+        clearViewBoxPointSelection();
+        if (typeof setCardSelectionIds !== "function") return;
+        setCardSelectionIds([], {
+            replace: true,
+            focus: false,
+            reveal: false,
+            syncWithParamSync: false,
+            keepBezierNodeSelection: true
+        });
+    }
+
+    function selectBezierGuideNode(meta, options = {}) {
+        const nodeId = meta?.nodeId || bezierGuideNodeId;
+        if (!nodeId || !Number.isInteger(meta?.nodeIndex)) return false;
+        clearCardSelectionForBezierNodes();
+        if (options.additive !== true && isBezierNodeSelected(nodeId, meta.nodeIndex)) {
+            bezierSelectedNode = { nodeId, nodeIndex: meta.nodeIndex };
+            updateBezierGuidePreview();
+            return true;
+        }
+        return setBezierNodeSelection(nodeId, [meta.nodeIndex], {
+            ...options,
+            primary: { nodeId, nodeIndex: meta.nodeIndex }
+        });
+    }
+
+    function deleteSelectedBezierNode() {
+        const selected = getSelectedBezierNodeContexts();
+        if (!selected.length) return false;
+        const indicesByOwner = new Map();
+        for (const row of selected) {
+            if (!indicesByOwner.has(row.node.id)) indicesByOwner.set(row.node.id, []);
+            indicesByOwner.get(row.node.id).push(row.index);
+        }
+        historyCapture("delete_bezier_selected_node");
+        let changed = false;
+        for (const [nodeId, indices] of indicesByOwner.entries()) {
+            changed = deleteBezierNodes(nodeId, indices, "delete_bezier_selected_node", {
+                captureHistory: false,
+                render: false,
+                clearSelection: false
+            }) || changed;
+        }
+        if (!changed) return false;
+        clearBezierNodeSelection({ refresh: false });
+        ensureAxisEverywhere();
+        renderAll();
+        return true;
+    }
+
+    function deleteBezierNodes(nodeId, indices, reason = "delete_bezier_node", options = {}) {
+        const ctx = findNodeContextById(nodeId);
+        const node = ctx?.node;
+        const nodes = Array.isArray(node?.params?.nodes) ? node.params.nodes : null;
+        if (!ctx || !node || !nodes) return false;
+        const targets = Array.from(new Set(Array.isArray(indices) ? indices : []))
+            .filter((index) => Number.isInteger(index) && index >= 0 && index < nodes.length)
+            .sort((a, b) => b - a);
+        if (!targets.length) return false;
+
+        if (options.captureHistory !== false) historyCapture(reason);
+        const deletingCard = targets.length >= nodes.length;
+        if (deletingCard) {
+            if (bezierCreateState?.targetNodeId === node.id || bezierCreateState?.nodeId === node.id) {
+                stopBezierCreate();
+            }
+            ctx.parentList.splice(ctx.index, 1);
+            const nextFocus = pickReasonableFocusAfterDelete(ctx);
+            if (focusedNodeId === node.id) setFocusedNode(nextFocus, false);
+        } else {
+            for (const index of targets) nodes.splice(index, 1);
+        }
+
+        if (options.clearSelection !== false) clearBezierNodeSelection({ refresh: false });
+        if (options.render !== false) {
+            ensureAxisEverywhere();
+            renderAll();
+        }
+        return true;
+    }
+
+    function beginBezierNodeMoveDrag(ev, meta) {
+        const nodeId = meta?.nodeId || bezierGuideNodeId;
+        if (!nodeId || !Number.isInteger(meta?.nodeIndex) || !isBezierNodeSelected(nodeId, meta.nodeIndex)) return false;
+        const mapped = getMappedPointFromEvent(ev);
+        const selected = getSelectedBezierNodeContexts();
+        if (!mapped || !selected.length) return false;
+        const anchor = selected.find((row) => row.node.id === nodeId && row.index === meta.nodeIndex);
+        if (!anchor) return false;
+        const dom = renderer && renderer.domElement;
+        if (dom?.setPointerCapture) {
+            try { dom.setPointerCapture(ev.pointerId); } catch {}
+        }
+        historyCapture("bezier_node_move");
+        bezierNodeMoveDrag = {
+            pointerId: ev.pointerId,
+            anchorNodeId: nodeId,
+            anchorNodeIndex: meta.nodeIndex,
+            startMapped: { x: num(anchor.item.x), y: num(anchor.item.y), z: num(anchor.item.z) },
+            starts: selected.map((row) => ({
+                nodeId: row.node.id,
+                index: row.index,
+                x: num(row.item.x),
+                y: num(row.item.y),
+                z: num(row.item.z)
+            }))
+        };
+        armCanvasClickSuppress(ev);
+        return true;
+    }
+
+    function updateBezierNodeMoveDrag(ev) {
+        if (!bezierNodeMoveDrag || !ev || ev.pointerId !== bezierNodeMoveDrag.pointerId) return false;
+        const mapped = getMappedPointFromEvent(ev);
+        if (!mapped) return false;
+        const dx = mapped.x - bezierNodeMoveDrag.startMapped.x;
+        const dy = mapped.y - bezierNodeMoveDrag.startMapped.y;
+        const dz = mapped.z - bezierNodeMoveDrag.startMapped.z;
+        for (const start of bezierNodeMoveDrag.starts || []) {
+            const ctx = findNodeContextById(start.nodeId);
+            const nodes = Array.isArray(ctx?.node?.params?.nodes) ? ctx.node.params.nodes : [];
+            const item = nodes[start.index];
+            if (!item) continue;
+            item.x = start.x + dx;
+            item.y = start.y + dy;
+            item.z = start.z + dz;
+        }
+        rebuildPreviewAndKotlin();
+        updateBezierGuidePreview();
+        return true;
+    }
+
+    function finishBezierNodeMoveDrag(ev) {
+        if (!bezierNodeMoveDrag || !ev || ev.pointerId !== bezierNodeMoveDrag.pointerId) return false;
+        const dom = renderer && renderer.domElement;
+        try {
+            if (dom?.hasPointerCapture?.(bezierNodeMoveDrag.pointerId)) dom.releasePointerCapture(bezierNodeMoveDrag.pointerId);
+        } catch {}
+        bezierNodeMoveDrag = null;
+        rebuildPreviewAndKotlin();
+        renderAll();
+        return true;
+    }
+
+    function beginBezierCreateDrag(mapped, ev) {
+        if (!bezierCreateState || !mapped || !ev) return false;
+        const state = bezierCreateState;
+        if (state.pointerId !== null && state.pointerId !== undefined) return false;
+        if (state.phase === "pick_start") {
+            state.start = { x: mapped.x, y: mapped.y, z: mapped.z };
+            if (state.targetNodeId) {
+                const targetNodes = getBezierCreateNodes(state.targetNodeId);
+                if (!targetNodes) return false;
+                historyCapture("add_bezier_node");
+                targetNodes.push({ x: mapped.x, y: mapped.y, z: mapped.z, shx: 0, shy: 0, shz: 0, ehx: 0, ehy: 0, ehz: 0 });
+                state.nodeId = state.targetNodeId;
+                ensureAxisEverywhere();
+                renderAll();
+            } else {
+                state.nodeId = insertBezierCreateNode(state.start);
+            }
+            state.nodeCount = 1;
+            state.activeNodeIndex = 0;
+            state.dragRole = "sh";
+            state.phase = "drag_start";
+        } else if (state.phase === "pick_end" || state.phase === "pick_next") {
+            const nodeId = state.nodeId;
+            if (!nodeId) return false;
+            if (!appendBezierCreateNode(nodeId, mapped)) return false;
+            const nodes = getBezierCreateNodes(nodeId);
+            state.activeNodeIndex = Math.max(0, (nodes?.length || 1) - 1);
+            state.nodeCount = nodes?.length || state.nodeCount;
+            state.start = { x: mapped.x, y: mapped.y, z: mapped.z };
+            state.dragRole = "eh";
+            state.phase = "drag_end";
+        } else {
+            return false;
+        }
+        state.pointerId = ev.pointerId;
+        state.previewArmed = true;
+        state.lastMapped = { x: mapped.x, y: mapped.y, z: mapped.z };
+        const dom = renderer && renderer.domElement;
+        if (dom?.setPointerCapture) {
+            try { dom.setPointerCapture(ev.pointerId); } catch {}
+        }
+        armCanvasClickSuppress(ev);
+        ensureHoverMarker();
+        setHoverMarkerColor(pointPickPreviewColor.getHex());
+        showHoverMarker(mapped);
+        updateBezierCreateHover(mapped);
+        refreshBezierCreateStatus();
+        return true;
+    }
+
+    function finishBezierCreateDrag(ev, cancelled = false) {
+        const state = bezierCreateState;
+        if (!state || state.pointerId === null || state.pointerId === undefined) return false;
+        if (ev && ev.pointerId !== state.pointerId) return false;
+        const mapped = cancelled ? state.lastMapped : (getMappedPointFromEvent(ev) || state.lastMapped);
+        const pointerId = state.pointerId;
+        const dom = renderer && renderer.domElement;
+        try {
+            if (dom?.hasPointerCapture?.(pointerId)) dom.releasePointerCapture(pointerId);
+        } catch {}
+        if (mapped && !cancelled) updateBezierCreateHover(mapped);
+        if (cancelled) {
+            state.phase = state.nodeCount > 1 ? "pick_next" : (state.nodeCount === 1 ? "pick_end" : "pick_start");
+        } else if (state.phase === "drag_end") {
+            const nodes = getBezierCreateNodes(state.nodeId);
+            const item = nodes?.[state.activeNodeIndex];
+            if (item) {
+                item.shx = -num(item.ehx);
+                item.shy = -num(item.ehy);
+                item.shz = -num(item.ehz);
+            }
+            state.phase = "pick_next";
+            state.start = item ? { x: num(item.x), y: num(item.y), z: num(item.z) } : state.start;
+        } else if (!cancelled && state.phase === "drag_start") {
+            state.phase = "pick_end";
+        }
+        state.pointerId = null;
+        state.dragRole = null;
+        state.activeNodeIndex = null;
+        state.lastMapped = mapped || state.lastMapped;
+        state.previewArmed = !!(ev && ev.ctrlKey);
+        if (!state.previewArmed) hideHoverMarker();
+        rebuildPreviewAndKotlin();
+        renderAll();
+        updateBezierGuidePreview();
+        refreshBezierCreateStatus();
+        return true;
+    }
+
     function updateBezierCreateHover(mapped) {
         if (!bezierCreateState || !mapped) {
             hideHoverMarker();
             return;
         }
-        if (bezierCreateState.phase === "drag_start_handle" || bezierCreateState.phase === "drag_end_handle") {
-            const role = bezierCreateState.phase === "drag_start_handle" ? "sh" : "eh";
-            if (setBezierHandleRelative(bezierCreateState.nodeId, role, mapped)) {
+        if (bezierCreateState.phase === "drag_start" || bezierCreateState.phase === "drag_end") {
+            if (setBezierCreateHandle(bezierCreateState.nodeId, bezierCreateState.activeNodeIndex, bezierCreateState.dragRole, mapped)) {
                 rebuildPreviewAndKotlin();
                 updateBezierGuidePreview();
             }
         }
+        bezierCreateState.lastMapped = { x: mapped.x, y: mapped.y, z: mapped.z };
+        if (!bezierCreateState.previewArmed && bezierCreateState.pointerId === null) {
+            hideHoverMarker();
+            updateBezierGuidePreview();
+            return;
+        }
         showHoverMarker(mapped);
+        updateBezierGuidePreview();
     }
 
     function confirmBezierCreatePoint(mapped) {
@@ -8869,40 +10341,29 @@ function initPointsBuilderMain() {
         }
         if (bezierCreateState.phase === "pick_end") {
             bezierCreateState.end = { x: mapped.x, y: mapped.y, z: mapped.z };
-            bezierCreateState.nodeId = insertBezierCreateNode(bezierCreateState.start, bezierCreateState.end);
-            bezierCreateState.phase = "drag_start_handle";
-            ensureHoverMarker();
-            setHoverMarkerColor(pointPickPreviewColor.getHex());
-            showHoverMarker(mapped);
-            refreshBezierCreateStatus();
-            return true;
-        }
-        if (bezierCreateState.phase === "drag_start_handle") {
-            setBezierHandleRelative(bezierCreateState.nodeId, "sh", mapped);
+            bezierCreateState.nodeId = insertBezierCreateNode(bezierCreateState.start);
+            appendBezierCreateNode(bezierCreateState.nodeId, bezierCreateState.end);
+            bezierCreateState.nodeCount = 2;
+            bezierCreateState.phase = "pick_next";
             rebuildPreviewAndKotlin();
             updateBezierGuidePreview();
-            bezierCreateState.phase = "drag_end_handle";
-            refreshBezierCreateStatus();
             return true;
         }
-        if (bezierCreateState.phase === "drag_end_handle") {
-            setBezierHandleRelative(bezierCreateState.nodeId, "eh", mapped);
-            rebuildPreviewAndKotlin();
-            updateBezierGuidePreview();
-            const nodeId = bezierCreateState.nodeId;
-            stopBezierCreate({ keepGuide: true });
-            requestAnimationFrame(() => {
-                try { focusCardById(nodeId, false, true, true); } catch {}
+        if (bezierCreateState.phase === "pick_next") {
+            if (appendBezierCreateNode(bezierCreateState.nodeId, mapped)) {
+                bezierCreateState.nodeCount = (Number(bezierCreateState.nodeCount) || 1) + 1;
+                rebuildPreviewAndKotlin();
                 updateBezierGuidePreview();
-            });
-            showToast("Bezier 创建完成", "success");
-            return true;
+                refreshBezierCreateStatus();
+                return true;
+            }
         }
         return false;
     }
 
     function startBezierCreate() {
-        if (bezierCreateState) stopBezierCreate();
+        // W 是持续工作的钢笔工具；重复 keydown（按住 W 时浏览器会产生）不能重置当前曲线。
+        if (bezierCreateState) return true;
         hideActionMenu();
         hideQuickSyncPanel();
         if (offsetMode) stopOffsetMode();
@@ -8919,18 +10380,47 @@ function initPointsBuilderMain() {
             phase: "pick_start",
             start: null,
             end: null,
-            nodeId: null
+            nodeId: null,
+            targetNodeId: null,
+            nodeCount: 0,
+            pointerId: null,
+            dragRole: null,
+            activeNodeIndex: null,
+            lastMapped: null,
+            previewArmed: false
         };
-        ensureHoverMarker();
-        setHoverMarkerColor(colorForPickIndex(0));
-        hoverMarker.visible = true;
+        const selectedBezierCtx = focusedNodeId ? findNodeContextById(focusedNodeId) : null;
+        const selectedBezierNode = selectedBezierCtx?.node;
+        if (selectedBezierNode && isEditableBezierNodeKind(selectedBezierNode.kind)) {
+            const selectedNodes = Array.isArray(selectedBezierNode.params?.nodes) ? selectedBezierNode.params.nodes : [];
+            bezierCreateState.targetNodeId = selectedBezierNode.id;
+            bezierCreateState.nodeId = selectedBezierNode.id;
+            bezierCreateState.nodeCount = selectedNodes.length;
+            if (selectedNodes.length) {
+                const last = selectedNodes[selectedNodes.length - 1];
+                bezierCreateState.start = { x: num(last.x), y: num(last.y), z: num(last.z) };
+                bezierCreateState.phase = "pick_next";
+            }
+        } else {
+            const newNodeId = insertEmptyBezierCreateNode();
+            bezierCreateState.targetNodeId = newNodeId;
+            bezierCreateState.nodeId = newNodeId;
+        }
+        hideHoverMarker();
         refreshBezierCreateStatus();
+        updateBezierGuidePreview();
         return true;
     }
 
     function applyBezierGuideDragPoint(mapped) {
         if (!bezierHandleDrag || !mapped) return;
-        const ok = setBezierHandleRelative(bezierHandleDrag.nodeId, bezierHandleDrag.role, mapped);
+        const ok = setBezierHandleRelative(
+            bezierHandleDrag.nodeId,
+            bezierHandleDrag.role,
+            mapped,
+            bezierHandleDrag.nodeIndex,
+            { symmetric: bezierHandleDrag.symmetric === true }
+        );
         if (!ok) {
             bezierHandleDrag = null;
             hideBezierGuidePreview();
@@ -9122,6 +10612,7 @@ function initPointsBuilderMain() {
             hideLinePickPreview();
             hidePointPickPreview();
             hideBezierGuidePreview();
+            rebuildCompositionReferencePreview();
             return;
         }
 
@@ -9166,6 +10657,7 @@ function initPointsBuilderMain() {
         updateOffsetPreview(offsetHoverPoint);
         updatePresetPreviewSize();
         updateBezierGuidePreview();
+        rebuildCompositionReferencePreview();
 
         // 不自动重置镜头：由用户手动点击“重置镜头”
     }
@@ -10395,7 +11887,7 @@ function pickSelectablePointHitFromEvent(ev) {
 
 function getParticleSnapFromEvent(ev) {
     if (!(chkSnapParticle && chkSnapParticle.checked)) return null;
-    if (!pointsObj || !renderer || !camera || !raycaster) return null;
+    if ((!pointsObj && !compositionReferencePointsObj) || !renderer || !camera || !raycaster) return null;
     const rect = renderer.domElement.getBoundingClientRect();
     mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     mouse.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
@@ -10405,10 +11897,14 @@ function getParticleSnapFromEvent(ev) {
     const hitThreshold = Math.max(0.12, (pointSize || 0.2) * 0.6);
     raycaster.params.Points.threshold = Math.min(hitThreshold, particleSnapRange);
     const pickTargets = [pointsObj];
-    if (geometryCenterObj && geometryCenterObj.visible) {
-        pickTargets.push(geometryCenterObj);
+    if (compositionReferencePointsObj && compositionReferencePointsObj.visible && lastCompositionReferencePoints.length) {
+        pickTargets.push(compositionReferencePointsObj);
     }
-    const hits = raycaster.intersectObjects(pickTargets, false);
+    const filteredPickTargets = pickTargets.filter(Boolean);
+    if (geometryCenterObj && geometryCenterObj.visible) {
+        filteredPickTargets.push(geometryCenterObj);
+    }
+    const hits = raycaster.intersectObjects(filteredPickTargets, false);
     if (!hits || hits.length === 0) return null;
     const hit = hits[0];
     const idx = hit.index;
@@ -10416,6 +11912,10 @@ function getParticleSnapFromEvent(ev) {
     if (hit.object === geometryCenterObj) {
         const point = lastGeometryCenterPoints[idx] || null;
         return point ? { point, fromHit: true, source: point.helperType || "helper" } : null;
+    }
+    if (hit.object === compositionReferencePointsObj) {
+        const point = lastCompositionReferencePoints[idx] || null;
+        return point ? { point, fromHit: true, source: "composition_reference" } : null;
     }
     if (!lastPoints || !lastPoints[idx]) return null;
     return { point: lastPoints[idx], fromHit: true, source: "particle" };
@@ -10601,7 +12101,7 @@ function getViewBoxSelectedOwnerIds() {
 function shouldStartViewBox(ev) {
     if (!renderer || !renderer.domElement) return false;
     if (!ev || ev.button !== 0) return false;
-    if (ev.altKey) return false;
+    if (ev.altKey && !getFocusedBezierEditContext()) return false;
     const leftMouseAction = controls && controls.mouseButtons ? controls.mouseButtons.LEFT : null;
     if (leftMouseAction !== null && leftMouseAction !== undefined) return false;
     if (linePickMode || pointPickMode || offsetMode || rotateMode) return false;
@@ -10622,7 +12122,8 @@ function beginViewBoxPending(ev) {
         startX: ev.clientX,
         startY: ev.clientY,
         ctrlKey: !!ev.ctrlKey,
-        shiftKey: !!ev.shiftKey
+        shiftKey: !!ev.shiftKey,
+        altKey: !!ev.altKey
     };
     const dom = renderer && renderer.domElement;
     if (dom && dom.setPointerCapture) {
@@ -10777,6 +12278,32 @@ function collectOwnerIdsInViewBox(rect) {
     return collectViewBoxSelection(rect).ownerIds;
 }
 
+function collectBezierNodeSelectionsInRect(rect) {
+    const selectedByOwner = new Map();
+    if (!rect) return selectedByOwner;
+    const visit = (list) => {
+        for (const node of Array.isArray(list) ? list : []) {
+            if (!node) continue;
+            if (node.id && isEditableBezierNodeKind(node.kind)) {
+                const nodes = Array.isArray(node.params?.nodes) ? node.params.nodes : [];
+                const selected = [];
+                for (let index = 0; index < nodes.length; index++) {
+                    const item = nodes[index];
+                    const screen = projectPointToClient({ x: num(item.x), y: num(item.y), z: num(item.z) });
+                    if (!screen) continue;
+                    if (screen.x >= rect.left && screen.x <= rect.right && screen.y >= rect.top && screen.y <= rect.bottom) {
+                        selected.push(index);
+                    }
+                }
+                if (selected.length) selectedByOwner.set(node.id, selected);
+            }
+            if (Array.isArray(node.children)) visit(node.children);
+        }
+    };
+    visit(state?.root?.children || []);
+    return selectedByOwner;
+}
+
 function isPreviewSelectableGroupChild(node) {
     if (!node || !node.id) return false;
     if (String(node.kind || "").startsWith("apply_")) return false;
@@ -10874,6 +12401,7 @@ function applyViewBoxSelection(ownerIds, options = {}) {
 function finishViewBoxSelection(ev) {
     if (!viewBoxPending || !ev || ev.pointerId !== viewBoxPending.pointerId) return false;
     const additive = !!(viewBoxPending.ctrlKey || viewBoxPending.shiftKey);
+    const altSelect = !!viewBoxPending.altKey;
     const pointerId = viewBoxPending.pointerId;
     const rect = viewBoxRect;
     const active = viewBoxSelecting;
@@ -10881,6 +12409,15 @@ function finishViewBoxSelection(ev) {
     if (!active || !rect) return false;
     if ((rect.right - rect.left) < 3 && (rect.bottom - rect.top) < 3) return false;
     const selection = collectViewBoxSelection(rect);
+    const bezierNodesByOwner = collectBezierNodeSelectionsInRect(rect);
+    const selectionLevel = resolveBezierBoxSelectionLevel(selection.ownerIds, bezierNodesByOwner);
+    if (selectionLevel === "nodes") {
+        clearCardSelectionForBezierNodes();
+        setBezierNodeSelections(bezierNodesByOwner, { additive });
+        if (altSelect && bezierNodesByOwner.size) deleteSelectedBezierNode();
+        armCanvasClickSuppress(ev);
+        return true;
+    }
     applyViewBoxSelection(selection.ownerIds, {
         additive,
         pointIndicesByOwner: selection.pointIndicesByOwner,
@@ -13035,6 +14572,19 @@ function collectSyntheticVecTargetsForNode(node) {
         if (NATIVE_OFFSET_TARGET_KINDS.has(node.kind)) {
             return applyNodeOffsetParams(node, delta);
         }
+        if (node.kind === "add_bezier_curve_multi"
+            || node.kind === "apply_bezier_distribution"
+            || node.kind === "add_bezier_circle_preset") {
+            const nodes = Array.isArray(node.params?.nodes) ? node.params.nodes : [];
+            if (!nodes.length) return false;
+            for (const item of nodes) {
+                if (!item || typeof item !== "object") continue;
+                item.x = num(item.x) + delta.x;
+                item.y = num(item.y) + delta.y;
+                item.z = num(item.z) + delta.z;
+            }
+            return true;
+        }
         if (node.kind === "add_bezier_4") {
             const p = node.params || (node.params = {});
             const keys = ["sx", "sy", "sz", "ex", "ey", "ez"];
@@ -13328,7 +14878,94 @@ function collectSyntheticVecTargetsForNode(node) {
             const step = normalizeRotateSnapDeg(rotateSnapDeg);
             nextDeg = Math.round(nextDeg / step) * step;
         }
+        if (bezierRotateTargetId) {
+            if (applyBezierRotationDeg(nextDeg)) rotateDragChanged = true;
+            return;
+        }
         if (setRotateDegForTargets(nextDeg)) rotateDragChanged = true;
+    }
+
+    function applyBezierRotationDeg(nextDeg) {
+        if (!bezierRotateTargetId || !Array.isArray(bezierRotateSnapshots) || !rotateCenter || !rotateAxis) return false;
+        const ctx = findNodeContextById(bezierRotateTargetId);
+        const nodes = Array.isArray(ctx?.node?.params?.nodes) ? ctx.node.params.nodes : [];
+        if (!nodes.length) return false;
+        const q = new THREE.Quaternion().setFromAxisAngle(
+            new THREE.Vector3(rotateAxis.x, rotateAxis.y, rotateAxis.z),
+            Number(nextDeg || 0) * Math.PI / 180
+        );
+        const center = new THREE.Vector3(rotateCenter.x, rotateCenter.y, rotateCenter.z);
+        for (const snapshot of bezierRotateSnapshots) {
+            const item = nodes[snapshot.index];
+            if (!item) continue;
+            const anchor = new THREE.Vector3(snapshot.x, snapshot.y, snapshot.z)
+                .sub(center)
+                .applyQuaternion(q)
+                .add(center);
+            item.x = anchor.x;
+            item.y = anchor.y;
+            item.z = anchor.z;
+            const sh = new THREE.Vector3(snapshot.shx, snapshot.shy, snapshot.shz).applyQuaternion(q);
+            const eh = new THREE.Vector3(snapshot.ehx, snapshot.ehy, snapshot.ehz).applyQuaternion(q);
+            item.shx = sh.x;
+            item.shy = sh.y;
+            item.shz = sh.z;
+            item.ehx = eh.x;
+            item.ehy = eh.y;
+            item.ehz = eh.z;
+        }
+        rotateCurrentDeg = Number(nextDeg) || 0;
+        ensureRotateHistoryCaptured("bezier_rotate_drag");
+        rebuildPreviewAndKotlin();
+        updateBezierGuidePreview();
+        refreshRotateStatus();
+        return true;
+    }
+
+    function startBezierRotateMode(nodeId) {
+        const ctx = nodeId ? findNodeContextById(nodeId) : getFocusedBezierEditContext();
+        const node = ctx?.node;
+        const nodes = Array.isArray(node?.params?.nodes) ? node.params.nodes : [];
+        if (!node || !isEditableBezierNodeKind(node.kind) || !nodes.length) return false;
+        if (bezierCreateState) stopBezierCreate({ keepGuide: true });
+        if (rotateMode) stopRotateMode({ silent: true });
+        if (offsetMode) stopOffsetMode();
+        const center = nodes.reduce((acc, item) => ({
+            x: acc.x + num(item.x),
+            y: acc.y + num(item.y),
+            z: acc.z + num(item.z)
+        }), { x: 0, y: 0, z: 0 });
+        center.x /= nodes.length;
+        center.y /= nodes.length;
+        center.z /= nodes.length;
+        const axis = normalizeAxisForRotate(resolveAxisForNodeId(node.id));
+        bezierRotateTargetId = node.id;
+        bezierRotateSnapshots = nodes.map((item, index) => ({
+            index,
+            x: num(item.x), y: num(item.y), z: num(item.z),
+            shx: num(item.shx), shy: num(item.shy), shz: num(item.shz),
+            ehx: num(item.ehx), ehy: num(item.ehy), ehz: num(item.ehz)
+        }));
+        rotateMode = true;
+        rotateBindings = [];
+        rotateTargetIds = [node.id];
+        rotateSourceIds = [node.id];
+        rotateCenter = center;
+        rotateAxis = axis;
+        rotateCurrentDeg = 0;
+        rotateManualInput = "";
+        rotateDragPointerId = null;
+        rotateDragStartPoint = null;
+        rotateDragStartDeg = 0;
+        rotateDragChanged = false;
+        rotateHistoryCaptured = false;
+        hideActionMenu();
+        ensureHoverMarker();
+        setHoverMarkerColor(rotatePointColor.getHex());
+        hoverMarker.visible = false;
+        refreshRotateStatus();
+        updateFocusColors();
+        return true;
     }
 
     function startRotateMode(rotateIds, options = {}) {
@@ -13400,6 +15037,8 @@ function collectSyntheticVecTargetsForNode(node) {
         rotateDragStartDeg = 0;
         rotateDragChanged = false;
         rotateHistoryCaptured = false;
+        bezierRotateTargetId = null;
+        bezierRotateSnapshots = null;
         hideHoverMarker();
         if (silent) {
             hideLinePickStatus();
@@ -13412,6 +15051,7 @@ function collectSyntheticVecTargetsForNode(node) {
             hideLinePickStatus();
         }
         updateFocusColors();
+        if (focusedNodeId || bezierGuideNodeId) requestAnimationFrame(() => updateBezierGuidePreview());
     }
 
     function handleRotateModeManualInputKeydown(e) {
@@ -13436,7 +15076,8 @@ function collectSyntheticVecTargetsForNode(node) {
                 showToast("旋转角度输入无效", "error");
                 return true;
             }
-            setRotateDegForTargets(n);
+            if (bezierRotateTargetId) applyBezierRotationDeg(n);
+            else setRotateDegForTargets(n);
             stopRotateMode({ keepDoneText: true });
             return true;
         };
@@ -13524,6 +15165,10 @@ function collectSyntheticVecTargetsForNode(node) {
     function onPointerMove(ev) {
         rememberPointPickMenuAnchor(ev);
         updateActionMenuRightTrack(ev);
+        if (bezierNodeMoveDrag) {
+            updateBezierNodeMoveDrag(ev);
+            return;
+        }
         if (bezierHandleDrag) {
             if (!ev || ev.pointerId !== bezierHandleDrag.pointerId) return;
             const mapped = getMappedPointFromEvent(ev);
@@ -13533,18 +15178,27 @@ function collectSyntheticVecTargetsForNode(node) {
             showHoverMarker(mapped);
             return;
         }
-        if (bezierCreateState) {
-            const mapped = getMappedPointFromEvent(ev);
-            if (!mapped) {
-                hideHoverMarker();
-                return;
-            }
-            armCanvasClickSuppress(ev);
-            updateBezierCreateHover(mapped);
-            return;
-        }
         if (updateViewBoxSelecting(ev)) {
             ev.preventDefault();
+            return;
+        }
+        if (bezierCreateState) {
+            const state = bezierCreateState;
+            const mapped = getMappedPointFromEvent(ev);
+            if (!mapped) {
+                if (state.pointerId === null) setBezierCreatePreviewArmed(false);
+                else hideHoverMarker();
+                return;
+            }
+            if (state.pointerId === null && !ev.ctrlKey) {
+                state.lastMapped = { x: mapped.x, y: mapped.y, z: mapped.z };
+                if (state.previewArmed) setBezierCreatePreviewArmed(false);
+                else hideHoverMarker();
+                return;
+            }
+            state.previewArmed = true;
+            armCanvasClickSuppress(ev);
+            updateBezierCreateHover(mapped);
             return;
         }
         const modeActive = !!(linePickMode || pointPickMode || offsetMode || rotateMode || bezierCreateState);
@@ -13587,8 +15241,16 @@ function collectSyntheticVecTargetsForNode(node) {
     function onPointerUp(ev) {
         rememberPointPickMenuAnchor(ev);
         endActionMenuRightTrack(ev);
+        if (bezierNodeMoveDrag && ev && ev.button === 0 && ev.pointerId === bezierNodeMoveDrag.pointerId) {
+            finishBezierNodeMoveDrag(ev);
+            return;
+        }
         if (bezierHandleDrag && ev && ev.button === 0 && ev.pointerId === bezierHandleDrag.pointerId) {
             cancelBezierHandleDrag(ev, { suppressClick: true });
+            return;
+        }
+        if (bezierCreateState && ev && ev.button === 0 && ev.pointerId === bezierCreateState.pointerId) {
+            finishBezierCreateDrag(ev);
             return;
         }
         if (finishViewBoxSelection(ev)) return;
@@ -13631,7 +15293,7 @@ function collectSyntheticVecTargetsForNode(node) {
             if (pointPickMode) stopPointPick();
             if (offsetMode) stopOffsetMode();
             if (rotateMode) stopRotateMode({ silent: true });
-            if (bezierCreateState) stopBezierCreate();
+            if (bezierCreateState) stopBezierCreate({ keepGuide: true });
             if (!modeActive) {
                 hideActionMenu();
                 if (typeof clearCardSelectionIds === "function") clearCardSelectionIds();
@@ -13649,43 +15311,86 @@ function collectSyntheticVecTargetsForNode(node) {
 
     function onPointerDown(ev) {
         rememberPointPickMenuAnchor(ev);
-        beginActionMenuRightTrack(ev);
+        const bezierCtrlCreate = !!(bezierCreateState && ev.button === 0 && ev.ctrlKey);
+        if (!bezierCtrlCreate) beginActionMenuRightTrack(ev);
         if (bezierHandleDrag && ev && ev.button !== 0) {
             cancelBezierHandleDrag(ev, { suppressClick: true });
         }
-        if (isRightLike(ev)) {
+        if (isRightLike(ev) && !bezierCtrlCreate) {
             _rDown = true;
             _rMoved = false;
             _rDownX = ev.clientX;
             _rDownY = ev.clientY;
         }
         if (bezierCreateState) {
-            if (isRightLike(ev)) return;
-            if (ev.button !== 0 || ev.ctrlKey) return;
-            armCanvasClickSuppress(ev);
-            const mapped = getMappedPointFromEvent(ev);
-            if (!mapped) return;
-            confirmBezierCreatePoint(mapped);
+            if (ev.button !== 0) {
+                if (isRightLike(ev)) return;
+                return;
+            }
+            if (ev.ctrlKey) {
+                const target = getFocusedBezierEditContext();
+                if (!target || target.node.id !== bezierCreateState.targetNodeId) return;
+                const mapped = getMappedPointFromEvent(ev);
+                if (!mapped) return;
+                setBezierCreatePreviewArmed(true, mapped);
+                beginBezierCreateDrag(mapped, ev);
+                return;
+            }
+            const controlHit = pickBezierGuideControlFromEvent(ev);
+            if (controlHit?.type === "anchor" && ev.altKey) {
+                armCanvasClickSuppress(ev);
+                selectBezierGuideNode(controlHit.meta);
+                deleteSelectedBezierNode();
+                return;
+            }
+            if (controlHit?.type === "handle") {
+                beginBezierHandleDrag(ev, controlHit.meta, { symmetric: !!ev.altKey });
+                return;
+            }
+            const anchorHit = controlHit?.type === "anchor" ? controlHit.meta : null;
+            if (anchorHit && bezierCreateState.targetNodeId && bezierCreateState.phase === "pick_next"
+                && anchorHit.nodeIndex === 0) {
+                const targetCtx = findNodeContextById(bezierCreateState.targetNodeId);
+                if (targetCtx?.node && targetCtx.node.kind !== "add_bezier_circle_preset") {
+                    historyCapture("bezier_toggle_closed");
+                    const params = targetCtx.node.params || (targetCtx.node.params = {});
+                    params.closed = !params.closed;
+                    if (params.closed) connectBezierClosure(targetCtx.node);
+                    rebuildPreviewAndKotlin();
+                    renderAll();
+                    stopBezierCreate({ keepGuide: true });
+                    return;
+                }
+            }
+            if (anchorHit) {
+                armCanvasClickSuppress(ev);
+                hideActionMenu();
+                selectBezierGuideNode(anchorHit, { additive: !!ev.shiftKey });
+                beginBezierNodeMoveDrag(ev, anchorHit);
+                return;
+            }
+            beginViewBoxPending(ev);
             return;
         }
         // 非拾取模式：点击/拖动预览主要用于 OrbitControls；选点聚焦由 click 事件处理
         if (!linePickMode && !pointPickMode && !offsetMode && !rotateMode) {
             if (isRightLike(ev)) return;
-            if (ev.button === 0 && !ev.ctrlKey) {
-                const bezierHit = pickBezierGuideHandleFromEvent(ev);
-                if (bezierHit) {
+            if (ev.button === 0) {
+                const controlHit = pickBezierGuideControlFromEvent(ev);
+                if (controlHit?.type === "anchor") {
+                    const bezierNodeHit = controlHit.meta;
                     armCanvasClickSuppress(ev);
                     hideActionMenu();
-                    const dom = renderer && renderer.domElement;
-                    if (dom && dom.setPointerCapture) {
-                        try { dom.setPointerCapture(ev.pointerId); } catch {}
+                    selectBezierGuideNode(bezierNodeHit, { additive: !!ev.shiftKey });
+                    if (ev.altKey) {
+                        deleteSelectedBezierNode();
+                    } else {
+                        beginBezierNodeMoveDrag(ev, bezierNodeHit);
                     }
-                    bezierHandleDrag = {
-                        pointerId: ev.pointerId,
-                        nodeId: bezierGuideNodeId,
-                        role: bezierHit.role
-                    };
-                    historyCapture("bezier_handle_drag");
+                    return;
+                }
+                if (controlHit?.type === "handle") {
+                    beginBezierHandleDrag(ev, controlHit.meta, { symmetric: !!ev.altKey });
                     return;
                 }
             }
@@ -13984,6 +15689,8 @@ function collectSyntheticVecTargetsForNode(node) {
         stopPointPick,
         startPointPickForVecTarget,
         startOffsetMode,
+        connectBezierClosure,
+        deleteBezierNodeAt: (nodeId, index) => deleteBezierNodes(nodeId, [index]),
         clearEmptyBuilderCards,
         uid,
         getState: () => state,
@@ -14046,6 +15753,7 @@ function collectSyntheticVecTargetsForNode(node) {
         const rawSetCardSelectionIds = setCardSelectionIds;
         setCardSelectionIds = (ids, options = {}) => {
             if (!(options && options.keepPointSelection === true)) clearViewBoxPointSelection();
+            if (!(options && options.keepBezierNodeSelection === true)) clearBezierNodeSelection({ refresh: false });
             return rawSetCardSelectionIds(ids, options);
         };
     }
@@ -14053,6 +15761,7 @@ function collectSyntheticVecTargetsForNode(node) {
         const rawClearCardSelectionIds = clearCardSelectionIds;
         clearCardSelectionIds = (...args) => {
             clearViewBoxPointSelection();
+            clearBezierNodeSelection({ refresh: false });
             return rawClearCardSelectionIds(...args);
         };
     }
@@ -14119,6 +15828,7 @@ function collectSyntheticVecTargetsForNode(node) {
             return true;
         },
         isPresetDragActive: () => !!draggingPresetId,
+        isBezierHandleDragActive: () => !!bezierHandleDrag,
         cardSearch,
         normalizeHotkey,
         deleteSelectedCards,
@@ -14154,6 +15864,11 @@ function collectSyntheticVecTargetsForNode(node) {
         beginPresetGroupRename,
         isDefaultPresetGroup,
         startBezierCreate,
+        startBezierRotateMode,
+        getBezierCreateState: () => bezierCreateState,
+        stopBezierCreate,
+        getSelectedBezierNode: () => bezierSelectedNode,
+        deleteSelectedBezierNode,
         setSnapPlane,
         setMirrorPlane,
         copyFocusedCard,

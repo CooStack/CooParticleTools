@@ -27,6 +27,7 @@ import {
   quadToCubic,
   buildCubicBezier,
   generateBezierCurve,
+  generateEquidistantBezierCurveNodes,
   rotateVectorAroundAxis,
   rotatePointsToPointUpright,
   getLightningEffectPoints,
@@ -80,7 +81,7 @@ const KOTLIN_MODE_OPTIONS = [
   { label: '预声明变量', value: 'valRel' }
 ];
 
-export const BUILDER_CONTAINER_KINDS = new Set(['add_builder', 'add_with', 'clear_as_mask']);
+export const BUILDER_CONTAINER_KINDS = new Set(['add_builder', 'add_with', 'clear_as_mask', 'apply_bezier_distribution']);
 
 function offsetFrom(params = {}) {
   return v(num(params.ox), num(params.oy), num(params.oz));
@@ -100,6 +101,55 @@ function hasKotlinOffset(params = {}) {
     const value = params[key];
     return Number.isFinite(Number(value)) ? Math.abs(Number(value)) > 1e-9 : String(value ?? '').trim() !== '';
   });
+}
+
+function makeBezierCircleNodes(radius = 3, ox = 0, oy = 0, oz = 0) {
+  const r = Math.abs(num(radius, 3));
+  const k = 0.5522847498 * r;
+  return [
+    { x: r + ox, y: oy, z: oz, shx: 0, shy: 0, shz: k, ehx: 0, ehy: 0, ehz: -k },
+    { x: ox, y: oy, z: oz + r, shx: -k, shy: 0, shz: 0, ehx: k, ehy: 0, ehz: 0 },
+    { x: ox - r, y: oy, z: oz, shx: 0, shy: 0, shz: -k, ehx: 0, ehy: 0, ehz: k },
+    { x: ox, y: oy, z: oz - r, shx: k, shy: 0, shz: 0, ehx: -k, ehy: 0, ehz: 0 }
+  ];
+}
+
+function closeBezierNodes(nodes) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  return list.length > 1 ? [...list, { ...list[0] }] : list;
+}
+
+function isZeroBezierVector(x, y, z) {
+  return [x, y, z].every((value) => {
+    if (value === null || value === undefined || String(value).trim() === '') return true;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && Math.abs(numeric) < 1e-9;
+  });
+}
+
+function bezierNodeKotlinLines(node, indent) {
+  const item = node || {};
+  const args = [`point = ${relExpr(item.x, item.y, item.z)}`];
+  if (!isZeroBezierVector(item.shx, item.shy, item.shz)) {
+    args.push(`startHandle = ${relExpr(item.shx, item.shy, item.shz)}`);
+  }
+  if (!isZeroBezierVector(item.ehx, item.ehy, item.ehz)) {
+    args.push(`endHandle = ${relExpr(item.ehx, item.ehy, item.ehz)}`);
+  }
+  return [
+    `${indent}addNode(`,
+    ...args.map((arg, index) => `${indent}  ${arg}${index < args.length - 1 ? ',' : ''}`),
+    `${indent})`
+  ];
+}
+
+function bezierCurveKotlinLines(nodes, count, indent) {
+  const lines = [`${indent}.addBezierCurve(${count}) {`];
+  for (const node of (nodes || [])) {
+    lines.push(...bezierNodeKotlinLines(node, `${indent}  `));
+  }
+  lines.push(`${indent}}`);
+  return lines;
 }
 
 function angleKotlinExpr(value, unit = 'deg') {
@@ -749,6 +799,62 @@ export const POINTS_NODE_KINDS = {
     },
     kotlin(node) {
       return `.addBezierCurve(${relExpr(node.params.sx, node.params.sy, node.params.sz)}, ${relExpr(node.params.ex, node.params.ey, node.params.ez)}, ${relExpr(node.params.shx, node.params.shy, node.params.shz)}, ${relExpr(node.params.ehx, node.params.ehy, node.params.ehz)}, ${intExpr(node.params.count, 80, 2)})`;
+    }
+  },
+  add_bezier_curve_multi: {
+    title: '空间贝塞尔',
+    group: '曲线',
+    description: '使用多个空间节点与相对曲柄生成按弧长等距采样的三次贝塞尔曲线。',
+    defaultParams: { nodes: [], count: 16, closed: false },
+    fields: [numberField('count', '点数', { step: 1, min: 1 })],
+    apply(ctx, node) {
+      const nodes = node.params.closed ? closeBezierNodes(node.params.nodes) : (node.params.nodes || []);
+      if (!nodes.length) return;
+      const points = generateEquidistantBezierCurveNodes(nodes, Math.max(1, int(node.params.count, 16)));
+      ctx.points.push(...points);
+    },
+    kotlin(node, emitCtx, indent) {
+      const sourceNodes = node.params.closed ? closeBezierNodes(node.params.nodes) : (node.params.nodes || []);
+      return bezierCurveKotlinLines(sourceNodes, intExpr(node.params.count, 16, 1), indent);
+    }
+  },
+  add_bezier_circle_preset: {
+    title: '贝塞尔圆预设',
+    group: '曲线',
+    description: '由四段三次贝塞尔曲线组成的 XZ 平面圆。',
+    defaultParams: { nodes: makeBezierCircleNodes(), count: 96 },
+    fields: [numberField('count', '点数', { step: 1, min: 4 })],
+    apply(ctx, node) {
+      let nodes = Array.isArray(node.params.nodes) && node.params.nodes.length ? node.params.nodes : null;
+      if (!nodes) nodes = makeBezierCircleNodes(node.params.radius, node.params.ox, node.params.oy, node.params.oz);
+      ctx.points.push(...generateEquidistantBezierCurveNodes(closeBezierNodes(nodes), Math.max(4, int(node.params.count, 96))));
+    },
+    kotlin(node, emitCtx, indent) {
+      let nodes = Array.isArray(node.params.nodes) && node.params.nodes.length ? node.params.nodes : null;
+      if (!nodes) nodes = makeBezierCircleNodes(node.params.radius, node.params.ox, node.params.oy, node.params.oz);
+      return bezierCurveKotlinLines(closeBezierNodes(nodes), intExpr(node.params.count, 96, 4), indent);
+    }
+  },
+  apply_bezier_distribution: {
+    title: '空间贝塞尔分布',
+    group: '容器',
+    description: '沿空间贝塞尔路径复制子 Builder 的点集。',
+    defaultParams: { nodes: [], count: 16, closed: false },
+    supportsChildren: true,
+    fields: [numberField('count', '路径点数', { step: 1, min: 1 })],
+    apply() {},
+    kotlin(node, emitCtx, indent, emitNodesKotlinLines) {
+      const lines = [`${indent}.applyBezierDistribution {`];
+      const nodes = node.params.closed ? closeBezierNodes(node.params.nodes) : (node.params.nodes || []);
+      nodes.forEach((item) => {
+        lines.push(`${indent}  addNode(${relExpr(item.x, item.y, item.z)}, ${relExpr(item.shx, item.shy, item.shz)}, ${relExpr(item.ehx, item.ehy, item.ehz)})`);
+      });
+      lines.push(`${indent}  count(${intExpr(node.params.count, 16, 1)})`);
+      lines.push(`${indent}  applyBuilder(PointsBuilder()`);
+      lines.push(...emitNodesKotlinLines(node.children || [], `${indent}    `, emitCtx));
+      lines.push(`${indent}  )`);
+      lines.push(`${indent}}`);
+      return lines;
     }
   },
   add_lightning_points: {

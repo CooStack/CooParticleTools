@@ -335,6 +335,24 @@ export function createCardInputs(ctx) {
                 "endHandle.y": "终点控制柄 Y。",
                 count: "采样点数量。"
             },
+            add_bezier_curve_multi: {
+                count: "整条空间贝塞尔曲线的采样点数量。",
+                point: "节点坐标。",
+                startHandle: "节点出射曲柄（相对向量）。",
+                endHandle: "节点入射曲柄（相对向量）。"
+            },
+            apply_bezier_distribution: {
+                count: "路径采样点数量。",
+                point: "路径节点坐标。",
+                startHandle: "路径节点出射曲柄（相对向量）。",
+                endHandle: "路径节点入射曲柄（相对向量）。"
+            },
+            add_bezier_circle_preset: {
+                count: "圆周采样点数量。",
+                point: "圆曲线节点坐标。",
+                startHandle: "节点出射曲柄（相对向量）。",
+                endHandle: "节点入射曲柄（相对向量）。"
+            },
             add_broken_line: {
                 p1: "起点坐标。",
                 p2: "折点坐标。",
@@ -1148,7 +1166,9 @@ export function initCardSystem(ctx = {}) {
         stopLinePick,
         startLinePick,
         stopPointPick,
-        startOffsetMode
+        startOffsetMode,
+        connectBezierClosure,
+        deleteBezierNodeAt
     } = ctx;
 
     const getState = ctx.getState || (() => ctx.state);
@@ -2395,6 +2415,10 @@ export function initCardSystem(ctx = {}) {
 
             const dragIds = getDragNodeIds(e);
             if (!dragIds.length) return;
+            if (!canDropIntoBuilderOwner(ownerNode, dragIds)) {
+                showToast("空间贝塞尔分布卡片只能接收组类卡片", "info");
+                return;
+            }
             const bodyDrop = getCardBodyDropTarget(e);
             if (bodyDrop) {
                 if (bodyDrop.ids.length > 1) {
@@ -2575,6 +2599,15 @@ export function initCardSystem(ctx = {}) {
         });
     }
 
+    function canDropIntoBuilderOwner(owner, ids) {
+        if (!owner || owner.kind !== "apply_bezier_distribution") return true;
+        const list = Array.isArray(ids) ? ids : [];
+        return list.every((id) => {
+            const ctx = findNodeContextById(id);
+            return !!(ctx?.node && isBuilderContainerKind(ctx.node.kind));
+        });
+    }
+
     function setupListDropZone(containerEl, getListRef, getOwnerNode) {
         if (!containerEl || containerEl.__pbDropZoneBound) return;
         containerEl.__pbDropZoneBound = true;
@@ -2615,6 +2648,10 @@ export function initCardSystem(ctx = {}) {
 
             const dragIds = getDragNodeIds(e);
             if (!dragIds.length) return;
+            if (!canDropIntoBuilderOwner(owner, dragIds)) {
+                showToast("空间贝塞尔分布卡片只能接收组类卡片", "info");
+                return;
+            }
             const id = dragIds[0];
 
             if (dragIds.length > 1) {
@@ -2678,6 +2715,10 @@ export function initCardSystem(ctx = {}) {
 
             const dragIds = getDragNodeIds(e);
             if (!dragIds.length) return;
+            if (!canDropIntoBuilderOwner(ownerNode, dragIds)) {
+                showToast("空间贝塞尔分布卡片只能接收组类卡片", "info");
+                return;
+            }
             const id = dragIds[0];
 
             if (dragIds.length > 1) {
@@ -3021,7 +3062,10 @@ export function initCardSystem(ctx = {}) {
 
             const addBtn = iconBtn("＋", () => {
                 if (isBuilderContainerKind(node.kind)) {
-                    openModal(node.children, (node.children || []).length, "子Builder", node.id);
+                    const options = node.kind === "apply_bezier_distribution"
+                        ? { allowedKinds: ["add_builder", "add_with", "clear_as_mask", "apply_bezier_distribution"] }
+                        : undefined;
+                    openModal(node.children, (node.children || []).length, "子Builder", node.id, options);
                 } else {
                     openModal(siblings, idx + 1, ownerLabel);
                 }
@@ -3111,7 +3155,9 @@ export function initCardSystem(ctx = {}) {
             toBottomBtn.title = "置底";
             actions.appendChild(toBottomBtn);
 
-            if (node.kind === "add_line" || node.kind === "add_fill_triangle" || node.kind === "points_on_each_offset") {
+            if (node.kind === "add_line" || node.kind === "add_fill_triangle" || node.kind === "points_on_each_offset"
+                || node.kind === "add_bezier_4" || node.kind === "add_bezier_curve" || node.kind === "add_bezier_curve_multi"
+                || node.kind === "apply_bezier_distribution" || node.kind === "add_bezier_circle_preset") {
                 const mirrorBtn = iconBtn("⇋", () => {
                     if (selectedNodeIds.size > 1 && selectedNodeIds.has(node.id) && typeof mirrorCopyFocusedCardAction === "function") {
                         if (mirrorCopyFocusedCardAction()) return;
@@ -3366,6 +3412,96 @@ export function initCardSystem(ctx = {}) {
         });
         pendingCardSwapAnim = false;
     }
+
+    function renderBezierNodeEditors(body, node, options = {}) {
+        const params = node.params || (node.params = {});
+        if (!Array.isArray(params.nodes)) params.nodes = [];
+        const fixedCount = Number.isInteger(options.fixedCount) ? options.fixedCount : null;
+        const list = document.createElement("div");
+        list.className = "pb-bezier-node-list";
+        const rebuild = () => rebuildPreviewAndKotlin();
+        const render = () => {
+            list.innerHTML = "";
+            params.nodes.forEach((item, index) => {
+                const entry = document.createElement("div");
+                entry.className = "pb-bezier-node-entry subblock";
+                const head = document.createElement("div");
+                head.className = "subblock-head";
+                const label = document.createElement("div");
+                label.className = "subblock-title";
+                label.textContent = `节点 ${index + 1}`;
+                const del = document.createElement("button");
+                del.type = "button";
+                del.className = "iconbtn danger";
+                del.textContent = "x";
+                del.title = "删除节点";
+                del.disabled = fixedCount !== null;
+                del.addEventListener("click", () => {
+                    if (typeof deleteBezierNodeAt === "function") {
+                        deleteBezierNodeAt(node.id, index);
+                        return;
+                    }
+                    historyCapture("delete_bezier_node");
+                    params.nodes.splice(index, 1);
+                    render();
+                    rebuild();
+                });
+                head.appendChild(label);
+                head.appendChild(del);
+                entry.appendChild(head);
+                entry.appendChild(row("point", makeVec3Editor(item, "", rebuild, "point")));
+                entry.appendChild(row("startHandle", makeVec3Editor(item, "sh", rebuild, "startHandle")));
+                entry.appendChild(row("endHandle", makeVec3Editor(item, "eh", rebuild, "endHandle")));
+                list.appendChild(entry);
+            });
+            if (!params.nodes.length) {
+                const empty = document.createElement("div");
+                empty.className = "pill";
+                empty.textContent = "尚未添加节点";
+                list.appendChild(empty);
+            }
+        };
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "btn small primary";
+        add.textContent = "＋ 添加节点";
+        add.disabled = fixedCount !== null && params.nodes.length >= fixedCount;
+        add.addEventListener("click", () => {
+            if (fixedCount !== null && params.nodes.length >= fixedCount) return;
+            historyCapture("add_bezier_node");
+            const prev = params.nodes[params.nodes.length - 1];
+            params.nodes.push({ x: Number(prev?.x) || 0, y: Number(prev?.y) || 0, z: Number(prev?.z) || 0, shx: 0, shy: 0, shz: 0, ehx: 0, ehy: 0, ehz: 0 });
+            render();
+            rebuild();
+        });
+        body.appendChild(add);
+        body.appendChild(list);
+        render();
+    }
+
+    function renderBezierDistributionChildren(body, node, options) {
+        if (!Array.isArray(node.children)) node.children = [];
+        if (!options?.paramsOnly) body.appendChild(renderBuilderScopeEntry(node));
+        if (options?.paramsOnly) return;
+        const note = document.createElement("div");
+        note.className = "pill";
+        note.textContent = "此卡片只能添加组类卡片，子组内再编辑具体点集。";
+        body.appendChild(note);
+        const addGroup = document.createElement("button");
+        addGroup.type = "button";
+        addGroup.className = "btn small primary";
+        addGroup.textContent = "＋ 添加子组";
+        addGroup.addEventListener("click", () => openModal(node.children, node.children.length, "空间贝塞尔分布子组", node.id, {
+            allowedKinds: ["add_builder", "add_with", "clear_as_mask", "apply_bezier_distribution"]
+        }));
+        body.appendChild(addGroup);
+        const list = document.createElement("div");
+        list.className = "subcards pb-bezier-distribution-children";
+        setupListDropZone(list, () => node.children, () => node);
+        node.children.forEach((child, index) => list.appendChild(renderNodeCard(child, node.children, index, "分布子组", node)));
+        body.appendChild(list);
+    }
+
     function renderParamsEditors(body, node, ownerLabel, options = null) {
         const p = node.params;
         const opts = options || {};
@@ -3836,6 +3972,41 @@ export function initCardSystem(ctx = {}) {
                     p.count = v;
                     rebuildPreviewAndKotlin();
                 })));
+                break;
+
+            case "add_bezier_curve_multi":
+                body.appendChild(row("count", inputNum(p.count, v => {
+                    p.count = v;
+                    rebuildPreviewAndKotlin();
+                })));
+                body.appendChild(row("闭合连接", checkbox(!!p.closed, v => {
+                    p.closed = !!v;
+                    if (p.closed && typeof connectBezierClosure === "function") connectBezierClosure(node);
+                    rebuildPreviewAndKotlin();
+                })));
+                renderBezierNodeEditors(body, node);
+                break;
+
+            case "apply_bezier_distribution":
+                body.appendChild(row("count", inputNum(p.count, v => {
+                    p.count = v;
+                    rebuildPreviewAndKotlin();
+                })));
+                body.appendChild(row("闭合连接", checkbox(!!p.closed, v => {
+                    p.closed = !!v;
+                    if (p.closed && typeof connectBezierClosure === "function") connectBezierClosure(node);
+                    rebuildPreviewAndKotlin();
+                })));
+                renderBezierNodeEditors(body, node);
+                renderBezierDistributionChildren(body, node, opts);
+                break;
+
+            case "add_bezier_circle_preset":
+                body.appendChild(row("count", inputNum(p.count, v => {
+                    p.count = v;
+                    rebuildPreviewAndKotlin();
+                })));
+                renderBezierNodeEditors(body, node);
                 break;
 
             case "add_broken_line":

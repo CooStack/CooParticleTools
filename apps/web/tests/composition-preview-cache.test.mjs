@@ -860,7 +860,11 @@ test('Composition display expressions stay on GPU including point-indexed transf
   assert.equal(app.configurePreviewGpuParticlePath(), true);
   app.updatePreviewGpuParticleAnimation(2550);
   assert.equal(app._pointsShaderRef.uniforms.uGpuPreviewEnabled.value, 1);
-  assert.ok(app._pointsShaderRef.uniforms.uGpuPreviewGlobalTransform.value.elements[5] > 1);
+  const scaleAtTick = app._pointsShaderRef.uniforms.uGpuPreviewGlobalTransform.value.elements[5];
+  assert.ok(scaleAtTick > 1);
+  app.updatePreviewGpuParticleAnimation(2575);
+  const scaleAtHalfTick = app._pointsShaderRef.uniforms.uGpuPreviewGlobalTransform.value.elements[5];
+  assert.ok(scaleAtHalfTick > scaleAtTick + 0.03);
   assert.equal(attributes.aGpuMeta.array[0], 1);
 
   app.state.displayActions = [{

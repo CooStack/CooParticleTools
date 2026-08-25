@@ -35,7 +35,7 @@ export function createPickerModule(ctx = {}) {
         shouldSuppressPresetClick
     } = ctx;
 
-    let addTarget = { list: null, insertIndex: null, ownerLabel: "主Builder", ownerNodeId: null, keepFocusId: null };
+    let addTarget = { list: null, insertIndex: null, ownerLabel: "主Builder", ownerNodeId: null, keepFocusId: null, allowedKinds: null };
     let pickerMode = "cards";
     const modalTitle = modal ? modal.querySelector(".modal-title") : null;
     const btnModalCardsTab = document.getElementById("btnModalCardsTab");
@@ -105,6 +105,7 @@ export function createPickerModule(ctx = {}) {
             ownerLabel,
             ownerNodeId: ownerNodeId || null,
             keepFocusId: ownerNodeId || null,
+            allowedKinds: Array.isArray(options?.allowedKinds) ? new Set(options.allowedKinds) : null,
         };
         const mode = options && options.mode === "presets" ? "presets" : "cards";
         showModal(mode);
@@ -257,7 +258,9 @@ export function createPickerModule(ctx = {}) {
         cardPicker.innerHTML = "";
         cardPicker.classList.add("card-picker");
         cardPicker.classList.remove("preset-picker");
-        const entries = Object.entries(KIND || {}).map(([kind, def], order) => ({ kind, def, order }));
+        const entries = Object.entries(KIND || {})
+            .map(([kind, def], order) => ({ kind, def, order }))
+            .filter((entry) => !addTarget.allowedKinds || addTarget.allowedKinds.has(entry.kind));
 
         const shown = [];
         for (const it of entries) {
@@ -369,6 +372,7 @@ export function createPickerModule(ctx = {}) {
             div.appendChild(setBtn);
 
             div.addEventListener("click", () => {
+                if (addTarget.allowedKinds && !addTarget.allowedKinds.has(it.kind)) return;
                 const stateObj = (typeof getState === "function") ? getState() : null;
                 const rootList = stateObj && stateObj.root && Array.isArray(stateObj.root.children) ? stateObj.root.children : [];
                 const list = addTarget.list || rootList;

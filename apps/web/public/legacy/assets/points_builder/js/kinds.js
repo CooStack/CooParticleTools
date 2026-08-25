@@ -26,6 +26,108 @@ export function createKindDefs(ctx) {
         return res;
     }
 
+    function sampleByDistance(polyline, count) {
+        const total = Math.max(1, int(count));
+        if (!polyline.length) return [];
+        if (total === 1) return [polyline[polyline.length - 1]];
+        const cumulative = [0];
+        for (let i = 1; i < polyline.length; i++) {
+            cumulative.push(cumulative[i - 1] + U.len(U.sub(polyline[i], polyline[i - 1])));
+        }
+        const length = cumulative[cumulative.length - 1];
+        if (!(length > 1e-9)) return Array.from({length: total}, () => ({...polyline[0]}));
+        return Array.from({length: total}, (_, index) => {
+            const target = length * index / (total - 1);
+            let hi = cumulative.findIndex((value) => value >= target);
+            if (hi <= 0) return {...polyline[0]};
+            if (hi < 0) hi = cumulative.length - 1;
+            const lo = hi - 1;
+            const span = cumulative[hi] - cumulative[lo];
+            if (!(span > 1e-9)) return {...polyline[hi]};
+            const ratio = (target - cumulative[lo]) / span;
+            return U.v(
+                polyline[lo].x + (polyline[hi].x - polyline[lo].x) * ratio,
+                polyline[lo].y + (polyline[hi].y - polyline[lo].y) * ratio,
+                polyline[lo].z + (polyline[hi].z - polyline[lo].z) * ratio
+            );
+        });
+    }
+
+    function generateMultiBezier(nodes, count, equidistant = true) {
+        const list = Array.isArray(nodes) ? nodes : [];
+        const total = Math.max(1, int(count));
+        if (!list.length) return [];
+        if (list.length === 1) return Array.from({length: total}, () => U.v(list[0].x, list[0].y, list[0].z));
+        const evaluate = (t) => {
+            const scaled = Math.max(0, Math.min(1, t)) * (list.length - 1);
+            const index = Math.min(list.length - 2, Math.floor(scaled));
+            const local = index === list.length - 2 && t >= 1 ? 1 : scaled - index;
+            const a = list[index];
+            const b = list[index + 1];
+            const p0 = U.v(a.x, a.y, a.z);
+            const p1 = U.add(p0, U.v(a.shx, a.shy, a.shz));
+            const p3 = U.v(b.x, b.y, b.z);
+            const p2 = U.add(p3, U.v(b.ehx, b.ehy, b.ehz));
+            return cubicBezierPoint(local, p0, p1, p2, p3);
+        };
+        if (!equidistant) return Array.from({length: total}, (_, i) => evaluate(total === 1 ? 1 : i / (total - 1)));
+        const subdivision = Math.min(16384, Math.max(256, total * 256));
+        const dense = Array.from({length: subdivision}, (_, i) => evaluate(i / (subdivision - 1)));
+        const result = sampleByDistance(dense, total);
+        result[0] = U.v(list[0].x, list[0].y, list[0].z);
+        result[result.length - 1] = U.v(list[list.length - 1].x, list[list.length - 1].y, list[list.length - 1].z);
+        return result;
+    }
+
+    function makeBezierCircleNodes(radius = 3, ox = 0, oy = 0, oz = 0) {
+        const r = Math.abs(num(radius ?? 3));
+        const k = 0.5522847498 * r;
+        return [
+            { x: r + ox, y: oy, z: oz, shx: 0, shy: 0, shz: k, ehx: 0, ehy: 0, ehz: -k },
+            { x: ox, y: oy, z: oz + r, shx: -k, shy: 0, shz: 0, ehx: k, ehy: 0, ehz: 0 },
+            { x: ox - r, y: oy, z: oz, shx: 0, shy: 0, shz: -k, ehx: 0, ehy: 0, ehz: k },
+            { x: ox, y: oy, z: oz - r, shx: k, shy: 0, shz: 0, ehx: -k, ehy: 0, ehz: 0 }
+        ];
+    }
+
+    function closeBezierNodes(nodes) {
+        const list = Array.isArray(nodes) ? nodes : [];
+        return list.length > 1 ? list.concat([{ ...list[0] }]) : list;
+    }
+
+    function isZeroBezierVector(x, y, z) {
+        return [x, y, z].every((value) => {
+            if (value === null || value === undefined || String(value).trim() === "") return true;
+            const numeric = Number(value);
+            return Number.isFinite(numeric) && Math.abs(numeric) < 1e-9;
+        });
+    }
+
+    function bezierNodeKotlinLines(node, indent) {
+        const item = node || {};
+        const args = [`point = ${relExpr(item.x, item.y, item.z)}`];
+        if (!isZeroBezierVector(item.shx, item.shy, item.shz)) {
+            args.push(`startHandle = ${relExpr(item.shx, item.shy, item.shz)}`);
+        }
+        if (!isZeroBezierVector(item.ehx, item.ehy, item.ehz)) {
+            args.push(`endHandle = ${relExpr(item.ehx, item.ehy, item.ehz)}`);
+        }
+        return [
+            `${indent}addNode(`,
+            ...args.map((arg, index) => `${indent}  ${arg}${index < args.length - 1 ? "," : ""}`),
+            `${indent})`
+        ];
+    }
+
+    function bezierCurveKotlinLines(nodes, count, indent) {
+        const lines = [`${indent}.addBezierCurve(${count}) {`];
+        for (const node of (nodes || [])) {
+            lines.push(...bezierNodeKotlinLines(node, `${indent}  `));
+        }
+        lines.push(`${indent}}`);
+        return lines;
+    }
+
     function quadToCubic(p0, p1, p2) {
         const c1 = U.add(p0, U.mul(U.sub(p1, p0), 2 / 3));
         const c2 = U.add(p2, U.mul(U.sub(p1, p2), 2 / 3));
@@ -1011,6 +1113,10 @@ export function createKindDefs(ctx) {
             defaultParams: { ex: 5, ey: 0, ez: 0, shx: 2, shy: 2, shz: 0, ehx: -2, ehy: 2, ehz: 0, count: 80 },
             apply(ctx, node) {
                 const p = node.params;
+                if (Array.isArray(p.nodes)) {
+                    ctx.points.push(...generateMultiBezier(p.nodes, Math.max(1, int(p.count || 16)), true));
+                    return;
+                }
                 const start = U.v(0, 0, 0);
                 const end = U.v(num(p.ex), num(p.ey), num(p.ez));
                 const p1 = U.add(start, U.v(num(p.shx), num(p.shy), num(p.shz)));
@@ -1020,6 +1126,56 @@ export function createKindDefs(ctx) {
             kotlin(node) {
                 const p = node.params;
                 return `.addBezierCurve(${relExpr(0, 0, 0)}, ${relExpr(p.ex, p.ey, p.ez)}, ${relExpr(p.shx, p.shy, p.shz)}, ${relExpr(p.ehx, p.ehy, p.ehz)}, ${int(p.count)})`;
+            }
+        },
+
+        add_bezier_curve_multi: {
+            title: "空间贝塞尔(多点)",
+            desc: "多个空间节点、出射/入射相对曲柄，按弧长等距采样",
+            defaultParams: { nodes: [], count: 16, closed: false },
+            apply(ctx, node) {
+                const nodes = node.params.closed ? closeBezierNodes(node.params.nodes) : node.params.nodes;
+                ctx.points.push(...generateMultiBezier(nodes, Math.max(1, int(node.params.count || 16)), true));
+            },
+            kotlin(node, emitCtx, indent) {
+                const nodes = node.params.closed ? closeBezierNodes(node.params.nodes) : (node.params.nodes || []);
+                return bezierCurveKotlinLines(nodes, Math.max(1, int(node.params.count || 16)), indent);
+            }
+        },
+
+        add_bezier_circle_preset: {
+            title: "贝塞尔圆预设",
+            desc: "由四段三次贝塞尔曲线组成的 XZ 平面圆",
+            defaultParams: { nodes: makeBezierCircleNodes(), count: 96 },
+            apply(ctx, node) {
+                const nodes = Array.isArray(node.params.nodes) && node.params.nodes.length
+                    ? node.params.nodes
+                    : makeBezierCircleNodes(node.params.radius, node.params.ox, node.params.oy, node.params.oz);
+                ctx.points.push(...generateMultiBezier(closeBezierNodes(nodes), Math.max(4, int(node.params.count ?? 96)), true));
+            },
+            kotlin(node, emitCtx, indent) {
+                const nodes = Array.isArray(node.params.nodes) && node.params.nodes.length
+                    ? node.params.nodes
+                    : makeBezierCircleNodes(node.params.radius, node.params.ox, node.params.oy, node.params.oz);
+                return bezierCurveKotlinLines(closeBezierNodes(nodes), Math.max(4, int(node.params.count ?? 96)), indent);
+            }
+        },
+
+        apply_bezier_distribution: {
+            title: "空间贝塞尔分布",
+            desc: "沿空间贝塞尔路径复制子 PointsBuilder 点集",
+            defaultParams: { nodes: [], count: 16, closed: false },
+            supportsChildren: true,
+            apply() {},
+            kotlin(node, emitCtx, indent, emitNodesKotlinLines) {
+                const lines = [`${indent}.applyBezierDistribution {`];
+                const nodes = node.params.closed ? closeBezierNodes(node.params.nodes) : (node.params.nodes || []);
+                nodes.forEach((p) => lines.push(`${indent}  addNode(${relExpr(p.x, p.y, p.z)}, ${relExpr(p.shx, p.shy, p.shz)}, ${relExpr(p.ehx, p.ehy, p.ehz)})`));
+                lines.push(`${indent}  count(${Math.max(1, int(node.params.count || 16))})`);
+                lines.push(`${indent}  applyBuilder(PointsBuilder()`);
+                lines.push(...emitNodesKotlinLines(node.children || [], `${indent}    `, emitCtx));
+                lines.push(`${indent}  )`, `${indent}}`);
+                return lines;
             }
         },
 

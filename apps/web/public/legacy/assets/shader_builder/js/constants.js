@@ -15,22 +15,15 @@ export const MC_COMPAT = {
     axis: "X+ 东, Y+ 上, Z+ 南"
 };
 
-export const THEMES = [
-    { id: "dark-1", label: "夜岚" },
-    { id: "dark-2", label: "深潮" },
-    { id: "dark-3", label: "焰砂" },
-    { id: "light-1", label: "雾蓝" },
-    { id: "light-2", label: "杏露" },
-    { id: "light-3", label: "薄荷" },
-    { id: "glass-dark-blue", label: "玻璃·深蓝" },
-    { id: "glass-dark-green", label: "玻璃·深绿" },
-    { id: "glass-dark-violet", label: "玻璃·深紫" },
-    { id: "glass-dark-neutral", label: "玻璃·黑" },
-    { id: "glass-light-blue", label: "玻璃·浅蓝" },
-    { id: "glass-light-green", label: "玻璃·浅绿" },
-    { id: "glass-light-violet", label: "玻璃·浅紫" },
-    { id: "glass-light-neutral", label: "玻璃·白" }
-];
+/*
+ * The theme ids come from the shared store rather than a copy here.
+ *
+ * This list used to include dark-2 / dark-3 / light-2 / light-3, which the shared
+ * normalizer collapses to dark-1 / light-1 — so the picker offered ids that could
+ * not survive a round trip, and the Alt+[ / Alt+] cycle stepped through themes
+ * that have no stylesheet.
+ */
+export { ALL_THEMES as THEME_IDS } from "../../shared/js/app-theme.js?v=20260824_1";
 
 export const DEFAULT_MODEL_VERTEX = `
 // 目标: MC 1.21.1 (${MC_COMPAT.glsl})

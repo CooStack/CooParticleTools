@@ -274,30 +274,57 @@ onMounted(loadPlugins);
   background: transparent;
 }
 
+/*
+ * No pointer light in a blurred surface's background: the property change
+ * invalidates paint, and re-painting an element with a backdrop-filter re-runs
+ * the filter. See the long note in glass-theme.css. Static paint only here; the
+ * moving light lives on the rows and buttons below, which carry no filter.
+ */
 :global(body[data-theme^='glass-'] .plugins-header),
 :global(body[data-theme^='glass-'] .plugins-section) {
-  border: 0;
+  border: 1px solid transparent;
   background:
-    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 30%, transparent 68%, var(--glass-sheen-2) 100%),
-    var(--glass-fill-2);
+    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 30%, transparent 68%, var(--glass-sheen-2) 100%) padding-box,
+    linear-gradient(var(--glass-fill-2), var(--glass-fill-2)) padding-box,
+    linear-gradient(148deg,
+      var(--glass-rim-hi) 0%,
+      var(--glass-rim-lo) 24%,
+      var(--glass-rim-lo) 56%,
+      var(--glass-rim-mid) 78%,
+      var(--glass-rim-hi) 100%) border-box;
   backdrop-filter: var(--glass-blur);
   box-shadow:
-    inset 0 1px 0 0 var(--glass-rim-top),
-    inset 1px 0 0 0 var(--glass-rim-side),
-    inset -1px 0 0 0 var(--glass-rim-side),
-    inset 0 -1px 0 0 var(--glass-rim-bottom),
+    inset 0 1px 0 0 var(--glass-inner-hi),
+    inset 0 -24px 36px -30px var(--glass-inner-lo),
     var(--glass-shadow);
 }
 
+/*
+ * Rows and the reload button. No backdrop-filter: every blurred element is its
+ * own compositing layer resampling the page behind it, and these sit on an
+ * already-blurred section. The text-style buttons are excluded because they are
+ * deliberately transparent — see the note in WorkbenchPage.vue.
+ */
 :global(body[data-theme^='glass-'] .plugin-row),
-:global(body[data-theme^='glass-'] .plugins-header button) {
-  border: 0;
+:global(body[data-theme^='glass-'] .plugins-header button:not(.text-button):not(.row-action)) {
+  border: 1px solid transparent;
   background:
-    linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 42%),
-    var(--glass-fill);
-  backdrop-filter: var(--glass-blur-2);
-  box-shadow:
-    inset 0 1px 0 0 var(--glass-rim-side),
-    inset 0 -1px 0 0 var(--glass-rim-bottom);
+    radial-gradient(300px circle at var(--cp-glass-mx) var(--cp-glass-my),
+      var(--glass-reveal-face) 0%,
+      var(--glass-reveal-soft) 32%,
+      var(--glass-reveal-faint) 58%,
+      transparent 100%) padding-box,
+    linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 42%) padding-box,
+    linear-gradient(var(--glass-fill), var(--glass-fill)) padding-box,
+    radial-gradient(200px circle at var(--cp-glass-mx) var(--cp-glass-my),
+      var(--glass-reveal-rim) 0%,
+      color-mix(in srgb, var(--glass-reveal-rim) 32%, transparent) 46%,
+      transparent 100%) border-box,
+    linear-gradient(148deg,
+      var(--glass-rim-mid) 0%,
+      var(--glass-rim-lo) 28%,
+      var(--glass-rim-lo) 62%,
+      var(--glass-rim-mid) 100%) border-box;
+  box-shadow: inset 0 1px 0 0 var(--glass-inner-hi);
 }
 </style>

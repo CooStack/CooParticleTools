@@ -650,6 +650,292 @@ body {
     border-bottom: 1px solid var(--line);
 }
 
+.builder-column-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.builder-column-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: auto;
+}
+
+.builder-column-tab {
+    appearance: none;
+    border: 1px solid var(--line2);
+    border-radius: 7px;
+    background: rgba(255,255,255,.03);
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    line-height: 1;
+    min-height: 26px;
+    padding: 0 8px;
+}
+
+.builder-column-tab:hover,
+.builder-column-tab.active {
+    border-color: color-mix(in srgb, var(--accent) 58%, var(--line2));
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--text);
+}
+
+.composition-reference-root {
+    min-height: 0;
+    overflow: auto;
+    padding: 8px 8px 0;
+}
+
+.composition-reference-root[hidden] {
+    display: none;
+}
+
+.composition-page-hidden {
+    display: none !important;
+}
+
+.composition-reference-controls {
+    margin: 0 0 10px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--panel2) 76%, transparent);
+}
+
+.composition-reference-controls-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.composition-reference-controls-title {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 750;
+}
+
+.composition-reference-controls-subtitle,
+.composition-reference-frame-label {
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.4;
+}
+
+.composition-reference-frame-label {
+    white-space: nowrap;
+    text-align: right;
+}
+
+.composition-reference-current-only {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 10px 0 8px;
+    color: var(--text);
+    font-size: 11px;
+}
+
+.composition-reference-current-only input {
+    margin: 0;
+    accent-color: var(--accent);
+}
+
+.composition-reference-opacity {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 9px;
+    color: var(--text);
+    font-size: 11px;
+}
+
+.composition-reference-opacity input {
+    width: 100%;
+    min-width: 0;
+    accent-color: var(--accent);
+}
+
+.composition-reference-opacity output {
+    min-width: 38px;
+    color: var(--muted);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.composition-reference-frame-controls {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+}
+
+.composition-reference-frame-btn {
+    min-height: 27px;
+    padding: 0 7px;
+    font-size: 10px;
+}
+
+.composition-reference-frame-range {
+    width: 100%;
+    min-width: 0;
+    accent-color: var(--accent);
+    cursor: ew-resize;
+    pointer-events: auto;
+    touch-action: pan-x;
+}
+
+.composition-reference-empty {
+    padding: 14px 10px;
+    border: 1px dashed var(--line2);
+    border-radius: 9px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.composition-reference-group {
+    margin-bottom: 1px;
+    margin-left: calc(var(--reference-depth, 0) * 14px);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: rgba(255,255,255,.025);
+    overflow: hidden;
+}
+
+.composition-reference-group-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    padding: 6px 8px;
+}
+
+.composition-reference-collapse,
+.composition-reference-collapse-spacer {
+    flex: 0 0 22px;
+    width: 22px;
+    height: 22px;
+}
+
+.composition-reference-collapse {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.composition-reference-collapse:hover {
+    border-color: var(--line2);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--text);
+}
+
+.composition-reference-collapse svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.composition-reference-children {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin: 0 8px 1px 18px;
+    padding-left: 10px;
+    border-left: 1px solid color-mix(in srgb, var(--text) 15%, transparent);
+}
+
+.composition-reference-children.collapsed {
+    display: none;
+}
+
+.composition-reference-group-title {
+    min-width: 0;
+    flex: 1 1 auto;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 750;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.composition-reference-group-meta {
+    color: var(--muted);
+    font-size: 10px;
+    white-space: nowrap;
+}
+
+.composition-reference-eye {
+    appearance: none;
+    width: 25px;
+    height: 25px;
+    padding: 0;
+    border: 1px solid var(--line2);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.composition-reference-eye:hover,
+.composition-reference-eye.visible {
+    color: var(--text);
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--line2));
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.composition-reference-eye:disabled {
+    cursor: default;
+    opacity: .45;
+}
+
+.composition-reference-eye svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.composition-reference-placeholder {
+    margin: 0 8px 8px;
+    padding: 7px 8px;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.composition-reference-note {
+    padding: 2px 8px 8px;
+    color: var(--muted2);
+    font-size: 10px;
+    line-height: 1.4;
+}
+
 .panel-tools {
     position: relative;
     z-index: 10020;

@@ -1,23 +1,7 @@
 import { countDecimalsFromString, safeNum } from "./utils.js";
-import { APP_THEME_KEY, watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
+import { ALL_THEMES, APP_THEME_KEY, watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
 
-const THEMES = [
-    { id: "dark-1", label: "夜岚" },
-    { id: "dark-2", label: "深潮" },
-    { id: "dark-3", label: "焰砂" },
-    { id: "light-1", label: "雾蓝" },
-    { id: "light-2", label: "杏露" },
-    { id: "light-3", label: "薄荷" },
-    { id: "glass-dark-blue", label: "玻璃·深蓝" },
-    { id: "glass-dark-green", label: "玻璃·深绿" },
-    { id: "glass-dark-violet", label: "玻璃·深紫" },
-    { id: "glass-dark-neutral", label: "玻璃·黑" },
-    { id: "glass-light-blue", label: "玻璃·浅蓝" },
-    { id: "glass-light-green", label: "玻璃·浅绿" },
-    { id: "glass-light-violet", label: "玻璃·浅紫" },
-    { id: "glass-light-neutral", label: "玻璃·白" }
-];
-const THEME_ORDER = THEMES.map(t => t.id);
+const THEME_ORDER = ALL_THEMES;
 // Shared with every other tool so the theme is global, not per-builder.
 const THEME_KEY = APP_THEME_KEY;
 
@@ -100,7 +84,7 @@ export function initSettingsSystem(ctx = {}) {
     }
 
     function hasTheme(id) {
-        return THEMES.some(t => t.id === id);
+        return ALL_THEMES.includes(id);
     }
 
     function normalizeTheme(id) {

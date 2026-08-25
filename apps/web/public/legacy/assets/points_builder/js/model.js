@@ -19,6 +19,7 @@ const OFFSET_KINDS = new Set([
 
 let fallbackIdSequence = 0;
 
+
 const NUMERIC_VARIABLE_TYPES = new Set(["Int", "Long", "Float", "Double", "Number", "scalar"]);
 const VECTOR_VARIABLE_TYPES = new Set(["Vec3", "RelativeLocation", "vector"]);
 
@@ -265,6 +266,26 @@ function normalizeNodeParams(node, options) {
             if (params.ehx === undefined && params.endHandle && typeof params.endHandle === "object") params.ehx = params.endHandle.x ?? params.endHandle[0];
             if (params.ehy === undefined && params.endHandle && typeof params.endHandle === "object") params.ehy = params.endHandle.y ?? params.endHandle[1];
             if (params.ehz === undefined && params.endHandle && typeof params.endHandle === "object") params.ehz = params.endHandle.z ?? params.endHandle[2];
+            break;
+        case "add_bezier_curve_multi":
+        case "apply_bezier_distribution":
+            if (!Array.isArray(params.nodes)) params.nodes = [];
+            params.nodes = params.nodes.map((node) => ({
+                x: node?.x ?? node?.point?.x ?? 0,
+                y: node?.y ?? node?.point?.y ?? 0,
+                z: node?.z ?? node?.point?.z ?? 0,
+                shx: node?.shx ?? node?.startHandle?.x ?? 0,
+                shy: node?.shy ?? node?.startHandle?.y ?? 0,
+                shz: node?.shz ?? node?.startHandle?.z ?? 0,
+                ehx: node?.ehx ?? node?.endHandle?.x ?? 0,
+                ehy: node?.ehy ?? node?.endHandle?.y ?? 0,
+                ehz: node?.ehz ?? node?.endHandle?.z ?? 0
+            }));
+            if (params.count === undefined) params.count = 16;
+            break;
+        case "add_bezier_circle_preset":
+            if (params.count === undefined) params.count = 96;
+            if (!Array.isArray(params.nodes)) params.nodes = [];
             break;
         case "add_polygon":
             if (params.count === undefined && params.edgeCount !== undefined) params.count = params.edgeCount;

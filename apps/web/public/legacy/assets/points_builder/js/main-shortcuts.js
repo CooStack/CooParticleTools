@@ -58,6 +58,11 @@ export function initGlobalShortcuts(ctx = {}) {
         beginPresetGroupRename,
         isDefaultPresetGroup,
         startBezierCreate,
+        startBezierRotateMode,
+        getBezierCreateState,
+        stopBezierCreate,
+        getSelectedBezierNode,
+        deleteSelectedBezierNode,
         setSnapPlane,
         setMirrorPlane,
         copyFocusedCard,
@@ -74,7 +79,8 @@ export function initGlobalShortcuts(ctx = {}) {
         getIsModalOpen,
         getIsHotkeysOpen,
         getIsSettingsOpen,
-        isPresetDragActive
+        isPresetDragActive,
+        isBezierHandleDragActive
     } = ctx;
 
     let gridHoldKeyDown = false;
@@ -158,6 +164,11 @@ export function initGlobalShortcuts(ctx = {}) {
 
         // Esc closes modal / hotkeys menu
         if (e.code === "Escape") {
+            if (typeof getBezierCreateState === "function" && getBezierCreateState()) {
+                e.preventDefault();
+                if (typeof stopBezierCreate === "function") stopBezierCreate({ keepGuide: true });
+                return;
+            }
             if (rotateMode) {
                 e.preventDefault();
                 if (typeof stopRotateMode === "function") stopRotateMode({ silent: true });
@@ -213,12 +224,9 @@ export function initGlobalShortcuts(ctx = {}) {
 
         // ignore plain single-key hotkeys when typing
         const isPlainKey = !(e.ctrlKey || e.metaKey || e.altKey);
-        if (
-            isPlainKey &&
-            typeof isPresetDragActive === "function" &&
-            isPresetDragActive() &&
-            hotkeyMatchEvent(e, hotkeys.actions.lockPlaneHold)
-        ) {
+        const isLockPlaneDragActive = (typeof isPresetDragActive === "function" && isPresetDragActive())
+            || (typeof isBezierHandleDragActive === "function" && isBezierHandleDragActive());
+        if (isPlainKey && isLockPlaneDragActive && hotkeyMatchEvent(e, hotkeys.actions.lockPlaneHold)) {
             if (lockPlaneKeyDown && lockPlaneKeyCode === e.code) return;
             lockPlaneKeyDown = true;
             lockPlaneKeyCode = e.code;
@@ -265,6 +273,10 @@ export function initGlobalShortcuts(ctx = {}) {
                     || (normalizeHotkey(delHk) === "Backspace" && (e.code === "Delete" || e.code === "Backspace") && !(e.ctrlKey || e.metaKey || e.altKey || e.shiftKey));
                 if (delMatch) {
                     e.preventDefault();
+                    if (typeof getSelectedBezierNode === "function" && getSelectedBezierNode()
+                        && typeof deleteSelectedBezierNode === "function" && deleteSelectedBezierNode()) {
+                        return;
+                    }
                     if (!(typeof deleteSelectedCards === "function" && deleteSelectedCards())) {
                         if (typeof deleteFocusedCard === "function") deleteFocusedCard();
                     }
@@ -467,6 +479,10 @@ export function initGlobalShortcuts(ctx = {}) {
             if (hkModal && !hkModal.classList.contains("hidden") && typeof hideHotkeysModal === "function") hideHotkeysModal();
             if (settingsModal && !settingsModal.classList.contains("hidden") && typeof hideSettingsModal === "function") hideSettingsModal();
             if (rotateMode && typeof stopRotateMode === "function") stopRotateMode({ silent: true });
+            // E 点拾取与 W 钢笔创建是独立工具；切换到 E 时先退出 W，避免画布事件被 W 抢走。
+            if (typeof getBezierCreateState === "function" && getBezierCreateState() && typeof stopBezierCreate === "function") {
+                stopBezierCreate();
+            }
             if (pointPickMode) {
                 if (typeof stopPointPick === "function") stopPointPick();
             } else {
@@ -562,6 +578,7 @@ export function initGlobalShortcuts(ctx = {}) {
             }
             if (!targetId) return;
             if (typeof focusCardById === "function") focusCardById(targetId, false, false, true);
+            if (typeof startBezierRotateMode === "function" && startBezierRotateMode(targetId)) return;
             if (typeof addRotateForTargetIds === "function") addRotateForTargetIds(selectedIds.length > 1 ? selectedIds : [targetId]);
             return;
         }

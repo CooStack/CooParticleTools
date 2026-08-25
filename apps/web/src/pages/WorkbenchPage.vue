@@ -25,6 +25,36 @@
         </select>
       </label>
 
+      <label class="rail-theme glass-pref-row">
+        <span>玻璃模糊度</span>
+        <div class="glass-pref-field">
+          <input
+            v-model.number="glassBlur"
+            type="range"
+            :min="glassLimits.blur.min"
+            :max="glassLimits.blur.max"
+            step="1"
+            aria-label="玻璃模糊度"
+          />
+          <span class="glass-pref-value">{{ glassBlur }}px</span>
+        </div>
+      </label>
+
+      <label class="rail-theme glass-pref-row">
+        <span>玻璃磨砂度</span>
+        <div class="glass-pref-field">
+          <input
+            v-model.number="glassFrost"
+            type="range"
+            :min="glassLimits.frost.min"
+            :max="glassLimits.frost.max"
+            step="1"
+            aria-label="玻璃磨砂度"
+          />
+          <span class="glass-pref-value">{{ glassFrost }}%</span>
+        </div>
+      </label>
+
       <div class="rail-status">
         <span :class="['status-dot', shellAvailable ? 'online' : '']"></span>
         <span>{{ shellAvailable ? 'Desktop runtime' : 'Web runtime' }}</span>
@@ -258,10 +288,40 @@ const disposeThemeWatch = watchAppTheme(adoptTheme);
 // And the durable theme arrives asynchronously at startup (the renderer's origin
 // changes every launch, so the cache the ref was seeded from may be empty).
 const disposeThemeApplied = onAppThemeChange(adoptTheme);
+
+/*
+ * The glass material's blur / frost. Same shape as the theme above, including
+ * the round-trip guard — a builder iframe's own sliders reach us through the
+ * storage event main.js listens on, which then notifies through
+ * onGlassSurfaceChange.
+ */
+const glassLimits = GLASS_SURFACE_LIMITS;
+const initialGlassSurface = readGlassSurface();
+const glassBlur = ref(initialGlassSurface.blur);
+const glassFrost = ref(initialGlassSurface.frost);
+
+let syncingGlass = false;
+watch([glassBlur, glassFrost], ([blur, frost]) => {
+  if (syncingGlass) return;
+  writeGlassSurface({ blur, frost });
+});
+
+const disposeGlassApplied = onGlassSurfaceChange((value) => {
+  if (value.blur === glassBlur.value && value.frost === glassFrost.value) return;
+  syncingGlass = true;
+  glassBlur.value = value.blur;
+  glassFrost.value = value.frost;
+  nextTick(() => {
+    syncingGlass = false;
+  });
+});
+
 onBeforeUnmount(() => {
   disposeThemeWatch();
   disposeThemeApplied();
+  disposeGlassApplied();
 });
+
 const supportsPackageConfig = computed(() => ['generator', 'composition'].includes(selectedProjectType.value));
 const unindexedRecentFiles = computed(() => {
   const indexedPaths = new Set(
@@ -1125,63 +1185,151 @@ button:disabled {
   background: transparent;
 }
 
+/*
+ * Blurred surfaces carry no pointer light in their background: a custom property
+ * used in `background` invalidates paint, and re-painting an element with a
+ * backdrop-filter re-runs the filter — tens of milliseconds a frame at the 48px
+ * the slider allows. See the long note in glass-theme.css. The rail and dialog
+ * are large and mostly chrome, so they keep static paint only; the moving light
+ * lives on the rows and buttons below, which carry no filter.
+ */
 :global(body[data-theme^='glass-'] .workbench-rail),
 :global(body[data-theme^='glass-'] .create-dialog) {
-  border: 0;
+  border: 1px solid transparent;
   background:
-    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 30%, transparent 68%, var(--glass-sheen-2) 100%),
-    var(--glass-fill-2);
+    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 30%, transparent 68%, var(--glass-sheen-2) 100%) padding-box,
+    linear-gradient(var(--glass-fill-2), var(--glass-fill-2)) padding-box,
+    linear-gradient(148deg,
+      var(--glass-rim-hi) 0%,
+      var(--glass-rim-lo) 24%,
+      var(--glass-rim-lo) 56%,
+      var(--glass-rim-mid) 78%,
+      var(--glass-rim-hi) 100%) border-box;
   backdrop-filter: var(--glass-blur);
   box-shadow:
-    inset 0 1px 0 0 var(--glass-rim-top),
-    inset 1px 0 0 0 var(--glass-rim-side),
-    inset -1px 0 0 0 var(--glass-rim-side),
-    inset 0 -1px 0 0 var(--glass-rim-bottom),
+    inset 0 1px 0 0 var(--glass-inner-hi),
+    inset 0 -24px 36px -30px var(--glass-inner-lo),
     var(--glass-shadow);
 }
 
 :global(body[data-theme^='glass-'] .project-row),
 :global(body[data-theme^='glass-'] .recent-row),
 :global(body[data-theme^='glass-'] .project-type-option) {
-  border: 0;
+  border: 1px solid transparent;
   background:
-    linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 42%),
-    var(--glass-fill);
-  backdrop-filter: var(--glass-blur-2);
-  box-shadow:
-    inset 0 1px 0 0 var(--glass-rim-side),
-    inset 0 -1px 0 0 var(--glass-rim-bottom);
+    radial-gradient(300px circle at var(--cp-glass-mx) var(--cp-glass-my),
+      var(--glass-reveal-face) 0%,
+      var(--glass-reveal-soft) 32%,
+      var(--glass-reveal-faint) 58%,
+      transparent 100%) padding-box,
+    linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 42%) padding-box,
+    linear-gradient(var(--glass-fill), var(--glass-fill)) padding-box,
+    radial-gradient(200px circle at var(--cp-glass-mx) var(--cp-glass-my),
+      var(--glass-reveal-rim) 0%,
+      color-mix(in srgb, var(--glass-reveal-rim) 32%, transparent) 46%,
+      transparent 100%) border-box,
+    linear-gradient(148deg,
+      var(--glass-rim-mid) 0%,
+      var(--glass-rim-lo) 28%,
+      var(--glass-rim-lo) 62%,
+      var(--glass-rim-mid) 100%) border-box;
+  box-shadow: inset 0 1px 0 0 var(--glass-inner-hi);
 }
 
 :global(body[data-theme^='glass-'] .project-row:hover),
 :global(body[data-theme^='glass-'] .recent-row:hover),
 :global(body[data-theme^='glass-'] .project-type-option:hover) {
   background:
-    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 46%),
-    var(--glass-fill-2);
+    radial-gradient(300px circle at var(--cp-glass-mx) var(--cp-glass-my),
+      var(--glass-reveal-face) 0%,
+      var(--glass-reveal-soft) 32%,
+      var(--glass-reveal-faint) 58%,
+      transparent 100%) padding-box,
+    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 46%) padding-box,
+    linear-gradient(var(--glass-fill-2), var(--glass-fill-2)) padding-box,
+    radial-gradient(200px circle at var(--cp-glass-mx) var(--cp-glass-my),
+      var(--glass-reveal-rim) 0%,
+      color-mix(in srgb, var(--glass-reveal-rim) 32%, transparent) 46%,
+      transparent 100%) border-box,
+    linear-gradient(148deg,
+      var(--glass-rim-hi) 0%,
+      var(--glass-rim-lo) 28%,
+      var(--glass-rim-lo) 62%,
+      var(--glass-rim-mid) 100%) border-box;
   box-shadow:
-    inset 0 1px 0 0 var(--glass-rim-top),
-    inset 0 -1px 0 0 var(--glass-rim-bottom);
+    inset 0 1px 0 0 var(--glass-inner-hi),
+    var(--glass-shadow-2);
 }
 
-:global(body[data-theme^='glass-'] .workbench-page button),
-:global(body[data-theme^='glass-'] .rail-theme-select) {
-  border: 0;
+/*
+ * Ordinary buttons only.
+ *
+ * This rule used to match every `button` in the page, which outranked
+ * `.primary-action`'s own accent background (a bare class cannot beat
+ * `body[attr] .page button`). The result was 新建项目 painted on --glass-fill-2
+ * while still carrying the near-black ink meant for an accent fill: a measured
+ * contrast of 1.15, i.e. invisible. The text-style buttons are excluded for the
+ * same reason — they are deliberately transparent.
+ *
+ * No backdrop-filter either. Every blurred element is its own compositing layer
+ * resampling the page behind it, which is what made the builders stutter; a
+ * button sitting on an already-blurred panel gains nothing from a second blur.
+ */
+:global(body[data-theme^='glass-'] .workbench-page button:not(.primary-action):not(.text-button):not(.row-action):not(.dialog-close)) {
+  border: 1px solid transparent;
   background:
-    linear-gradient(157deg, var(--glass-sheen-1) 0%, transparent 52%),
-    var(--glass-fill-2);
-  backdrop-filter: var(--glass-blur-2);
-  box-shadow:
-    inset 0 1px 0 0 var(--glass-rim-top),
-    inset 0 -1px 0 0 var(--glass-rim-bottom);
+    radial-gradient(150px circle at var(--cp-glass-mx) var(--cp-glass-my),
+      var(--glass-reveal-face) 0%,
+      var(--glass-reveal-soft) 32%,
+      var(--glass-reveal-faint) 58%,
+      transparent 100%) padding-box,
+    linear-gradient(180deg, var(--glass-sheen-2) 0%, transparent 58%) padding-box,
+    linear-gradient(var(--glass-fill-2), var(--glass-fill-2)) padding-box,
+    radial-gradient(110px circle at var(--cp-glass-mx) var(--cp-glass-my),
+      var(--glass-reveal-rim) 0%,
+      color-mix(in srgb, var(--glass-reveal-rim) 32%, transparent) 46%,
+      transparent 100%) border-box,
+    linear-gradient(148deg,
+      var(--glass-rim-mid) 0%,
+      var(--glass-rim-lo) 34%,
+      var(--glass-rim-lo) 66%,
+      var(--glass-rim-mid) 100%) border-box;
+  box-shadow: inset 0 1px 0 var(--glass-inner-hi);
 }
 
-:global(body[data-theme^='glass-'] .primary-action) {
-  color: color-mix(in srgb, var(--glass-base) 84%, black);
+/*
+ * The primary action keeps its accent fill, with --accent-ink for the label —
+ * that token is already solved per mode (dark ink on the light dark-mode accent,
+ * white on the darker light-mode accent), so it does not need a mode override.
+ * `button.primary-action` rather than `.primary-action` so this still wins if
+ * Vue's scoped styles are injected after this stylesheet.
+ */
+:global(body[data-theme^='glass-'] button.primary-action) {
+  border: 1px solid transparent;
+  color: var(--accent-ink);
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--accent) 94%, white 6%),
+      color-mix(in srgb, var(--accent) 86%, transparent)) padding-box,
+    linear-gradient(148deg,
+      color-mix(in srgb, white 46%, var(--accent)) 0%,
+      color-mix(in srgb, var(--accent) 90%, transparent) 40%,
+      color-mix(in srgb, white 24%, var(--accent)) 100%) border-box;
+  font-weight: 600;
 }
 
-:global(body[data-theme^='glass-light-'] .primary-action) {
-  color: #ffffff;
+/*
+ * The theme picker is a plain <select>, so it gets the same sunken fill and lens
+ * border as every other select in the app rather than the button treatment it
+ * used to borrow — which is what made it look like a different control.
+ */
+:global(body[data-theme^='glass-'] .rail-theme-select) {
+  border: 1px solid transparent;
+  color: var(--glass-text);
+  background:
+    linear-gradient(var(--glass-sunken), var(--glass-sunken)) padding-box,
+    linear-gradient(148deg, var(--glass-rim-lo) 0%, var(--glass-rim-mid) 100%) border-box;
+  box-shadow: inset 0 1px 2px rgba(2, 5, 12, 0.12);
 }
 
 @media (max-width: 820px) {

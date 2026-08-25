@@ -67,10 +67,11 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     const PREVIEW_RENDER_CACHE_HARD_MAX_BYTES = 1024 * 1024 * 1024;
     const PREVIEW_RENDER_CACHE_POINT_LIMIT = PREVIEW_GEOMETRY_POINT_LIMIT;
     const PREVIEW_RENDER_CACHE_SUBFRAMES_PER_TICK = 4;
-    const PREVIEW_RENDER_CACHE_WORKER_MIN_POINTS = 8000;
+    const PREVIEW_RENDER_CACHE_WORKER_MIN_POINTS = 1000;
     const PREVIEW_RENDER_CACHE_WORKER_DEFAULT_MAX_WORKERS = 2;
     const PREVIEW_RENDER_CACHE_WORKER_USER_MAX_WORKERS = 16;
     const PREVIEW_RENDER_CACHE_WORKER_MAX_QUEUE = 8;
+    const PREVIEW_RENDER_CACHE_WARMUP_TIMEOUT = 120;
     const PREVIEW_RENDER_CACHE_WORKER_URL = "./preview_render_cache_worker.js?v=20260824_14";
     const hashPreviewUint32 = (value) => {
         let x = Number(value) >>> 0;
@@ -90,7 +91,27 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     class PreviewRuntimeMixin {
     rebuildPreview(options = {}) {
         const immediate = options?.immediate === true || typeof window === "undefined";
-        if (immediate) return this.buildPreviewNow();
+        if (immediate) {
+            const pendingHandle = this.previewBuildHandle;
+            if (pendingHandle) {
+                try {
+                    if (typeof cancelIdleCallback === "function") cancelIdleCallback(pendingHandle);
+                    else clearTimeout(pendingHandle);
+                } catch {
+                }
+            }
+            this.previewBuildHandle = 0;
+            this.previewBuildRequestId = int(this.previewBuildRequestId || 0) + 1;
+            this.previewBuildQueued = false;
+            this.previewBuildInProgress = false;
+            this.invalidateBuilderCompositionReferenceSnapshot?.();
+            const result = this.buildPreviewNow();
+            this.previewAnimStart = performance.now();
+            this.previewPerfLastTs = 0;
+            this.previewRuntimeGlobals = null;
+            this.previewRuntimeAppliedTick = -1;
+            return result;
+        }
 
         this.previewBuildRequestId = int(this.previewBuildRequestId || 0) + 1;
         this.previewBuildQueued = true;
@@ -98,6 +119,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
 
         this.previewBuildInProgress = true;
         this.previewBuildQueued = false;
+        this.invalidateBuilderCompositionReferenceSnapshot?.();
         this.clearPreviewRenderCache?.("rebuild-queued");
         this.previewBuildStartedAt = performance.now();
         if (this.dom?.statusPoints) this.dom.statusPoints.textContent = "构建预览中...";
@@ -145,6 +167,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         this.compilePreviewScriptsFromState({ force: false });
         const points = [];
         const owners = [];
+        const referenceOwners = [];
         const birthOffsets = [];
         const ownerLocalIndex = [];
         const ownerPointCount = [];
@@ -154,6 +177,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const localRefs = [];
         const levelBases = [];
         const levelRefs = [];
+        const levelPaths = [];
         const levelOffsetRefs = [];
         const levelMetas = [];
         const useLocalOpsList = [];
@@ -177,6 +201,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 const v = U.v(num(p?.x), num(p?.y), num(p?.z));
                 points.push(v);
                 owners.push(card.id);
+                referenceOwners.push(card.id);
                 birthOffsets.push(0);
                 ownerLocalIndex.push(idx);
                 ownerPointCount.push(len);
@@ -186,6 +211,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 localRefs.push(0);
                 levelBases.push([]);
                 levelRefs.push([]);
+                levelPaths.push([]);
                 levelOffsetRefs.push([]);
                 levelMetas.push([]);
                 useLocalOpsList.push(false);
@@ -214,6 +240,10 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                         const tupleVisualSource = tuple.visualSource || card;
                         points.push(U.v(a.x + l.x, a.y + l.y, a.z + l.z));
                         owners.push(card.id);
+                        const tuplePath = Array.isArray(tuple.path) ? tuple.path : [];
+                        referenceOwners.push(tuplePath.length
+                            ? `${String(card.id || "")}::shape:${tuplePath.join(".")}`
+                            : String(card.id || ""));
                         birthOffsets.push(0);
                         ownerLocalIndex.push(ai * localList.length + li);
                         ownerPointCount.push(clonePointCount);
@@ -223,6 +253,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                         localRefs.push(li + repeatIndex * localList.length);
                         levelBases.push(tupleLevels.map((it) => U.v(num(it?.vec?.x), num(it?.vec?.y), num(it?.vec?.z))));
                         levelRefs.push(tupleLevels.map((it) => int(it?.ref || 0)));
+                        levelPaths.push(tupleLevels.map((it) => Array.isArray(it?.path) ? it.path.slice() : []));
                         levelOffsetRefs.push(tupleLevels.map((it) => int(it?.offsetIndex ?? 0)));
                         levelMetas.push(tupleLevels.map((it) => ({
                             node: it?.node || null,
@@ -293,6 +324,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             sampleInPlace(localRefs);
             sampleInPlace(levelBases);
             sampleInPlace(levelRefs);
+            sampleInPlace(levelPaths);
             sampleInPlace(levelOffsetRefs);
             sampleInPlace(levelMetas);
             sampleInPlace(useLocalOpsList);
@@ -305,6 +337,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         this.previewBasePoints = points.map((p) => U.clone(p));
         this.previewPoints = points.map((p) => U.clone(p));
         this.previewOwners = owners;
+        this.previewReferenceOwners = referenceOwners;
         this.previewBirthOffsets = birthOffsets;
         this.previewOwnerLocalIndex = ownerLocalIndex;
         this.previewOwnerPointCount = ownerPointCount;
@@ -314,6 +347,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         this.previewLocalRef = localRefs;
         this.previewLevelBases = levelBases;
         this.previewLevelRefs = levelRefs;
+        this.previewLevelPaths = levelPaths;
         this.previewLevelOffsetRefs = levelOffsetRefs;
         this.previewLevelMetas = levelMetas;
         this.previewUseLocalOps = useLocalOpsList;
@@ -325,6 +359,77 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         this.rebuildPreviewRuntimeIndex();
         this.previewAnimStart = performance.now();
         this.updatePreviewGeometry(points, owners);
+        this.primePreviewRenderCacheFirstFrame();
+        this.beginPreviewRenderCacheBuffering();
+    }
+
+    primePreviewRenderCacheFirstFrame() {
+        if (!this.pointsGeom || !Array.isArray(this.previewBasePoints) || !this.previewBasePoints.length) return false;
+        if (this.previewGpuParticlePathEnabled === true) return false;
+        this.isPreviewGpuParticleModeRequested?.({ refresh: true });
+        if (typeof this.isPreviewRenderCacheEnabled !== "function" || !this.isPreviewRenderCacheEnabled()) return false;
+        if (typeof this.canUsePreviewGpuParticlePath === "function" && this.canUsePreviewGpuParticlePath()) return false;
+
+        const totalCount = Math.max(0, int(this.previewBasePoints.length));
+        const cycleCfg = this.getPreviewCycleConfig();
+        const frameTime = this.resolvePreviewFrameTimeContext({
+            totalCount,
+            elapsedTick: 0,
+            globalCycleAge: 0,
+            cycleIndex: 0,
+            cycleCfg
+        });
+        const key = this.makePreviewFrameCacheKey({
+            totalCount,
+            elapsedTick: frameTime.elapsedTick,
+            globalCycleAge: frameTime.globalCycleAge,
+            cycleIndex: frameTime.cycleIndex,
+            cycleCfg,
+            tickStep: frameTime.tickStep,
+            renderFrame: frameTime.renderFrame
+        });
+        if (!key || this.hasPreviewCachedFrameKey(key)) return false;
+        const frame = this.computePreviewFrame({
+            now: this.previewAnimStart,
+            totalCount,
+            elapsedTick: frameTime.elapsedTick,
+            globalCycleAge: frameTime.globalCycleAge,
+            cycleIndex: frameTime.cycleIndex,
+            cycleCfg,
+            outputToGeometry: false
+        });
+        if (!frame) return false;
+        const stored = this.storePreviewCachedFrame(key, frame, { cycleCfg });
+        if (stored) this.applyPreviewFrame(frame, { restoreRuntimeState: false });
+        return stored;
+    }
+
+    beginPreviewRenderCacheBuffering() {
+        if (!this.pointsGeom || !Array.isArray(this.previewBasePoints) || !this.previewBasePoints.length) return false;
+        if (this.previewGpuParticlePathEnabled === true) return false;
+        if (!this.isPreviewRenderCacheEnabled?.()) return false;
+        const totalCount = Math.max(0, int(this.previewBasePoints.length));
+        const cycleCfg = this.getPreviewCycleConfig();
+        const cache = this.ensurePreviewRenderCache(totalCount, { cycleCfg });
+        const pool = this.ensurePreviewRenderCacheWorkerPool(totalCount);
+        if (!cache || cache.disabled || !pool || pool.disabled || !pool.workers?.length) return false;
+        const subframes = this.getPreviewRenderCacheSubframesPerTick(totalCount, cycleCfg);
+        const target = Math.min(
+            Math.max(1, int(cache.maxFrames || 1)),
+            Math.max(8, subframes * 3)
+        );
+        if (cache.frames.size >= target) return false;
+        this.previewRenderCacheBufferTarget = target;
+        this.previewRenderCacheBuffering = true;
+        this.queuePreviewRenderCacheBuilds({
+            totalCount,
+            cycleCfg,
+            elapsedTick: 0,
+            globalCycleAge: 0,
+            cycleIndex: 0,
+            maxTasks: Math.max(1, int(pool.maxQueue || PREVIEW_RENDER_CACHE_WORKER_MAX_QUEUE))
+        });
+        return true;
     }
 
     rebuildPreviewRuntimeIndex() {
@@ -1970,6 +2075,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         }
         if (tickStep > this.previewRuntimeAppliedTick) this.previewRuntimeAppliedTick = tickStep;
         this.syncPreviewStatusWithCycle(frameRuntimeGlobals, cycleCfg, cycleAge, cycleAge);
+        this.previewManualProjectScaleTick = cycleAge;
         this.updatePreviewGpuParticleTransforms(cycleAge, cycleCfg);
         this.updatePreviewGpuParticleVisibility(cycleAge);
         this.syncPreviewGpuParticleUniforms({ elapsedTick, cycleCfg });
@@ -2516,6 +2622,8 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         this.clearPreviewBoundedFrameCache("previewRenderCache", reason);
         this.previewRenderSignature = "";
         this.previewLastAppliedFrameKey = "";
+        this.previewRenderCacheBuffering = false;
+        this.previewRenderCacheBufferTarget = 0;
         this.previewRenderCacheGeneration = int(this.previewRenderCacheGeneration || 0) + 1;
         this.clearPreviewRenderCacheWorkerQueue(reason);
         this.updatePreviewCacheStatus();
@@ -2682,11 +2790,41 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     }
 
     clearPreviewRenderCacheWorkerQueue(reason = "") {
+        this.cancelPreviewRenderCacheWarmup?.();
         this.previewRenderWorkerGeneration = int(this.previewRenderWorkerGeneration || 0) + 1;
         const pool = this.previewRenderCacheWorkerPool;
         if (!pool) return;
         // postMessage 无法取消正在执行的任务，重建或空场景时直接终止旧池。
         this.disposePreviewRenderCacheWorkerPool(reason || "clear-queue", { disable: false });
+    }
+
+    cancelPreviewRenderCacheWarmup() {
+        const handle = this.previewRenderCacheWarmupHandle;
+        if (handle) {
+            try {
+                if (typeof cancelIdleCallback === "function") cancelIdleCallback(handle);
+                else clearTimeout(handle);
+            } catch {
+            }
+        }
+        this.previewRenderCacheWarmupHandle = 0;
+        this.previewRenderCacheWarmupContext = null;
+    }
+
+    schedulePreviewRenderCacheBuilds(context = {}) {
+        if (!this.isPreviewRenderCacheEnabled()) return false;
+        this.previewRenderCacheWarmupContext = Object.assign({}, context, { maxTasks: 1 });
+        if (this.previewRenderCacheWarmupHandle) return false;
+        const run = () => {
+            this.previewRenderCacheWarmupHandle = 0;
+            const next = this.previewRenderCacheWarmupContext;
+            this.previewRenderCacheWarmupContext = null;
+            if (next) this.queuePreviewRenderCacheBuilds(next);
+        };
+        this.previewRenderCacheWarmupHandle = typeof requestIdleCallback === "function"
+            ? requestIdleCallback(run, { timeout: PREVIEW_RENDER_CACHE_WARMUP_TIMEOUT })
+            : setTimeout(run, PREVIEW_RENDER_CACHE_WARMUP_TIMEOUT);
+        return true;
     }
 
     ensurePreviewGpuFrameMeta() {
@@ -3115,7 +3253,11 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         if (completionSignature && cache.completeSignature === completionSignature) return false;
         const activeOrQueued = (pool.pending instanceof Map ? pool.pending.size : 0)
             + (Array.isArray(pool.queue) ? pool.queue.length : 0);
-        let budget = Math.max(0, int(pool.maxQueue || PREVIEW_RENDER_CACHE_WORKER_MAX_QUEUE) - activeOrQueued);
+        const availableBudget = Math.max(0, int(pool.maxQueue || PREVIEW_RENDER_CACHE_WORKER_MAX_QUEUE) - activeOrQueued);
+        const requestedBudget = Number.isFinite(Number(context.maxTasks))
+            ? Math.max(1, int(context.maxTasks))
+            : availableBudget;
+        let budget = Math.min(availableBudget, requestedBudget);
         if (budget <= 0) return false;
         const skipKey = String(context.skipKey || "");
         let queuedAny = false;
@@ -3689,6 +3831,30 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const now = performance.now();
         if (this.updatePreviewGpuParticleAnimation(now)) return;
         const totalCount = this.previewBasePoints.length;
+        if (this.previewRenderCacheBuffering === true) {
+            const cache = this.previewRenderCache;
+            const target = Math.max(1, int(this.previewRenderCacheBufferTarget || 1));
+            const pool = this.previewRenderCacheWorkerPool;
+            if (!pool || pool.disabled || !pool.workers?.length) {
+                this.previewRenderCacheBuffering = false;
+            } else if (cache?.frames instanceof Map && cache.frames.size < target) {
+                const cycleCfg = this.getPreviewCycleConfig();
+                this.queuePreviewRenderCacheBuilds({
+                    totalCount,
+                    cycleCfg,
+                    elapsedTick: 0,
+                    globalCycleAge: 0,
+                    cycleIndex: 0,
+                    maxTasks: Math.max(1, int(this.previewRenderCacheWorkerPool?.maxQueue || PREVIEW_RENDER_CACHE_WORKER_MAX_QUEUE))
+                });
+                return;
+            }
+            this.previewRenderCacheBuffering = false;
+            this.previewAnimStart = now;
+            this.previewPerfLastTs = 0;
+            this.previewRuntimeGlobals = null;
+            this.previewRuntimeAppliedTick = -1;
+        }
         const minInterval = totalCount >= 50000 ? 16 : 0;
         if (minInterval > 0 && (now - this.previewPerfLastTs) < minInterval) return;
         this.previewPerfLastTs = now;
@@ -3752,7 +3918,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             this.previewLastAppliedFrameKey = frameKey;
             this.storePreviewCachedFrame(frameKey, frame, { cycleCfg });
             if (frame.visible > 0) {
-                this.queuePreviewRenderCacheBuilds({
+                this.schedulePreviewRenderCacheBuilds({
                     totalCount,
                     cycleCfg,
                     frameTime,
@@ -5220,6 +5386,9 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
 
     getPreviewVisibleCardIdSet() {
         const cards = Array.isArray(this.state?.cards) ? this.state.cards : [];
+        if (this.previewReferenceAllCards === true) {
+            return new Set(cards.map((card) => String(card?.id || "")).filter(Boolean));
+        }
         const soloCards = cards.filter((card) => card && card.previewSolo === true);
         const source = soloCards.length ? soloCards : cards.filter((card) => card && card.previewVisible !== false);
         return new Set(source.map((card) => String(card.id || "")).filter(Boolean));
@@ -5960,6 +6129,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         return (Array.isArray(levelsBase) ? levelsBase : []).map((lv) => ({
             vec: U.v(num(lv?.vec?.x), num(lv?.vec?.y), num(lv?.vec?.z)),
             ref: int(lv?.ref || 0),
+            path: Array.isArray(lv?.path) ? lv.path.slice() : [],
             offsetIndex: int(lv?.offsetIndex ?? 0),
             node: lv?.node || null,
             sharedNode: lv?.sharedNode || null,
@@ -5979,13 +6149,15 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         return this._buildTreeChildrenTuplesForPreview(children, U.v(0, 0, 0), [], card, cparticlePolicy);
     }
 
-    _buildTreeChildrenTuplesForPreview(children, parentSum, parentLevels, rootCard = null, inheritedCParticlePolicy = null) {
+    _buildTreeChildrenTuplesForPreview(children, parentSum, parentLevels, rootCard = null, inheritedCParticlePolicy = null, parentPath = []) {
         const childList = Array.isArray(children) ? children : [];
         if (!childList.length) return [];
         let allTuples = [];
-        for (const child of childList) {
+        for (let childIndex = 0; childIndex < childList.length; childIndex++) {
+            const child = childList[childIndex];
             const childTuples = this._buildTreeNodeTuplesForPreview(child, parentSum, parentLevels, rootCard, {
-                inheritedCParticlePolicy
+                inheritedCParticlePolicy,
+                nodePath: parentPath.concat(childIndex)
             });
             allTuples = allTuples.concat(childTuples);
         }
@@ -6000,6 +6172,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const sharedLevelIndex = Number.isFinite(Number(options?.sharedLevelIndex)) ? int(options.sharedLevelIndex) : 0;
         const suppressOwnAngleOffset = options?.suppressOwnAngleOffset === true;
         const inheritedCParticlePolicy = options?.inheritedCParticlePolicy || null;
+        const nodePath = Array.isArray(options?.nodePath) ? options.nodePath.slice() : [];
         const cparticlePolicy = inheritedCParticlePolicy?.enabled === true
             ? { enabled: true }
             : null;
@@ -6009,9 +6182,10 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const offsetCfg = suppressOwnAngleOffset ? null : this.resolvePreviewAngleOffsetConfig(node);
         const repeatCount = offsetCfg ? Math.max(1, int(offsetCfg.count || 1)) : 1;
         const leafTextureCfg = this.resolvePreviewTextureConfigForShapeLeaf(node, rootCard, cparticlePolicy);
-        const buildLevelEntry = (sv, ref, ownOffsetIndex, depth) => ({
+        const buildLevelEntry = (sv, ref, ownOffsetIndex, depth, path = nodePath) => ({
             vec: U.clone(sv),
             ref: int(ref || 0),
+            path: Array.isArray(path) ? path.slice() : [],
             offsetIndex: int(ownOffsetIndex ?? 0),
             node,
             sharedNode: sharedLevelNode || (!isLeafParticleType(nodeType) ? node : null),
@@ -6030,6 +6204,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                     results.push({
                         sum: U.v(num(sumBase?.x) + sv.x, num(sumBase?.y) + sv.y, num(sumBase?.z) + sv.z),
                         levels,
+                        path: nodePath.slice(),
                         textureCfg: leafTextureCfg,
                         visualSource: node
                     });
@@ -6052,7 +6227,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             for (let ri = 0; ri < repeatCount; ri++) {
                 const newLevels = this.clonePreviewTupleLevels(parentLevels);
                 newLevels.push(buildLevelEntry(sv, si, ri, parentLevels.length + 1));
-                const childTuples = this._buildTreeChildrenTuplesForPreview(nodeChildren, newSum, newLevels, rootCard, cparticlePolicy);
+                const childTuples = this._buildTreeChildrenTuplesForPreview(nodeChildren, newSum, newLevels, rootCard, cparticlePolicy, nodePath);
                 allTuples = allTuples.concat(childTuples);
             }
         }

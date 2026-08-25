@@ -7,6 +7,9 @@ import { evaluatePointsProject } from '../src/modules/pointsbuilder/evaluator.js
 import { builderFormatters, generatePointsBuilderKotlin } from '../src/modules/pointsbuilder/codegen.js';
 import { normalizePointsBuilderProject } from '../src/modules/pointsbuilder/defaults.js';
 import { applyNoiseOffset, buildFourierSeries } from '../src/modules/pointsbuilder/geometry.js';
+import { POINTS_NODE_KINDS } from '../src/modules/pointsbuilder/kinds.js';
+import { createBuilderTools as createLegacyBuilderTools } from '../public/legacy/assets/points_builder/js/builder.js';
+import { createKindDefs as createLegacyKindDefs } from '../public/legacy/assets/points_builder/js/kinds.js';
 import {
   expressionValueTypeForRow,
   filterExpressionSuggestionsByType,
@@ -616,6 +619,112 @@ test('PointsBuilder Bezier Kotlin preserves coordinate expressions', () => {
   assert.match(kotlin, /\(startX \+ 1\.0\)/);
   assert.match(kotlin, /\(endX - 1\.0\)/);
   assert.doesNotMatch(kotlin, /generateBezierCurve\(RelativeLocation\(0\.0, 0\.0, 0\.0\)/);
+});
+
+test('PointsBuilder multi Bezier Kotlin uses the BezierCurveBuilder DSL', () => {
+  const project = normalizePointsBuilderProject({
+    state: {
+      root: {
+        children: [{
+          id: 'multi-bezier-dsl',
+          kind: 'add_bezier_curve_multi',
+          params: {
+            count: 100,
+            closed: false,
+            nodes: [
+              { x: 'startX', y: 0, z: -2.125, shx: -0.75, shy: 0, shz: 1.75, ehx: 0, ehy: 0, ehz: 0 },
+              { x: -2, y: 0, z: 3.125, shx: 0, shy: 0, shz: 0, ehx: 2.208333, ehy: 0, ehz: -0.791667 }
+            ]
+          }
+        }]
+      }
+    }
+  });
+
+  const kotlin = generatePointsBuilderKotlin(project);
+  assert.match(kotlin, /\.addBezierCurve\(100\) \{/);
+  assert.match(kotlin, /point = RelativeLocation\(startX, 0\.0, -2\.125\)/);
+  assert.match(kotlin, /startHandle = RelativeLocation\(-0\.75, 0\.0, 1\.75\)/);
+  assert.match(kotlin, /endHandle = RelativeLocation\(2\.208333, 0\.0, -0\.791667\)/);
+  assert.equal((kotlin.match(/addNode\(/g) || []).length, 2);
+  assert.doesNotMatch(kotlin, /BezierNode\(|addBezierCurve\(listOf/);
+});
+
+test('PointsBuilder Bezier circle preset emits a closed editable node DSL', () => {
+  const project = normalizePointsBuilderProject({
+    state: {
+      root: {
+        children: [{
+          id: 'bezier-circle-dsl',
+          kind: 'add_bezier_circle_preset',
+          params: {
+            count: 96,
+            nodes: [
+              { x: 3, y: 0, z: 0, shx: 0, shy: 0, shz: 1.5, ehx: 0, ehy: 0, ehz: -1.5 },
+              { x: 0, y: 0, z: 3, shx: -1.5, shy: 0, shz: 0, ehx: 1.5, ehy: 0, ehz: 0 },
+              { x: -3, y: 0, z: 0, shx: 0, shy: 0, shz: -1.5, ehx: 0, ehy: 0, ehz: 1.5 },
+              { x: 0, y: 0, z: -3, shx: 1.5, shy: 0, shz: 0, ehx: -1.5, ehy: 0, ehz: 0 }
+            ]
+          }
+        }]
+      }
+    }
+  });
+
+  const kotlin = generatePointsBuilderKotlin(project);
+  assert.match(kotlin, /\.addBezierCurve\(96\) \{/);
+  assert.equal((kotlin.match(/addNode\(/g) || []).length, 5);
+  assert.doesNotMatch(kotlin, /BezierNode\(|addBezierCurve\(listOf/);
+});
+
+test('legacy PointsBuilder emits the BezierCurveBuilder DSL and keeps an empty W curve invisible', () => {
+  const { fmtDouble } = builderFormatters;
+  const num = (value, fallback = 0) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+  };
+  const int = (value, fallback = 0) => Math.trunc(num(value, fallback));
+  const relExpr = (x, y, z) => `RelativeLocation(${fmtDouble(x)}, ${fmtDouble(y)}, ${fmtDouble(z)})`;
+  const U = {
+    v: (x = 0, y = 0, z = 0) => ({ x: num(x), y: num(y), z: num(z) })
+  };
+  const kinds = createLegacyKindDefs({ U, num, int, relExpr, rotatePointsToPointUpright: () => [] });
+  const node = {
+    id: 'legacy-multi-bezier-dsl',
+    kind: 'add_bezier_curve_multi',
+    params: {
+      count: 100,
+      closed: false,
+      nodes: [
+        { x: 0.25, y: 0, z: -2.125, shx: -0.75, shy: 0, shz: 1.75, ehx: 0, ehy: 0, ehz: 0 },
+        { x: -2, y: 0, z: 3.125, shx: 0, shy: 0, shz: 0, ehx: 2.208333, ehy: 0, ehz: -0.791667 }
+      ]
+    }
+  };
+  const tools = createLegacyBuilderTools({
+    KIND: kinds,
+    U,
+    getState: () => ({ root: { children: [node] } }),
+    getKotlinEndMode: () => 'builder',
+    rotatePointsToPointUpright: () => []
+  });
+
+  const kotlin = tools.emitKotlin();
+  assert.match(kotlin, /\.addBezierCurve\(100\) \{/);
+  assert.match(kotlin, /startHandle = RelativeLocation\(-0\.75, 0\.0, 1\.75\)/);
+  assert.doesNotMatch(kotlin, /BezierNode\(|addBezierCurve\(listOf/);
+
+  const preview = { points: [] };
+  kinds.add_bezier_curve_multi.apply(preview, {
+    params: { count: 100, closed: false, nodes: [] }
+  });
+  assert.deepEqual(preview.points, []);
+
+  const modulePreview = { points: [] };
+  POINTS_NODE_KINDS.add_bezier_curve_multi.apply(modulePreview, {
+    params: { count: 100, closed: false, nodes: [] }
+  });
+  assert.deepEqual(modulePreview.points, []);
 });
 
 test('generator draft context only matches the same project and emitter', () => {

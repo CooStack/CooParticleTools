@@ -443,6 +443,80 @@ export function generateBezierCurve(startOrTarget, endOrStartHandle, startHandle
   return buildCubicBezier(origin, startHandle, add(target, endHandle), target, endHandleOrCount);
 }
 
+function evaluateBezierNodePath(nodes, t) {
+  if (!nodes.length) return v();
+  if (nodes.length === 1) return clone(nodes[0].point);
+  const scaled = Math.max(0, Math.min(1, t)) * (nodes.length - 1);
+  const segmentIndex = Math.min(nodes.length - 2, Math.floor(scaled));
+  const localT = segmentIndex === nodes.length - 2 && t >= 1 ? 1 : scaled - segmentIndex;
+  const start = nodes[segmentIndex];
+  const end = nodes[segmentIndex + 1];
+  return cubicBezierPoint(
+    localT,
+    start.point,
+    add(start.point, start.startHandle),
+    add(end.point, end.endHandle),
+    end.point
+  );
+}
+
+export function generateSmoothBezierCurveNodes(controlNodes, count) {
+  const total = Math.max(1, int(count, 1));
+  const nodes = (Array.isArray(controlNodes) ? controlNodes : []).map((node) => ({
+    point: clone(node?.point || { x: node?.x, y: node?.y, z: node?.z }),
+    startHandle: clone(node?.startHandle || { x: node?.shx, y: node?.shy, z: node?.shz }),
+    endHandle: clone(node?.endHandle || { x: node?.ehx, y: node?.ehy, z: node?.ehz })
+  }));
+  if (!nodes.length) return [];
+  return Array.from({ length: total }, (_, index) => evaluateBezierNodePath(nodes, total === 1 ? 1 : index / (total - 1)));
+}
+
+export function sampleByDistance(polyline, count) {
+  const total = Math.max(1, int(count, 1));
+  const source = Array.isArray(polyline) ? polyline : [];
+  if (!source.length) return [];
+  if (total === 1) return [clone(source[source.length - 1])];
+  if (source.length === 1) return Array.from({ length: total }, () => clone(source[0]));
+  const cumulative = [0];
+  for (let index = 1; index < source.length; index += 1) {
+    const dx = source[index].x - source[index - 1].x;
+    const dy = source[index].y - source[index - 1].y;
+    const dz = source[index].z - source[index - 1].z;
+    cumulative.push(cumulative[index - 1] + Math.hypot(dx, dy, dz));
+  }
+  const length = cumulative[cumulative.length - 1];
+  if (!(length > EPSILON)) return Array.from({ length: total }, () => clone(source[0]));
+  return Array.from({ length: total }, (_, index) => {
+    const target = length * index / (total - 1);
+    let high = cumulative.findIndex((value) => value >= target);
+    if (high <= 0) return clone(source[0]);
+    if (high < 0) high = cumulative.length - 1;
+    const low = high - 1;
+    const span = cumulative[high] - cumulative[low];
+    if (!(span > EPSILON)) return clone(source[high]);
+    const ratio = (target - cumulative[low]) / span;
+    return v(
+      source[low].x + (source[high].x - source[low].x) * ratio,
+      source[low].y + (source[high].y - source[low].y) * ratio,
+      source[low].z + (source[high].z - source[low].z) * ratio
+    );
+  });
+}
+
+export function generateEquidistantBezierCurveNodes(controlNodes, count) {
+  const total = Math.max(1, int(count, 1));
+  const nodes = Array.isArray(controlNodes) ? controlNodes : [];
+  if (!nodes.length) return Array.from({ length: total }, () => ({ x: 0, y: 0, z: 0 }));
+  if (nodes.length === 1) return Array.from({ length: total }, () => clone(nodes[0].point || nodes[0]));
+  const subdivision = Math.min(16384, Math.max(256, total * 256));
+  const result = sampleByDistance(generateSmoothBezierCurveNodes(nodes, subdivision), total);
+  if (result.length) {
+    result[0] = clone(nodes[0].point || nodes[0]);
+    result[result.length - 1] = clone(nodes[nodes.length - 1].point || nodes[nodes.length - 1]);
+  }
+  return result;
+}
+
 export function rotateVectorAroundAxis(point, axis, angle) {
   const unit = normalize(axis, v(0, 1, 0));
   const cosine = Math.cos(angle);

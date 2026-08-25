@@ -86,6 +86,50 @@ export function mirrorCopyNode(node, planeKey = 'XZ') {
   const cloned = cloneNodeDeep(node);
   const params = cloned.params || (cloned.params = {});
 
+  if (cloned.kind === 'add_point') {
+    const point = mirrorPointByPlane({ x: params.x, y: params.y, z: params.z }, planeKey);
+    params.x = point.x;
+    params.y = point.y;
+    params.z = point.z;
+    return cloned;
+  }
+
+  if (cloned.kind === 'add_builder' || cloned.kind === 'with_builder' || cloned.kind === 'add_with' || cloned.kind === 'clear_as_mask') {
+    if (params.ox !== undefined || params.oy !== undefined || params.oz !== undefined) {
+      const offset = mirrorPointByPlane({ x: params.ox, y: params.oy, z: params.oz }, planeKey);
+      params.ox = offset.x;
+      params.oy = offset.y;
+      params.oz = offset.z;
+    }
+    if (Array.isArray(cloned.children)) cloned.children = cloned.children.map((child) => mirrorCopyNode(child, planeKey) || cloneNodeDeep(child));
+    return cloned;
+  }
+
+  if (cloned.kind === 'add_bezier_curve_multi' || cloned.kind === 'apply_bezier_distribution') {
+    params.nodes = (Array.isArray(params.nodes) ? params.nodes : []).map((item) => {
+      const point = mirrorPointByPlane({ x: item.x, y: item.y, z: item.z }, planeKey);
+      const startHandle = mirrorPointByPlane({ x: item.shx, y: item.shy, z: item.shz }, planeKey);
+      const endHandle = mirrorPointByPlane({ x: item.ehx, y: item.ehy, z: item.ehz }, planeKey);
+      return { ...item, x: point.x, y: point.y, z: point.z, shx: startHandle.x, shy: startHandle.y, shz: startHandle.z, ehx: endHandle.x, ehy: endHandle.y, ehz: endHandle.z };
+    });
+    if (Array.isArray(cloned.children)) {
+      cloned.children = cloned.children.map((child) => mirrorCopyNode(child, planeKey) || cloneNodeDeep(child));
+    }
+    return cloned;
+  }
+
+  if (cloned.kind === 'add_bezier_circle_preset') {
+    if (Array.isArray(params.nodes)) {
+      params.nodes = params.nodes.map((item) => {
+        const point = mirrorPointByPlane({ x: item.x, y: item.y, z: item.z }, planeKey);
+        const sh = mirrorPointByPlane({ x: item.shx, y: item.shy, z: item.shz }, planeKey);
+        const eh = mirrorPointByPlane({ x: item.ehx, y: item.ehy, z: item.ehz }, planeKey);
+        return { ...item, x: point.x, y: point.y, z: point.z, shx: sh.x, shy: sh.y, shz: sh.z, ehx: eh.x, ehy: eh.y, ehz: eh.z };
+      });
+    }
+    return cloned;
+  }
+
   if (cloned.kind === 'add_line') {
     const start = mirrorPointByPlane({ x: params.sx, y: params.sy, z: params.sz }, planeKey);
     const end = mirrorPointByPlane({ x: params.ex, y: params.ey, z: params.ez }, planeKey);

@@ -9,7 +9,8 @@ import {
   fmtFloat,
   relExpr,
   getPolygonInCircleVertices,
-  rotatePointsToPointUpright
+  rotatePointsToPointUpright,
+  generateEquidistantBezierCurveNodes
 } from './geometry.js';
 import { POINTS_NODE_KINDS, BUILDER_CONTAINER_KINDS } from './kinds.js';
 import { getProjectNodes } from './node-helpers.js';
@@ -101,6 +102,29 @@ function evaluateAddWith(node, evaluateChildren) {
   };
 }
 
+function closeBezierNodes(nodes) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  if (list.length < 2) return list;
+  const first = list[0];
+  const last = list[list.length - 1];
+  if (num(first?.x) === num(last?.x) && num(first?.y) === num(last?.y) && num(first?.z) === num(last?.z)) return list;
+  return [...list, { ...first }];
+}
+
+function evaluateBezierDistribution(node, evaluateChildren) {
+  const child = evaluateChildren(node.children || []);
+  const sourceNodes = node.params?.closed ? closeBezierNodes(node.params?.nodes) : node.params?.nodes;
+  const path = generateEquidistantBezierCurveNodes(sourceNodes || [], Math.max(1, int(node.params?.count, 16)));
+  const source = Array.isArray(child.points) ? child.points : [];
+  const points = [];
+  for (const pathPoint of path) {
+    for (const sourcePoint of source) {
+      points.push(clonePointWithOffset(sourcePoint, pathPoint));
+    }
+  }
+  return { points, previewPoints: [], segments: new Map() };
+}
+
 function applyPointMask(targetPoints, maskPoints, maskRange) {
   const range = Math.max(0, num(maskRange));
   if (!range || !targetPoints.length || !maskPoints.length) return targetPoints;
@@ -177,6 +201,14 @@ export function evalBuilderWithMeta(nodes, initialAxis = v(0, 1, 0)) {
       const beforeLength = targetContext.points.length;
 
       if (BUILDER_CONTAINER_KINDS.has(node.kind)) {
+        if (node.kind === 'apply_bezier_distribution') {
+          const childResult = evaluateBezierDistribution(node, evaluateChildren);
+          targetContext.points.push(...childResult.points);
+          if (targetContext.points.length > beforeLength) {
+            segments.set(node.id, { start: beforeLength + baseOffset, end: targetContext.points.length + baseOffset });
+          }
+          return;
+        }
         if (node.kind === 'clear_as_mask') {
           const childResult = evaluateChildren(node.children || []);
           const childPoints = Array.isArray(childResult.points) ? childResult.points : [];

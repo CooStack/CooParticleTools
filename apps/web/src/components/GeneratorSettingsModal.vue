@@ -18,6 +18,8 @@
         <section class="generator-settings-panel">
           <h3>显示</h3>
           <label class="generator-settings-row"><span>主题</span><select :value="activeTheme" class="input" @change="$emit('update-theme', $event.target.value)"><template v-for="group in themeGroups" :key="group.name"><optgroup v-if="group.name" :label="group.name"><option v-for="theme in group.items" :key="theme.id" :value="theme.id">{{ theme.label }}</option></optgroup><option v-for="theme in group.name ? [] : group.items" :key="theme.id" :value="theme.id">{{ theme.label }}</option></template></select></label>
+          <label class="generator-settings-row glass-pref-row"><span>玻璃模糊度</span><div class="glass-pref-field"><input v-model.number="glassBlur" type="range" :min="glassLimits.blur.min" :max="glassLimits.blur.max" step="1" aria-label="玻璃模糊度" /><span class="glass-pref-value">{{ glassBlur }}px</span></div></label>
+          <label class="generator-settings-row glass-pref-row"><span>玻璃磨砂度</span><div class="glass-pref-field"><input v-model.number="glassFrost" type="range" :min="glassLimits.frost.min" :max="glassLimits.frost.max" step="1" aria-label="玻璃磨砂度" /><span class="glass-pref-value">{{ glassFrost }}%</span></div></label>
           <label class="generator-settings-toggle"><input v-model="project.settings.showSkybox" type="checkbox" /><span>显示天空背景</span></label>
           <label class="generator-settings-toggle"><input v-model="project.settings.showGrid" type="checkbox" /><span>显示网格</span></label>
           <label class="generator-settings-toggle"><input v-model="project.settings.showAxes" type="checkbox" /><span>显示坐标轴</span></label>
@@ -56,7 +58,13 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import {
+  GLASS_SURFACE_LIMITS,
+  onGlassSurfaceChange,
+  readGlassSurface,
+  writeGlassSurface
+} from '../modules/theme/glass-surface.js';
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -91,6 +99,36 @@ const themeGroups = computed(() => {
   }
   return groups;
 });
+
+/*
+ * Glass blur / frost. Unlike the theme above these are not plumbed through the
+ * parent: they are app-wide device preferences with their own store, so wiring
+ * them here keeps GeneratorPage's state out of it entirely.
+ */
+const glassLimits = GLASS_SURFACE_LIMITS;
+const initialGlassSurface = readGlassSurface();
+const glassBlur = ref(initialGlassSurface.blur);
+const glassFrost = ref(initialGlassSurface.frost);
+
+// Guards the round trip: an external change sets the refs, which would otherwise
+// fire the watcher and write the same values straight back out.
+let syncingGlass = false;
+watch([glassBlur, glassFrost], ([blur, frost]) => {
+  if (syncingGlass) return;
+  writeGlassSurface({ blur, frost });
+});
+
+const disposeGlassApplied = onGlassSurfaceChange((value) => {
+  if (value.blur === glassBlur.value && value.frost === glassFrost.value) return;
+  syncingGlass = true;
+  glassBlur.value = value.blur;
+  glassFrost.value = value.frost;
+  nextTick(() => {
+    syncingGlass = false;
+  });
+});
+
+onBeforeUnmount(disposeGlassApplied);
 
 watch(() => props.open, async (open) => {
   if (open) {

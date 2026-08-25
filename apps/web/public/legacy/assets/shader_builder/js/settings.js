@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, THEMES, STORAGE_KEYS } from "./constants.js?v=20260824_1";
+import { DEFAULT_SETTINGS, THEME_IDS, STORAGE_KEYS } from "./constants.js?v=20260825_1";
 import { clamp, loadJson, saveJson } from "./utils.js";
 import { watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
 
@@ -18,7 +18,7 @@ function broadcastThemeToShell(theme) {
 
 
 function normalizeTheme(theme) {
-    const valid = THEMES.some((t) => t.id === theme);
+    const valid = THEME_IDS.includes(theme);
     return valid ? theme : DEFAULT_SETTINGS.theme;
 }
 
@@ -169,7 +169,7 @@ export function initSettingsSystem(ctx) {
     }
 
     function cycleTheme(dir) {
-        const list = THEMES.map((t) => t.id);
+        const list = THEME_IDS;
         const cur = normalizeTheme(document.body.getAttribute("data-theme") || DEFAULT_SETTINGS.theme);
         const idx = Math.max(0, list.indexOf(cur));
         const next = list[(idx + dir + list.length) % list.length];
