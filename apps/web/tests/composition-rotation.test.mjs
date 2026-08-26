@@ -349,6 +349,84 @@ function createNetherStarLaserCardHarness() {
   return app;
 }
 
+function createSequencedRootRotationHarness() {
+  const cards = Array.from({ length: 4 }, (_, index) => ({
+    id: `root-card-${index}`,
+    name: `卡片 ${index + 1}`,
+    previewVisible: true,
+    previewSolo: false,
+    bindMode: 'point',
+    point: { x: index + 1, y: 0, z: 0 },
+    dataType: 'single',
+    particleInit: [],
+    controllerVars: [],
+    controllerActions: [],
+    shapeChildren: []
+  }));
+  const app = new RotationHarness();
+  app.state = {
+    compositionType: 'sequenced',
+    cards,
+    globalVars: [{ name: 'age', type: 'Int', value: '0', codec: true, mutable: true }],
+    globalConsts: [],
+    compositionAnimates: [
+      { count: 1, condition: 'true' },
+      { count: 2, condition: 'age > 70' },
+      { count: 1, condition: 'age > 72' }
+    ],
+    projectScale: { type: 'linear', runMode: 'manual', min: 1, max: 11, tick: 10 },
+    projectAlpha: { type: 'none' },
+    displayActions: [{
+      type: 'expression',
+      expression: 'age++\nif (age > 70){\n  scaleHelper.doScale()\n}\nrotateAsAxis(-PI / 72)'
+    }],
+    disabledInterval: 0,
+    previewPlayTicks: 100
+  };
+  for (const key of [
+    'previewExprCountCache',
+    'previewExprPrefixCache',
+    'previewExprFnCache',
+    'previewCondFnCache',
+    'previewNumericFnCache',
+    'previewControllerFnCache',
+    'previewFoldSimpleActionCache',
+    'previewVisualRuntimePlanCache',
+    'previewCardVisualAgeDependentCache'
+  ]) {
+    app[key] = new Map();
+  }
+  attachExpressionRuntime(app);
+  app.getCardById = (id) => cards.find((card) => card.id === id) || null;
+  app.getCardIndexById = (id) => cards.findIndex((card) => card.id === id);
+  app.pointsGeom = {};
+  app.previewBasePoints = cards.map((card) => U.v(card.point.x, card.point.y, card.point.z));
+  app.previewPoints = app.previewBasePoints.map((point) => U.clone(point));
+  app.previewOwners = cards.map((card) => card.id);
+  app.previewBirthOffsets = [0, 0, 0, 0];
+  app.previewOwnerLocalIndex = [0, 0, 0, 0];
+  app.previewOwnerPointCount = [1, 1, 1, 1];
+  app.previewAnchorBase = app.previewBasePoints.map((point) => U.clone(point));
+  app.previewLocalBase = cards.map(() => U.v(0, 0, 0));
+  app.previewAnchorRef = [0, 0, 0, 0];
+  app.previewLocalRef = [0, 0, 0, 0];
+  app.previewLevelBases = [[], [], [], []];
+  app.previewLevelRefs = [[], [], [], []];
+  app.previewLevelOffsetRefs = [[], [], [], []];
+  app.previewLevelMetas = [[], [], [], []];
+  app.previewUseLocalOps = [false, false, false, false];
+  app.previewRootOffsetIndex = [0, 0, 0, 0];
+  app.previewRootVirtualIndex = [0, 1, 2, 3];
+  app.previewRootVirtualTotal = 4;
+  app.previewLeafTextureConfigs = cards.map(() => ({ effectClass: '', useTexture: false }));
+  app.previewLeafVisualSources = cards;
+  app.previewRuntimeAppliedTick = -1;
+  app.previewCanResumeRuntimeState = false;
+  app.rebuildPreviewRuntimeIndex();
+  app.compilePreviewScriptsFromState({ force: true });
+  return app;
+}
+
 function createManualProjectScaleHarness() {
   const app = new RotationHarness();
   app.state = {
@@ -1001,6 +1079,33 @@ test('NetherStarLaser keeps card 4 anchor radius and replays manual scale and ro
     }
   }
   assert.ok((app.previewRenderCache?.hits || 0) > cacheHitsBeforeReplay);
+});
+
+test('root rotation continues after the last sequenced card unlocks', () => {
+  const app = createSequencedRootRotationHarness();
+  const cycleCfg = { appear: 0, live: 100, fade: 0, play: 100, total: 100 };
+  const frameAt = (tick) => {
+    const frame = app.computePreviewFrame({
+      totalCount: app.previewBasePoints.length,
+      elapsedTick: tick,
+      globalCycleAge: tick,
+      cycleIndex: 0,
+      cycleCfg,
+      outputToGeometry: false
+    });
+    return { ...frame, visibleMask: [...frame.visibleMask] };
+  };
+  const before = frameAt(71);
+  const atUnlock = frameAt(73);
+  const after = frameAt(74);
+  const pointAt = (frame) => U.v(...Array.from(frame.positions.slice(9, 12)));
+  const p1 = pointAt(atUnlock);
+  const p2 = pointAt(after);
+  assert.equal(before.visibleMask[3], false);
+  assert.equal(atUnlock.visibleMask[3], true);
+  assert.equal(after.visibleMask[3], true);
+  const expectedNext = normalize(U.rotateAroundAxis(normalize(p1), U.v(0, 1, 0), -Math.PI / 72));
+  assertVectorClose(normalize(p2), expectedNext, 1e-5);
 });
 
 test('render cache worker matches live manual scaleHelper frames', () => {

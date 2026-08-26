@@ -87,6 +87,26 @@ test('Composition shape navigation does not rebuild the preview', async () => {
   );
 });
 
+test('Composition expression fields commit preview updates on blur instead of every input', async () => {
+  const [source, compileSource] = await Promise.all([
+    readFile(compositionMainUrl, 'utf8'),
+    readFile(new URL('../public/legacy/assets/composition_builder/js/code_compile_mixin.js', import.meta.url), 'utf8')
+  ]);
+
+  assert.match(source, /isDeferredExpressionTarget\(target\)/);
+  assert.match(source, /target\.matches\?\.\("input\.expr-input, textarea\.expr-input"\)/);
+  assert.match(source, /if \(target\.dataset\?\.codeEditor\) return false;/);
+  assert.match(source, /flushDeferredExpressionRefresh\(t, \{ forceImmediate: true \}\)/);
+  assert.match(source, /this\.shouldDeferFocusedExpressionMutation\(\)\) \{/);
+  assert.match(source, /target instanceof HTMLTextAreaElement && this\.flushCodeEditorRefresh\?\.\(target\)/);
+  assert.match(compileSource, /this\.flushDeferredExpressionRefresh\?\.\(target, \{ forceImmediate: true \}\)/);
+  const controllerExprInputs = source.match(/<input class="[^\"]*expr-input[^\"]*"[^>]*data-(?:tree-node-cvar|cvar)-field="expr"/g) || [];
+  assert.equal(controllerExprInputs.length, 4);
+  assert.match(source, /<input class="input expr-input"[^>]*data-var-field="value"/);
+  assert.match(source, /<input class="input expr-input"[^>]*data-const-field="value"/);
+  assert.match(source, /flushAllDeferredExpressionRefreshes\(\);\s*app\.saveStateNow\(\);/s);
+});
+
 test('Composition narrow layout keeps the page and editor column scrollable', async () => {
   const styles = await readFile(compositionStyleUrl, 'utf8');
 

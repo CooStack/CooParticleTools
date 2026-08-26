@@ -111,6 +111,14 @@ export function initStandaloneOrEmbeddedReturn({
       } catch {
       }
 
+      // PointsBuilder keeps a durable IndexedDB draft alongside localStorage.
+      // Wait for that queued write before closing/navigating so a large model
+      // cannot be lost when localStorage is temporarily over quota.
+      try {
+        await globalThis.__PB_flushAutoStateSave?.();
+      } catch {
+      }
+
       try {
         writeStorage(params, localStorage);
       } catch {

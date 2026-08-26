@@ -279,6 +279,6 @@ def _cache_control_for(path: Path, root: Path) -> str:
     # then makes Electron keep the previous builder indefinitely, which looks
     # like the feature did not load at all.  Revalidate local assets so a
     # restarted/reloaded client always sees the current frontend build.
-    if relative.startswith("assets/"):
+    if relative.startswith("assets/") or relative.startswith("legacy/assets/"):
         return "no-cache"
     return "public, max-age=600"

@@ -591,6 +591,135 @@ test('GPU nested sequenced Composition encodes its local growth unlock ticks', (
   assert.equal(app.previewGpuActivePointCount, 2);
 });
 
+test('GPU sequenced parent unlocks a nested shape node as one composition group', () => {
+  const firstLeaf = {
+    id: 'nested-ring-particle-a',
+    type: 'single',
+    particleInit: [],
+    controllerVars: [],
+    controllerActions: []
+  };
+  const secondLeaf = {
+    id: 'nested-ring-particle-b',
+    type: 'single',
+    particleInit: [],
+    controllerVars: [],
+    controllerActions: []
+  };
+  const nested = {
+    id: 'nested-ring-node',
+    type: 'particle_shape',
+    controllerVars: [],
+    controllerActions: [],
+    displayActions: [],
+    children: [firstLeaf, secondLeaf]
+  };
+  const { card } = createGpuShapeCard({}, {
+    dataType: 'sequenced_shape',
+    growthAnimates: [{ count: 1, condition: 'true' }],
+    shapeChildren: [nested]
+  });
+  const { app, attributes } = prepareGpuParticlePathHarness(card, firstLeaf);
+  attributes.aFrameIndex.array = new Float32Array(2);
+  app.previewBasePoints = [U.v(1, 0, 0), U.v(2, 0, 0)];
+  app.previewOwners = [card.id, card.id];
+  app.previewBirthOffsets = [0, 0];
+  app.previewOwnerLocalIndex = [0, 1];
+  app.previewOwnerPointCount = [2, 2];
+  app.previewAnchorBase = [U.v(0, 0, 0), U.v(0, 0, 0)];
+  app.previewLocalBase = [U.v(1, 0, 0), U.v(2, 0, 0)];
+  app.previewAnchorRef = [0, 0];
+  app.previewLocalRef = [0, 1];
+  app.previewRootOffsetIndex = [0, 0];
+  app.previewLevelBases = [
+    [U.v(0, 0, 0), U.v(1, 0, 0)],
+    [U.v(0, 0, 0), U.v(0, 0, 0)]
+  ];
+  app.previewLevelRefs = [[0, 1], [0, 2]];
+  app.previewLevelPaths = [[[0], [0, 0]], [[0], [0, 0]]];
+  app.previewLevelOffsetRefs = [[0, 0], [0, 0]];
+  app.previewLevelMetas = [
+    [
+      { node: nested, depth: 1 },
+      { node: firstLeaf, depth: 2 }
+    ],
+    [
+      { node: nested, depth: 1 },
+      { node: secondLeaf, depth: 2 }
+    ]
+  ];
+  app.previewLeafTextureConfigs = [
+    app.previewLeafTextureConfigs[0],
+    app.previewLeafTextureConfigs[0]
+  ];
+  app.previewLeafVisualSources = [firstLeaf, secondLeaf];
+
+  assert.equal(app.configurePreviewGpuParticlePath(), true);
+  assert.deepEqual(
+    [attributes.aGpuMeta.array[1], attributes.aGpuMeta.array[5]],
+    [0, 0]
+  );
+  assert.equal(app.previewGpuActivePointCount, 2);
+});
+
+test('GPU nested growth keeps shape instances separate across root anchors', () => {
+  const { card, leaf } = createGpuShapeCard({}, {
+    dataType: 'sequenced_shape',
+    growthAnimates: [{ count: 1, condition: 'true' }]
+  });
+  const { app } = prepareGpuParticlePathHarness(card, leaf);
+  app.previewBasePoints = [U.v(1, 0, 0), U.v(2, 0, 0)];
+  app.previewOwners = [card.id, card.id];
+  app.previewOwnerLocalIndex = [0, 1];
+  app.previewOwnerPointCount = [2, 2];
+  app.previewAnchorRef = [0, 1];
+  app.previewRootOffsetIndex = [0, 0];
+  app.previewLevelPaths = [[[0]], [[0]]];
+  app.previewLevelRefs = [[0], [0]];
+  app.previewLevelOffsetRefs = [[0], [0]];
+
+  const levels = app.getShapeRuntimeLevelsForPreview(card, 0, false);
+  const groups = app.buildPreviewLocalGrowthGroupData(card.id, 2, levels);
+  assert.deepEqual(groups.groupIndexByLevel[0], [0, 0]);
+  assert.deepEqual(groups.groupCountByLevel[0], 1);
+});
+
+test('GPU nested sequenced Composition groups all leaf children under one nested node', () => {
+  const firstLeaf = { id: 'nested-seq-a', type: 'single', particleInit: [], controllerVars: [], controllerActions: [] };
+  const secondLeaf = { id: 'nested-seq-b', type: 'single', particleInit: [], controllerVars: [], controllerActions: [] };
+  const nested = {
+    id: 'nested-seq-node',
+    type: 'sequenced_shape',
+    growthAnimates: [{ count: 1, condition: 'true' }],
+    displayActions: [],
+    controllerVars: [],
+    controllerActions: [],
+    children: [firstLeaf, secondLeaf]
+  };
+  const { card } = createGpuShapeCard({}, {
+    dataType: 'particle_shape',
+    shapeChildren: [nested]
+  });
+  const { app } = prepareGpuParticlePathHarness(card, firstLeaf);
+  app.previewOwners = [card.id, card.id];
+  app.previewOwnerLocalIndex = [0, 1];
+  app.previewOwnerPointCount = [2, 2];
+  app.previewAnchorRef = [0, 0];
+  app.previewRootOffsetIndex = [0, 0];
+  app.previewLevelPaths = [[[0], [0, 0]], [[0], [0, 1]]];
+  app.previewLevelRefs = [[0, 0], [0, 1]];
+  app.previewLevelOffsetRefs = [[0, 0], [0, 0]];
+  app.previewLevelMetas = [
+    [{ node: nested, depth: 1 }, { node: firstLeaf, depth: 2 }],
+    [{ node: nested, depth: 1 }, { node: secondLeaf, depth: 2 }]
+  ];
+
+  const levels = app.getShapeRuntimeLevelsForPreview(card, 0, false);
+  const groups = app.buildPreviewLocalGrowthGroupData(card.id, 2, levels);
+  assert.deepEqual(groups.groupIndexByLevel[1], [0, 0]);
+  assert.equal(groups.groupCountByLevel[1], 1);
+});
+
 test('GPU local Sequenced growth replays global expression variables per tick', () => {
   const { card, leaf } = createGpuShapeCard({}, {
     dataType: 'sequenced_shape',
@@ -1518,6 +1647,61 @@ test('GPU preview keeps nested static Composition leaves on the GPU path', () =>
   assert.equal(app.configurePreviewGpuParticlePath(), true);
 });
 
+test('GPU root doTick keeps rotating after the last sequenced card unlocks', () => {
+  const { card, leaf } = createGpuShapeCard();
+  const { app } = prepareGpuParticlePathHarness(card, leaf);
+  const cycleCfg = { appear: 0, live: 100, fade: 0, play: 100, total: 100 };
+  app.state.compositionType = 'sequenced';
+  app.state.globalVars = [{ name: 'age', type: 'Int', value: '0' }];
+  app.state.displayActions = [{
+    type: 'expression',
+    expression: 'age++; if (age > 70) { scaleHelper.doScale(); } rotateAsAxis(-PI / 72)'
+  }];
+  app.state.projectScale = {
+    type: 'linear',
+    min: 1,
+    max: 11,
+    tick: 10,
+    runMode: 'manual'
+  };
+  app.state.compositionAnimates = [
+    { count: 3, condition: 'true' },
+    { count: 1, condition: 'age > 72' }
+  ];
+  app.previewRootVirtualIndex = [3];
+  app.previewRootVirtualTotal = 4;
+  app.getPreviewCycleConfig = () => cycleCfg;
+  app._pointsShaderRef = {
+    uniforms: {
+      uGpuPreviewEnabled: { value: 0 },
+      uGpuPreviewTick: { value: 0 },
+      uGpuPreviewPlayTicks: { value: 0 },
+      uGpuPreviewCycleTicks: { value: 0 },
+      uGpuPreviewGlobalAlpha: { value: 0 },
+      uGpuPreviewGlobalTransform: { value: app.createPreviewGpuMatrix4() }
+    }
+  };
+  app.previewAnimStart = 0;
+  app.compilePreviewScriptsFromState({ force: true });
+
+  assert.equal(app.configurePreviewGpuParticlePath(), true);
+  app.updatePreviewGpuParticleAnimation(72 * 50);
+  assert.equal(app.previewGpuActivePointCount, 0);
+
+  app.updatePreviewGpuParticleAnimation(73 * 50);
+  assert.equal(app.previewGpuActivePointCount, 1);
+  const firstMatrix = app._pointsShaderRef.uniforms.uGpuPreviewGlobalTransform.value.elements.slice();
+  app.updatePreviewGpuParticleAnimation(74 * 50);
+  const secondMatrix = app._pointsShaderRef.uniforms.uGpuPreviewGlobalTransform.value.elements.slice();
+  const firstX = U.norm(U.v(firstMatrix[0], firstMatrix[4], firstMatrix[8]));
+  const secondX = U.norm(U.v(secondMatrix[0], secondMatrix[4], secondMatrix[8]));
+  const expectedSecondX = U.norm(U.rotateAroundAxis(firstX, U.v(0, 1, 0), -Math.PI / 72));
+
+  assert.ok(Math.abs(secondX.x - expectedSecondX.x) <= 1e-5);
+  assert.ok(Math.abs(secondX.y - expectedSecondX.y) <= 1e-5);
+  assert.ok(Math.abs(secondX.z - expectedSecondX.z) <= 1e-5);
+});
+
 test('GPU preview applies nested Composition scale without falling back', () => {
   const { card, leaf } = createGpuShapeCard();
   const nested = {
@@ -1909,6 +2093,71 @@ test('GPU preview fades delayed sequenced cards from the project cycle age', () 
   assert.match(mainSource, /aGpuFadeOut\.x > 0\.0 && previewCycleAge >= uGpuPreviewPlayTicks/);
   assert.match(mainSource, /\(previewCycleAge - uGpuPreviewPlayTicks\) \/ aGpuFadeOut\.x/);
   assert.doesNotMatch(mainSource, /aGpuFadeOut\.x > 0\.0 && previewAge >= uGpuPreviewPlayTicks/);
+});
+
+test('GPU preview applies alpha from root and nested Composition sources', () => {
+  const { card } = createGpuShapeCard({}, {
+    cparticleAlpha: {
+      fadeIn: { enabled: true, durationTicks: 10, fromAlpha: 0, toAlpha: 1 },
+      fadeOut: { enabled: false }
+    },
+    shapeChildren: [{
+      type: 'particle_shape',
+      useCParticle: true,
+      cparticleAlpha: {
+        fadeIn: { enabled: true, durationTicks: 10, fromAlpha: 0.5, toAlpha: 1 },
+        fadeOut: { enabled: false }
+      },
+      children: [{ type: 'single', particleBackend: 'cparticle' }]
+    }]
+  });
+  const previewApp = createVisualHarness(card);
+  const levelMetas = [{ node: card.shapeChildren[0] }, { node: card.shapeChildren[0].children[0] }];
+  const sources = previewApp.resolvePreviewCParticleAlphaSources(card, levelMetas);
+
+  assert.deepEqual(sources, [card, card.shapeChildren[0], card.shapeChildren[0].children[0]]);
+  assert.equal(previewApp.resolveCParticleAlphaPreviewFactor(card, 0, { play: 100 }, 0, sources), 0.5);
+  assert.equal(previewApp.resolveCParticleAlphaPreviewFactor(card, 5, { play: 100 }, 5, sources), 0.75);
+
+  const rootOnly = createGpuShapeCard({}, {
+    cparticleAlpha: {
+      fadeIn: { enabled: true, durationTicks: 10, fromAlpha: 0, toAlpha: 1 },
+      fadeOut: { enabled: false }
+    }
+  }).card;
+  const rootOnlyApp = createVisualHarness(rootOnly);
+  assert.equal(rootOnlyApp.resolveCParticleAlphaPreviewFactor(rootOnly, 0, { play: 100 }, 0), 0);
+  assert.equal(rootOnlyApp.resolveCParticleAlphaPreviewFactor(rootOnly, 5, { play: 100 }, 5), 0.5);
+});
+
+test('GPU preview keeps a root Composition fade when a nested leaf has no fade config', () => {
+  const { card, leaf } = createGpuShapeCard({}, {
+    cparticleAlpha: {
+      fadeIn: { enabled: true, durationTicks: 6, fromAlpha: 0.1, toAlpha: 0.9 },
+      fadeOut: { enabled: false }
+    }
+  });
+  card.shapeChildren = [{ type: 'particle_shape', useCParticle: true, children: [leaf] }];
+  const { app, attributes } = prepareGpuParticlePathHarness(card, leaf);
+  app.previewLevelMetas = [[
+    { node: card.shapeChildren[0] },
+    { node: leaf }
+  ]];
+  app.previewLeafVisualSources = [leaf];
+  app._pointsShaderRef = {
+    uniforms: {
+      uGpuPreviewEnabled: { value: 0 },
+      uGpuPreviewTick: { value: 0 },
+      uGpuPreviewPlayTicks: { value: 0 },
+      uGpuPreviewCycleTicks: { value: 0 }
+    }
+  };
+  app.getPreviewCycleConfig = () => ({ play: 70, total: 80 });
+
+  assert.equal(app.configurePreviewGpuParticlePath(), true);
+  assert.equal(attributes.aGpuFadeIn.array[0], 6);
+  assert.ok(Math.abs(attributes.aGpuFadeIn.array[1] - 0.1) < 1e-6);
+  assert.ok(Math.abs(attributes.aGpuFadeIn.array[2] - 0.9) < 1e-6);
 });
 
 test('GPU preview refreshes active masks after Composition layer visibility changes', () => {

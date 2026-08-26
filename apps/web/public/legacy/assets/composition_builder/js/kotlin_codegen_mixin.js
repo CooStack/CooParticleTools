@@ -34,6 +34,9 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         normalizeAngleUnit,
         translateJsBlockToKotlin,
         normalizeParticleFloatAssignmentExpr,
+        getCompositionControllerVariableNameError,
+        normalizeCompositionControllerVariableName,
+        COMPOSITION_LAMBDA_RESERVED_NAMES,
         DEFAULT_EFFECT_CLASS
     } = deps;
 
@@ -692,7 +695,9 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         const inheritedEnabled = inheritedPolicy === true || inheritedPolicy?.enabled === true;
         const type = String(target?.type || target?.dataType || "single");
         const isCardRoot = Object.prototype.hasOwnProperty.call(target || {}, "dataType");
+        const ownsCParticle = !isCardRoot && isCParticleOwnerType(type) && target?.useCParticle === true;
         const enabled = inheritedEnabled
+            || ownsCParticle
             || (isCardRoot && ((isCParticleOwnerType(type) && target?.useCParticle === true)
                 || ((type === "single" || type === "cparticle") && target?.particleBackend === "cparticle")));
         if (!enabled) return null;
@@ -701,8 +706,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             renderLayer: this.normalizeCParticleRenderLayer(target?.cparticleRenderLayer),
             randomAgePreTick: target?.randomAgePreTick === true,
             initialAlphaZero: inheritedPolicy?.initialAlphaZero === true
-                || (isCardRoot
-                    && isCParticleOwnerType(type)
+                || ((isCardRoot && isCParticleOwnerType(type) || ownsCParticle)
                     && normalizeCParticleAlpha(target?.cparticleAlpha).fadeIn.enabled)
         };
     }
@@ -1008,6 +1012,8 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         lines.push("ParticleDisplayer.withComposition(");
         lines.push(`    ${cls}(it).apply {`);
         if (axisExpr) lines.push(`        axis = ${axisExpr}`);
+        const shapeController = this._buildTreeNodeShapeControllerCodegen(card, card, className, "        ", 0);
+        if (shapeController) lines.push(shapeController);
         const children = card.shapeChildren || [];
         const childActionCtx = this.createDescendantActionCtx(actionCtx) || {};
         childActionCtx.inheritedCompositionTransforms = [
@@ -1130,6 +1136,8 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         lines.push(`${indent}            ParticleDisplayer.withComposition(`);
         lines.push(`${indent}                ${cls}(it).apply {`);
         if (axisExpr) lines.push(`${indent}                    axis = ${axisExpr}`);
+        const shapeController = this._buildTreeNodeShapeControllerCodegen(node, card, className, `${indent}                    `, depth);
+        if (shapeController) lines.push(shapeController);
         const children = node.children || [];
         const childActionCtx = this.createDescendantActionCtx(actionCtx) || {};
         const inheritedTransforms = Array.isArray(actionCtx?.inheritedCompositionTransforms)
@@ -1176,10 +1184,67 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             );
             if (String(inheritedActions || "").trim()) lines.push(inheritedActions);
         }
+        if (cparticlePolicy) {
+            this.emitCParticleAlphaTransitions(lines, node.cparticleAlpha, className, `${indent}                    `);
+        }
         lines.push(`${indent}                }`);
         lines.push(`${indent}            )`);
         lines.push(`${indent}        }`);
         lines.push(`${indent}}`);
+    }
+
+    _buildTreeNodeShapeControllerCodegen(node, card, className, indentBase, depth = 1) {
+        const vars = Array.isArray(node?.controllerVars) ? node.controllerVars : [];
+        const actions = Array.isArray(node?.controllerActions) ? node.controllerActions : [];
+        if (!vars.length && !actions.length) return "";
+        const normalizeControllerName = typeof normalizeCompositionControllerVariableName === "function"
+            ? normalizeCompositionControllerVariableName
+            : ((raw) => String(raw || "").trim());
+        const controllerNameError = typeof getCompositionControllerVariableNameError === "function"
+            ? getCompositionControllerVariableNameError
+            : (() => "");
+        const globalNames = new Set([
+            ...(COMPOSITION_LAMBDA_RESERVED_NAMES || []),
+            ...(this.state?.globalVars || []).map((item) => String(item?.name || "").trim()),
+            ...(this.state?.globalConsts || []).map((item) => String(item?.name || "").trim())
+        ]);
+        const used = new Set(globalNames);
+        const lines = [];
+        for (const raw of vars) {
+            const name = normalizeControllerName(String(raw?.name || ""), {
+                reservedNames: globalNames,
+                existingNames: used,
+                fallbackName: "temp"
+            });
+            if (!name || controllerNameError(name, { reservedNames: globalNames, existingNames: used })) continue;
+            used.add(name);
+            const storedType = sanitizeKotlinIdentifier(raw?.type || "Double", "Double");
+            const type = mapCompositionKotlinType(storedType, this.state.mapping);
+            let expr = this.rewriteCodeExpr(String(raw?.expr || "").trim(), className);
+            expr = rewriteControllerStatusQualifier(expr, className);
+            if (!expr) expr = this.rewriteCodeExpr(defaultLiteralForKotlinType(storedType), className);
+            if (/^float$/i.test(storedType)) {
+                if (isPlainNumericLiteralText(expr)) expr = normalizeKotlinFloatLiteralText(expr);
+                else if (!/\.toFloat\(\)\s*$/.test(expr)) expr = `(${expr}).toFloat()`;
+            } else if (/^double$/i.test(storedType) && isPlainNumericLiteralText(expr)) {
+                expr = normalizeKotlinDoubleLiteralText(expr);
+            }
+            lines.push(`${indentBase}var ${name}: ${type} = ${expr}`);
+        }
+        for (const action of actions) {
+            const source = String(action?.script || "").trim();
+            const rewritten = this.rewriteCodeExpr(source, className);
+            const patched = rewriteControllerStatusQualifier(rewritten, className);
+            if (!patched) continue;
+            const runtimeRel = this.rewritePreTickRuntimeRel(patched, Math.max(1, int(depth) + 1));
+            lines.push(`${indentBase}addPreTickAction {`);
+            if (runtimeRel.used) {
+                lines.push(this.emitPreTickRuntimeRelDeclaration(className, runtimeRel.relName, `${indentBase}    `));
+            }
+            lines.push(translateJsBlockToKotlin(runtimeRel.code, `${indentBase}    `));
+            lines.push(`${indentBase}}`);
+        }
+        return lines.join("\n");
     }
 
     _buildTreeNodeSingleDataChainCodegen(node, card, className, indentBase, cparticlePolicy = null, ctx = null) {

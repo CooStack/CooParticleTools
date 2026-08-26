@@ -223,7 +223,8 @@ export function installCodeCompileMethods(CompositionBuilderApp, deps = {}) {
 
     CompositionBuilderApp.prototype.onCodeEditorFocusOut = function onCodeEditorFocusOut(e) {
         const target = e?.target;
-        if (!(target instanceof HTMLTextAreaElement)) return;
-        this.flushCodeEditorRefresh(target);
+        if (!target) return;
+        if (target instanceof HTMLTextAreaElement && this.flushCodeEditorRefresh(target)) return;
+        this.flushDeferredExpressionRefresh?.(target, { forceImmediate: true });
     };
 }

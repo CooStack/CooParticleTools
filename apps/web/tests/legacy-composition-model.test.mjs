@@ -7,6 +7,7 @@ import {
   normalizeCompositionNestedLevel,
   normalizeCompositionProject,
   normalizeCompositionShapeNode,
+  getCompositionControllerVariableNameError,
   normalizeEmbeddedPointsBuilderState
 } from '../public/legacy/assets/composition_builder/js/model.js';
 import { normalizePointsBuilderState } from '../public/legacy/assets/points_builder/js/model.js';
@@ -157,4 +158,35 @@ test('Composition projects preserve explicit mappings and migrate legacy files t
   assert.equal(normalizeCompositionProject({ mapping: 'yarn' }).mapping, 'yarn');
   assert.equal(normalizeCompositionProject({ mapping: 'mojmap' }).mapping, 'mojmap');
   assert.equal(normalizeCompositionProject({ projectName: 'Legacy', cards: [] }).mapping, 'mojmap');
+});
+
+test('Composition local variable names reject runtime names, globals, duplicates, and Kotlin keywords', () => {
+  const reserved = new Set(['globalSpeed']);
+  const existing = new Set(['speed']);
+  assert.match(getCompositionControllerVariableNameError('rel'), /运行时保留名/);
+  assert.match(getCompositionControllerVariableNameError('shapeRel1'), /运行时保留名/);
+  assert.match(getCompositionControllerVariableNameError('globalSpeed', { reservedNames: reserved }), /全局变量或常量/);
+  assert.match(getCompositionControllerVariableNameError('speed', { existingNames: existing }), /重复/);
+  assert.match(getCompositionControllerVariableNameError('class'), /Kotlin 关键字/);
+  assert.match(getCompositionControllerVariableNameError('bad-name'), /字母或下划线/);
+});
+
+test('Composition normalizes duplicate parallel card ids so Builder writes cannot alias cards', () => {
+  const normalized = normalizeCompositionProject({
+    cards: [
+      { id: 'parallel-card', name: '卡片 1' },
+      { id: 'parallel-card', name: '卡片 2' },
+      { id: 'parallel-card', name: '卡片 3' }
+    ]
+  }, { idFactory: (() => {
+    let index = 0;
+    return () => `generated-card-${++index}`;
+  })() });
+
+  assert.deepEqual(normalized.cards.map((card) => card.id), [
+    'parallel-card',
+    'generated-card-1',
+    'generated-card-2'
+  ]);
+  assert.equal(new Set(normalized.cards.map((card) => card.id)).size, 3);
 });

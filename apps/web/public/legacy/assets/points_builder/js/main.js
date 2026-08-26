@@ -43,6 +43,8 @@ import {
     loadKotlinEndMode,
     saveKotlinEndMode,
     loadAutoState,
+    loadLatestAutoStatePayload,
+    flushAutoStateSave,
     saveAutoState,
     loadPresetList,
     hasPresetList,
@@ -1206,7 +1208,7 @@ function initPointsBuilderMain() {
     };
 
     const PB_COMP_CONTEXT_KEY = "pb_comp_context_v1";
-    const COMPOSITION_REFERENCE_BUILD_VERSION = "20260825_19";
+    const COMPOSITION_REFERENCE_BUILD_VERSION = "20260825_22";
     const compositionNumericContext = {
         enabled: false,
         map: { PI: Math.PI },
@@ -1719,6 +1721,9 @@ function initPointsBuilderMain() {
                 availableFrameCount: storedGpu ? storedGpuTimeline.length : storedFrames.length,
                 frames: storedFrames,
                 visibleMasks: Array.isArray(stored.visibleMasks) ? stored.visibleMasks : [],
+                colors: Array.isArray(stored.colors) ? stored.colors : [],
+                sizes: Array.isArray(stored.sizes) ? stored.sizes : [],
+                alphas: Array.isArray(stored.alphas) ? stored.alphas : [],
                 gpu: storedGpu || compositionReferenceSnapshot?.gpu || null,
                 complete: stored.complete !== false
             };
@@ -1873,6 +1878,37 @@ function initPointsBuilderMain() {
         } catch {
             return null;
         }
+    }
+
+    function decodeCompositionReferenceVisualArray(raw, expectedLength = 0, normalizeByteLike = false) {
+        const expected = Math.max(0, Math.trunc(Number(expectedLength) || 0));
+        if (raw instanceof Uint8Array) {
+            if (expected > 0 && raw.length !== expected) return null;
+            return Float32Array.from(raw, (value) => (Number(value) || 0) / 255);
+        }
+        if (raw instanceof Float32Array) {
+            if (expected > 0 && raw.length !== expected) return null;
+            return raw;
+        }
+        if (raw instanceof ArrayBuffer) {
+            const view = new Float32Array(raw);
+            if (expected > 0 && view.length !== expected) return null;
+            return view;
+        }
+        if (Array.isArray(raw)) {
+            if (expected > 0 && raw.length !== expected) return null;
+            const values = Float32Array.from(raw, (value) => Number(value) || 0);
+            let byteLike = false;
+            for (let i = 0; normalizeByteLike && i < values.length; i++) {
+                if (Math.abs(values[i]) > 1.0001) {
+                    byteLike = true;
+                    break;
+                }
+            }
+            return byteLike ? Float32Array.from(values, (value) => value / 255) : values;
+        }
+        if (typeof raw !== "string" || !raw) return null;
+        return decodeCompositionReferenceFrame(raw, expected);
     }
 
     function compositionReferenceGroups() {
@@ -2465,6 +2501,52 @@ function initPointsBuilderMain() {
         return entry;
     }
 
+    function createCompositionReferenceCpuMaterial() {
+        const mat = new THREE.PointsMaterial({
+            size: Math.max(0.12, pointSize * 0.9),
+            sizeAttenuation: true,
+            color: 0xffffff,
+            vertexColors: true,
+            transparent: true,
+            opacity: compositionReferenceOpacity,
+            depthWrite: false,
+            depthTest: true
+        });
+        mat.defaultAttributeValues = {
+            ...(mat.defaultAttributeValues || {}),
+            aReferenceAlpha: [1],
+            aReferenceSize: [1]
+        };
+        mat.customProgramCacheKey = () => "composition-reference-cpu-v1";
+        mat.onBeforeCompile = (shader) => {
+            shader.vertexShader = [
+                "attribute float aReferenceAlpha;",
+                "attribute float aReferenceSize;",
+                "varying float vReferenceAlpha;",
+                ""
+            ].join("\n") + shader.vertexShader;
+            shader.vertexShader = shader.vertexShader.replace(
+                /gl_PointSize\s*=\s*size\s*;/g,
+                [
+                    "vReferenceAlpha = clamp(aReferenceAlpha, 0.0, 1.0);",
+                    "gl_PointSize = vReferenceAlpha > 0.0001 ? size * max(aReferenceSize, 0.05) : 0.0;"
+                ].join("\n    ")
+            );
+            shader.fragmentShader = [
+                "varying float vReferenceAlpha;",
+                ""
+            ].join("\n") + shader.fragmentShader;
+            shader.fragmentShader = shader.fragmentShader.replace(
+                /vec4\s+diffuseColor\s*=\s*vec4\(\s*diffuse\s*,\s*opacity\s*\)\s*;/g,
+                [
+                    "if (vReferenceAlpha <= 0.0001) discard;",
+                    "vec4 diffuseColor = vec4(diffuse, opacity * vReferenceAlpha);"
+                ].join("\n    ")
+            );
+        };
+        return mat;
+    }
+
     function setVector4Target(target, value) {
         if (!target?.set) return;
         const values = Array.isArray(value) ? value : [0, 0, 0, 0];
@@ -2474,15 +2556,7 @@ function initPointsBuilderMain() {
     function ensureCompositionReferencePointsObj() {
         if (compositionReferencePointsObj || !scene) return;
         const geom = new THREE.BufferGeometry();
-        const mat = new THREE.PointsMaterial({
-            size: Math.max(0.12, pointSize * 0.9),
-            sizeAttenuation: true,
-            color: 0x7ea8b8,
-            transparent: true,
-            opacity: compositionReferenceOpacity,
-            depthWrite: false,
-            vertexColors: false
-        });
+        const mat = createCompositionReferenceCpuMaterial();
         compositionReferencePointsObj = new THREE.Points(geom, mat);
         compositionReferencePointsObj.visible = false;
         scene.add(compositionReferencePointsObj);
@@ -2597,8 +2671,12 @@ function initPointsBuilderMain() {
         const baselinePoints = Array.isArray(compositionReferenceCurrentSourcePoints)
             ? compositionReferenceCurrentSourcePoints
             : [];
+        const currentTargetPath = compositionReferenceTargetPath(compositionReferenceSnapshot?.currentTarget || "root");
+        const currentTargetIsNested = currentTargetPath.length > 0;
         const basePosition = compositionReferenceGpuArray(attributes.position);
+        const baseTransformVector = compositionReferenceGpuArray(attributes.aGpuTransformVector);
         const positionAttr = geom.getAttribute("position");
+        const transformVectorAttr = geom.getAttribute("aGpuTransformVector");
         for (let i = 0; i < pointCount; i++) {
             const owner = String(owners[i] || "");
             const visible = visibleIds.has(owner);
@@ -2622,13 +2700,25 @@ function initPointsBuilderMain() {
             compositionReferenceGpuDeltaBuf[i * 3 + 1] = dy;
             compositionReferenceGpuDeltaBuf[i * 3 + 2] = dz;
             if (positionAttr?.array && basePosition) {
-                positionAttr.array[i * 3] = (Number(basePosition[i * 3]) || 0) + dx;
-                positionAttr.array[i * 3 + 1] = (Number(basePosition[i * 3 + 1]) || 0) + dy;
-                positionAttr.array[i * 3 + 2] = (Number(basePosition[i * 3 + 2]) || 0) + dz;
+                // position is also the anchor carrier used by the GPU shader
+                // (position - localVector). Move it with every edit so a
+                // nested local-vector edit does not move the anchor backwards.
+                const positionDelta = 1;
+                positionAttr.array[i * 3] = (Number(basePosition[i * 3]) || 0) + dx * positionDelta;
+                positionAttr.array[i * 3 + 1] = (Number(basePosition[i * 3 + 1]) || 0) + dy * positionDelta;
+                positionAttr.array[i * 3 + 2] = (Number(basePosition[i * 3 + 2]) || 0) + dz * positionDelta;
+            }
+            if (transformVectorAttr?.array && baseTransformVector) {
+                const offset = i * 3;
+                const transformVectorDelta = currentTargetIsNested ? 1 : 0;
+                transformVectorAttr.array[offset] = (Number(baseTransformVector[offset]) || 0) + dx * transformVectorDelta;
+                transformVectorAttr.array[offset + 1] = (Number(baseTransformVector[offset + 1]) || 0) + dy * transformVectorDelta;
+                transformVectorAttr.array[offset + 2] = (Number(baseTransformVector[offset + 2]) || 0) + dz * transformVectorDelta;
             }
         }
         geom.getAttribute("aReferenceVisible").needsUpdate = true;
         if (positionAttr) positionAttr.needsUpdate = true;
+        if (transformVectorAttr) transformVectorAttr.needsUpdate = true;
         geom.computeBoundingSphere();
         return {
             pointCount,
@@ -2681,16 +2771,41 @@ function initPointsBuilderMain() {
         };
     }
 
+    // Current-card edits are authored in Builder-local space. Reference frames
+    // already contain the Composition transform, so only apply the matrix's
+    // linear part to the edit delta; translation belongs to the baseline frame.
+    function compositionReferenceGpuMatrixDelta(matrix, delta) {
+        const m = Array.isArray(matrix) || matrix instanceof Float32Array ? matrix : null;
+        const value = delta || { x: 0, y: 0, z: 0 };
+        if (!m || m.length < 16) return {
+            x: Number(value.x) || 0,
+            y: Number(value.y) || 0,
+            z: Number(value.z) || 0
+        };
+        const x = Number(value.x) || 0;
+        const y = Number(value.y) || 0;
+        const z = Number(value.z) || 0;
+        return {
+            x: m[0] * x + m[4] * y + m[8] * z,
+            y: m[1] * x + m[5] * y + m[9] * z,
+            z: m[2] * x + m[6] * y + m[10] * z
+        };
+    }
+
     function resolveCompositionReferenceGpuPoint(snapshot, index, frameEntry, delta = null) {
         const attributes = snapshot?.gpu?.attributes || {};
         const position = compositionReferenceGpuArray(attributes.position);
         if (!position || index * 3 + 2 >= position.length) {
             return null;
         }
+        const nestedTarget = compositionReferenceTargetPath(snapshot?.currentTarget || "root").length > 0;
+        const dx = Number(delta?.[0]) || 0;
+        const dy = Number(delta?.[1]) || 0;
+        const dz = Number(delta?.[2]) || 0;
         let point = {
-            x: (Number(position[index * 3]) || 0) + (Number(delta?.[0]) || 0),
-            y: (Number(position[index * 3 + 1]) || 0) + (Number(delta?.[1]) || 0),
-            z: (Number(position[index * 3 + 2]) || 0) + (Number(delta?.[2]) || 0)
+            x: (Number(position[index * 3]) || 0) + (nestedTarget ? 0 : dx),
+            y: (Number(position[index * 3 + 1]) || 0) + (nestedTarget ? 0 : dy),
+            z: (Number(position[index * 3 + 2]) || 0) + (nestedTarget ? 0 : dz)
         };
         const meta = compositionReferenceGpuArray(attributes.aGpuMeta);
         const fadeIn = compositionReferenceGpuArray(attributes.aGpuFadeIn);
@@ -2748,11 +2863,14 @@ function initPointsBuilderMain() {
             }
             const encodedGroupIndex = Number(fadeOut?.[fadeOutOffset + 3]);
             const vectorOffset = index * 3;
-            const local = {
+            const baseLocal = {
                 x: Number(transformVector?.[vectorOffset]) || 0,
                 y: Number(transformVector?.[vectorOffset + 1]) || 0,
                 z: Number(transformVector?.[vectorOffset + 2]) || 0
             };
+            const local = nestedTarget
+                ? { x: baseLocal.x + dx, y: baseLocal.y + dy, z: baseLocal.z + dz }
+                : baseLocal;
             if (encodedGroupIndex < -0.5) {
                 point = local;
             } else {
@@ -2772,9 +2890,9 @@ function initPointsBuilderMain() {
                     ? Number(frameEntry.sharedScale) || 1
                     : Number(scales[Math.max(0, Math.trunc(groupIndex))] ?? scale?.[index] ?? 1) || 1;
                 const anchor = {
-                    x: point.x - local.x,
-                    y: point.y - local.y,
-                    z: point.z - local.z
+                    x: point.x - baseLocal.x,
+                    y: point.y - baseLocal.y,
+                    z: point.z - baseLocal.z
                 };
                 const rotated = rotateCompositionReferenceVector({
                     x: local.x * resolvedScale,
@@ -2847,15 +2965,7 @@ function initPointsBuilderMain() {
             compositionReferenceGpuUniforms = null;
             compositionReferenceGpuSnapshotRef = null;
             compositionReferenceGpuPointCount = 0;
-            compositionReferencePointsObj.material = new THREE.PointsMaterial({
-                size: Math.max(0.12, pointSize * 0.9),
-                sizeAttenuation: true,
-                color: 0x7ea8b8,
-                transparent: true,
-                opacity: compositionReferenceOpacity,
-                depthWrite: false,
-                vertexColors: false
-            });
+            compositionReferencePointsObj.material = createCompositionReferenceCpuMaterial();
         }
         if (compositionReferencePickObj) compositionReferencePickObj.visible = false;
         if (!frames.length || !owners.length) {
@@ -2881,7 +2991,25 @@ function initPointsBuilderMain() {
         }
         const flat = decodeCompositionReferenceFrame(frames[sourceFrameIndex], owners.length * 3);
         const visibleMask = decodeCompositionReferenceMask(visibleMasks[sourceFrameIndex], owners.length);
+        const frameColors = decodeCompositionReferenceVisualArray(
+            compositionReferenceSnapshot?.colors?.[sourceFrameIndex],
+            owners.length * 3,
+            true
+        );
+        const frameSizes = decodeCompositionReferenceVisualArray(
+            compositionReferenceSnapshot?.sizes?.[sourceFrameIndex],
+            owners.length,
+            false
+        );
+        const frameAlphas = decodeCompositionReferenceVisualArray(
+            compositionReferenceSnapshot?.alphas?.[sourceFrameIndex],
+            owners.length,
+            true
+        );
         const points = [];
+        const pointColors = [];
+        const pointSizes = [];
+        const pointAlphas = [];
         for (let i = 0; i < owners.length; i++) {
             const owner = String(owners[i] || "");
             if (!visibleIds.has(owner)) continue;
@@ -2902,12 +3030,25 @@ function initPointsBuilderMain() {
                 const baseline = compositionReferenceCurrentSourcePoints[sourceIndex];
                 const current = lastPoints[sourceIndex];
                 if (baseline && current) {
-                    nextX += num(current.x) - num(baseline.x);
-                    nextY += num(current.y) - num(baseline.y);
-                    nextZ += num(current.z) - num(baseline.z);
+                    const delta = compositionReferenceGpuMatrixDelta(compositionReferenceSnapshot?.globalTransform, {
+                        x: num(current.x) - num(baseline.x),
+                        y: num(current.y) - num(baseline.y),
+                        z: num(current.z) - num(baseline.z)
+                    });
+                    nextX += delta.x;
+                    nextY += delta.y;
+                    nextZ += delta.z;
                 }
             }
             points.push({ x: nextX, y: nextY, z: nextZ, ownerId: owner });
+            const colorOffset = i * 3;
+            pointColors.push(
+                Number(frameColors?.[colorOffset]) || 1,
+                Number(frameColors?.[colorOffset + 1]) || 1,
+                Number(frameColors?.[colorOffset + 2]) || 1
+            );
+            pointSizes.push(Math.max(0.05, Number(frameSizes?.[i]) || 1));
+            pointAlphas.push(Math.max(0, Math.min(1, Number(frameAlphas?.[i]) || 0)));
         }
         lastCompositionReferencePoints = points;
         if (!points.length) {
@@ -2918,16 +3059,33 @@ function initPointsBuilderMain() {
         const geom = compositionReferencePointsObj.geometry;
         if (!compositionReferencePointsBuf || compositionReferencePointCount !== points.length) {
             compositionReferencePointsBuf = new Float32Array(points.length * 3);
+            compositionReferenceColorsBuf = new Float32Array(points.length * 3);
+            compositionReferenceSizesBuf = new Float32Array(points.length);
+            compositionReferenceAlphasBuf = new Float32Array(points.length);
             compositionReferencePointCount = points.length;
             geom.setAttribute("position", new THREE.BufferAttribute(compositionReferencePointsBuf, 3));
+            geom.setAttribute("color", new THREE.BufferAttribute(compositionReferenceColorsBuf, 3));
+            geom.setAttribute("aReferenceSize", new THREE.BufferAttribute(compositionReferenceSizesBuf, 1));
+            geom.setAttribute("aReferenceAlpha", new THREE.BufferAttribute(compositionReferenceAlphasBuf, 1));
         }
         for (let i = 0; i < points.length; i++) {
             compositionReferencePointsBuf[i * 3] = points[i].x;
             compositionReferencePointsBuf[i * 3 + 1] = points[i].y;
             compositionReferencePointsBuf[i * 3 + 2] = points[i].z;
+            compositionReferenceColorsBuf[i * 3] = pointColors[i * 3];
+            compositionReferenceColorsBuf[i * 3 + 1] = pointColors[i * 3 + 1];
+            compositionReferenceColorsBuf[i * 3 + 2] = pointColors[i * 3 + 2];
+            compositionReferenceSizesBuf[i] = pointSizes[i];
+            compositionReferenceAlphasBuf[i] = pointAlphas[i];
         }
         const position = geom.getAttribute("position");
         if (position) position.needsUpdate = true;
+        const color = geom.getAttribute("color");
+        if (color) color.needsUpdate = true;
+        const referenceSize = geom.getAttribute("aReferenceSize");
+        if (referenceSize) referenceSize.needsUpdate = true;
+        const referenceAlpha = geom.getAttribute("aReferenceAlpha");
+        if (referenceAlpha) referenceAlpha.needsUpdate = true;
         geom.computeBoundingSphere();
         compositionReferencePointsObj.material.size = Math.max(0.12, pointSize * 0.9);
         compositionReferencePointsObj.material.opacity = compositionReferenceOpacity;
@@ -7823,9 +7981,15 @@ function initPointsBuilderMain() {
             autoSaveTimer = 0;
             const json = safeStringifyState(state);
             if (!json || json === lastSavedStateJson) return;
-            if (saveAutoState(state)) lastSavedStateJson = json;
+            if (saveAutoState(state, json)) lastSavedStateJson = json;
         }, 180);
     }
+
+    globalThis.__PB_flushAutoStateSave = flushAutoStateSave;
+    globalThis.addEventListener?.("pb-auto-save-error", (event) => {
+        const error = event?.detail?.error;
+        showToast(`自动保存失败：${error?.message || "浏览器存储不可用"}`, "error");
+    });
 
     const hotkeySystem = initHotkeysSystem({
         modal,
@@ -8822,6 +8986,9 @@ function initPointsBuilderMain() {
     let pointsObj = null;
     let compositionReferencePointsObj = null;
     let compositionReferencePointsBuf = null;
+    let compositionReferenceColorsBuf = null;
+    let compositionReferenceSizesBuf = null;
+    let compositionReferenceAlphasBuf = null;
     let compositionReferencePointCount = 0;
     let compositionReferencePickObj = null;
     let compositionReferencePickBuf = null;
@@ -17416,6 +17583,7 @@ function collectSyntheticVecTargetsForNode(node) {
         });
     }
 
+    const initialAutoStateJson = safeStringifyState(state);
     initTopbarAndBoot({
         btnExportKotlin,
         btnExportKotlin2,
@@ -17574,5 +17742,19 @@ function collectSyntheticVecTargetsForNode(node) {
         setBuilderJsonTargetNode: (node) => { builderJsonTargetNode = node; },
         getBuilderJsonTargetNode: () => builderJsonTargetNode
     });
+
+    // localStorage is kept as the fast path, but large point models can exceed
+    // its quota. Recover a newer IndexedDB draft only if the user has not
+    // edited the freshly loaded state while the asynchronous read was pending.
+    void loadLatestAutoStatePayload?.().then?.((record) => {
+        if (!record?.state) return;
+        if (safeStringifyState(state) !== initialAutoStateJson) return;
+        const recoveredJson = safeStringifyState(record.state);
+        if (!recoveredJson || recoveredJson === initialAutoStateJson) return;
+        state = normalizeState(record.state);
+        lastSavedStateJson = recoveredJson;
+        renderAll();
+        showToast("已恢复最近一次自动保存", "info");
+    }).catch(() => {});
 }
 initPointsBuilderMain();

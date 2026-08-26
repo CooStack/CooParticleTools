@@ -4,6 +4,164 @@ export const STATE_STORAGE_KEY = "pb_state_v1";
 export const PRESET_STORAGE_KEY = "pb_presets_v1";
 export const PRESET_GROUPS_KEY = "pb_preset_groups_v1";
 
+const AUTO_STATE_DB_NAME = "coo-particles-points-builder-v1";
+const AUTO_STATE_DB_VERSION = 1;
+const AUTO_STATE_STORE = "drafts";
+let autoStateDbPromise = null;
+let autoStatePendingRecord = null;
+let autoStateWriterPromise = null;
+
+function getAutoStateContext(raw = null) {
+    const source = raw && typeof raw === "object"
+        ? raw
+        : globalThis.__PB_EDITOR_CONTEXT;
+    if (!source || typeof source !== "object") return null;
+    const cardId = String(source.cardId || "").trim();
+    if (!cardId) return null;
+    return {
+        cardId,
+        target: String(source.target || "root"),
+        compositionRevision: String(source.compositionRevision || "")
+    };
+}
+
+function autoStateContextMatches(actual, expected) {
+    const left = getAutoStateContext(actual);
+    const right = getAutoStateContext(expected);
+    if (!right) return true;
+    if (!left) return false;
+    if (left.cardId !== right.cardId || left.target !== right.target) return false;
+    if (!right.compositionRevision) return true;
+    return left.compositionRevision === right.compositionRevision;
+}
+
+function autoStateContextKey(context) {
+    const normalized = getAutoStateContext(context);
+    if (!normalized) return "standalone";
+    return `composition:${normalized.cardId}:${normalized.target}`;
+}
+
+function parseAutoStatePayload(raw) {
+    if (!raw) return null;
+    try {
+        const payload = typeof raw === "string" ? JSON.parse(raw) : raw;
+        const state = payload?.state || payload;
+        if (!state || !state.root || !Array.isArray(state.root.children)) return null;
+        return {
+            state,
+            context: getAutoStateContext(payload?.context),
+            ts: Number(payload?.ts) || 0
+        };
+    } catch {
+        return null;
+    }
+}
+
+function openAutoStateDb() {
+    if (autoStateDbPromise) return autoStateDbPromise;
+    if (!globalThis.indexedDB?.open) return null;
+    autoStateDbPromise = new Promise((resolve, reject) => {
+        let request;
+        try {
+            request = globalThis.indexedDB.open(AUTO_STATE_DB_NAME, AUTO_STATE_DB_VERSION);
+        } catch (error) {
+            reject(error);
+            return;
+        }
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains(AUTO_STATE_STORE)) {
+                db.createObjectStore(AUTO_STATE_STORE, { keyPath: "key" });
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error("IndexedDB unavailable"));
+        request.onblocked = () => reject(new Error("IndexedDB blocked"));
+    }).catch((error) => {
+        autoStateDbPromise = null;
+        return Promise.reject(error);
+    });
+    return autoStateDbPromise;
+}
+
+function putAutoStateRecord(record) {
+    const dbPromise = openAutoStateDb();
+    if (!dbPromise) return Promise.reject(new Error("IndexedDB unavailable"));
+    return dbPromise.then((db) => new Promise((resolve, reject) => {
+        let tx;
+        try {
+            tx = db.transaction(AUTO_STATE_STORE, "readwrite");
+            tx.objectStore(AUTO_STATE_STORE).put(record);
+        } catch (error) {
+            reject(error);
+            return;
+        }
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => reject(tx.error || new Error("IndexedDB write failed"));
+        tx.onabort = () => reject(tx.error || new Error("IndexedDB write aborted"));
+    }));
+}
+
+function readAutoStateRecord(key) {
+    const dbPromise = openAutoStateDb();
+    if (!dbPromise) return Promise.resolve(null);
+    return dbPromise.then((db) => new Promise((resolve, reject) => {
+        let tx;
+        let request;
+        try {
+            tx = db.transaction(AUTO_STATE_STORE, "readonly");
+            request = tx.objectStore(AUTO_STATE_STORE).get(key);
+        } catch (error) {
+            reject(error);
+            return;
+        }
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error || new Error("IndexedDB read failed"));
+    })).catch(() => null);
+}
+
+async function drainAutoStateWrites() {
+    let failed = false;
+    while (autoStatePendingRecord) {
+        const record = autoStatePendingRecord;
+        autoStatePendingRecord = null;
+        try {
+            await putAutoStateRecord(record);
+        } catch (error) {
+            // Keep the latest failed record for the next edit, and expose the
+            // failure instead of silently discarding the user's work.
+            if (!autoStatePendingRecord || Number(autoStatePendingRecord.ts) < Number(record.ts)) {
+                autoStatePendingRecord = record;
+            }
+            try {
+                globalThis.dispatchEvent?.(new CustomEvent("pb-auto-save-error", {
+                    detail: { error, ts: record.ts }
+                }));
+            } catch {
+            }
+            failed = true;
+            break;
+        }
+    }
+    autoStateWriterPromise = null;
+    if (!failed && autoStatePendingRecord) queueAutoStateWrite(autoStatePendingRecord);
+}
+
+function queueAutoStateWrite(record) {
+    if (!record || !openAutoStateDb()) return false;
+    if (!autoStatePendingRecord || Number(record.ts) >= Number(autoStatePendingRecord.ts)) {
+        autoStatePendingRecord = record;
+    }
+    if (!autoStateWriterPromise) {
+        autoStateWriterPromise = drainAutoStateWrites();
+    }
+    return true;
+}
+
+export function flushAutoStateSave() {
+    return autoStateWriterPromise || Promise.resolve(true);
+}
+
 export function sanitizeFileBase(name) {
     const raw = String(name || "").trim();
     if (!raw) return "";
@@ -54,31 +212,67 @@ export function loadAutoState() {
     return null;
 }
 
-export function saveAutoState(state) {
+export async function loadLatestAutoStatePayload({ storageKey = STATE_STORAGE_KEY, expectedContext = null } = {}) {
+    const local = (() => {
+        try {
+            return parseAutoStatePayload(localStorage.getItem(storageKey));
+        } catch {
+            return null;
+        }
+    })();
+    const expected = getAutoStateContext(expectedContext);
+    const key = autoStateContextKey(expected || local?.context);
+    const stored = await readAutoStateRecord(key);
+    const indexed = parseAutoStatePayload(stored?.payloadJson || null);
+    const candidates = [local, indexed]
+        .filter((candidate) => candidate && autoStateContextMatches(candidate.context, expected))
+        .sort((a, b) => Number(b.ts) - Number(a.ts));
+    return candidates[0] || null;
+}
+
+export function saveAutoState(state, serializedState = "") {
     if (!state) return false;
+    let stateJson = String(serializedState || "");
+    if (!stateJson) {
+        try {
+            stateJson = JSON.stringify(state);
+        } catch {
+            return false;
+        }
+    }
+    if (!stateJson) return false;
     try {
         const editorContext = globalThis.__PB_EDITOR_CONTEXT;
-        let previousContext = null;
-        try {
-            const previousRaw = localStorage.getItem(STATE_STORAGE_KEY);
-            const previousPayload = previousRaw ? JSON.parse(previousRaw) : null;
-            previousContext = previousPayload?.context || null;
-        } catch {
-        }
         const context = editorContext && typeof editorContext === "object"
             ? {
                 cardId: String(editorContext.cardId || ""),
                 target: String(editorContext.target || "root"),
-                compositionRevision: String(
-                    editorContext.compositionRevision || previousContext?.compositionRevision || ""
-                )
+                // Never inherit a revision from another card's old sandbox.
+                compositionRevision: String(editorContext.compositionRevision || "")
             }
             : null;
-        const payload = context?.cardId
-            ? {state, context, ts: Date.now()}
-            : {state, ts: Date.now()};
-        localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(payload));
-        return true;
+        const ts = Date.now();
+        const payloadJson = context?.cardId
+            ? `{"state":${stateJson},"context":${JSON.stringify(context)},"ts":${ts}}`
+            : `{"state":${stateJson},"ts":${ts}}`;
+        let localSaved = false;
+        try {
+            localStorage.setItem(STATE_STORAGE_KEY, payloadJson);
+            localSaved = true;
+        } catch (error) {
+            try {
+                globalThis.dispatchEvent?.(new CustomEvent("pb-auto-save-error", {
+                    detail: { error, ts }
+                }));
+            } catch {
+            }
+        }
+        const indexedQueued = queueAutoStateWrite({
+            key: autoStateContextKey(context),
+            payloadJson,
+            ts
+        });
+        return localSaved || indexedQueued;
     } catch {
         return false;
     }

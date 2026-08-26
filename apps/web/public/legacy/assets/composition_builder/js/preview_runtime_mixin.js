@@ -39,6 +39,14 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             fadeIn: Object.assign({ enabled: false, durationTicks: 10, fromAlpha: 0, toAlpha: 1 }, raw?.fadeIn || {}),
             fadeOut: Object.assign({ enabled: false, durationTicks: 10, fromAlpha: 1, toAlpha: 0 }, raw?.fadeOut || {})
         }));
+    const normalizePreviewCParticleAlpha = (raw) => {
+        const config = normalizeCParticleAlpha(raw);
+        if (config?.fadeIn && config?.fadeOut) return config;
+        return {
+            fadeIn: { enabled: false, durationTicks: 10, fromAlpha: 0, toAlpha: 1 },
+            fadeOut: { enabled: false, durationTicks: 10, fromAlpha: 1, toAlpha: 0 }
+        };
+    };
     const isCParticleOwnerType = (type) => type === "particle_shape" || type === "sequenced_shape";
     const usesPointsBuilderSource = (source) => source?.bindMode === "builder";
     const isCParticleCard = (card) => {
@@ -75,6 +83,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
     const PREVIEW_RENDER_CACHE_WORKER_MAX_QUEUE = 8;
     const PREVIEW_RENDER_CACHE_WARMUP_TIMEOUT = 120;
     const PREVIEW_RENDER_CACHE_WORKER_URL = "./preview_render_cache_worker.js?v=20260826_1";
+    const GPU_ALPHA_TRANSITION_LIMIT = 4;
     const hashPreviewUint32 = (value) => {
         let x = Number(value) >>> 0;
         x = Math.imul((x ^ (x >>> 16)) >>> 0, 0x7feb352d) >>> 0;
@@ -1443,7 +1452,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             return false;
         };
         this.previewGpuParticleCardFallbackReason = "";
-        if (!card || !isCParticleCard(card)) return reject("不是 GPU 粒子卡片");
+        if (!card) return reject("不是 GPU 粒子卡片");
         const hasEntries = (value) => Array.isArray(value) && value.length > 0;
         const sourceCompatible = (source) => {
             if (!source || typeof source !== "object") return reject("粒子节点无效");
@@ -1465,9 +1474,14 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         }
         const children = Array.isArray(card.shapeChildren) ? card.shapeChildren : [];
         if (!children.length) return reject("没有粒子子节点");
-        const validateNode = (node) => {
+        const validateNode = (node, inheritedGpu = false) => {
             if (!sourceCompatible(node)) return false;
-            if (isLeafParticleType(String(node?.type || "single"))) {
+            const nodeType = String(node?.type || "single");
+            const nodeOwnGpu = !isLeafParticleType(nodeType)
+                && node?.useCParticle === true;
+            const nodeGpu = inheritedGpu || nodeOwnGpu || usesPointsBuilderSource(node);
+            if (isLeafParticleType(nodeType)) {
+                if (!nodeGpu) return reject("存在 CPU 粒子叶节点");
                 if (hasEntries(node?.displayActions) || hasEntries(node?.growthAnimates)
                     || this.resolvePreviewAngleOffsetConfig(node)) {
                     return reject("存在直接改单粒子变换");
@@ -1476,9 +1490,11 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             }
             const nested = Array.isArray(node?.children) ? node.children : [];
             if (!nested.length) return reject("嵌套 Composition 没有粒子子节点");
-            return nested.every((child) => validateNode(child));
+            return nested.every((child) => validateNode(child, nodeGpu));
         };
-        if (!children.every((child) => validateNode(child))) return false;
+        const rootGpu = isCParticleCard(card);
+        if (!rootGpu && isLeafParticleType(compositionType)) return reject("不是 GPU 粒子卡片");
+        if (!children.every((child) => validateNode(child, rootGpu))) return false;
         return true;
     }
 
@@ -1661,6 +1677,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const textureConfigs = Array.isArray(this.previewLeafTextureConfigs) ? this.previewLeafTextureConfigs : [];
         const birthOffsets = Array.isArray(this.previewBirthOffsets) ? this.previewBirthOffsets : [];
         const rootVirtualIndices = Array.isArray(this.previewRootVirtualIndex) ? this.previewRootVirtualIndex : [];
+        const levelMetas = Array.isArray(this.previewLevelMetas) ? this.previewLevelMetas : [];
         this.previewGpuTransformStartTicks = new Float32Array(count);
         const sequencedRoot = String(this.state?.compositionType || "normal") === "sequenced";
         const cycleCfg = this.previewCycleCache
@@ -1685,6 +1702,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         let hasTextureFrames = false;
         const cardAlphaCache = new Map();
         const localGrowthPlanCache = new Map();
+        const localGrowthGroupCache = new Map();
         const textureDataCache = new Map();
         const { getParticleDataByName } = this._particleDataFns || {};
         const mergedOffsets = this._mergedAtlasOffsets;
@@ -1726,10 +1744,13 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             const card = this.previewCardById?.get(owner) || this.getCardById(owner);
             const active = !visibleCardIds || visibleCardIds.has(owner);
             const textureConfig = textureConfigs[i] || this.resolvePreviewLeafTextureConfig(card);
-            let alphaConfig = cardAlphaCache.get(owner);
+            const pointLevelMetas = Array.isArray(levelMetas[i]) ? levelMetas[i] : [];
+            const alphaKey = `${owner}|${pointLevelMetas.map((meta) => String(meta?.node?.id || "")).join(",")}`;
+            let alphaConfig = cardAlphaCache.get(alphaKey);
             if (!alphaConfig) {
-                alphaConfig = normalizeCParticleAlpha(card?.cparticleAlpha);
-                cardAlphaCache.set(owner, alphaConfig);
+                const alphaSources = this.resolvePreviewCParticleAlphaSources(card, pointLevelMetas);
+                alphaConfig = this.resolvePreviewCParticleAlphaConfig(card, pointLevelMetas, alphaSources);
+                cardAlphaCache.set(alphaKey, alphaConfig);
             }
             let textureData = null;
             if (textureConfig?.useTexture && textureConfig.effectClass && typeof getParticleDataByName === "function") {
@@ -1792,6 +1813,16 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 if (!localGrowthPlan) {
                     const shapeRuntimeLevels = this.getShapeRuntimeLevelsForPreview(card, 0, false);
                     const maxLocalGrowthTick = Math.max(0, int(cycleCfg.total || 1) - 1);
+                    const growthGroupKey = `${owner}|${ownerCount}|${shapeRuntimeLevels.length}`;
+                    let growthGroupData = localGrowthGroupCache.get(growthGroupKey);
+                    if (!growthGroupData) {
+                        growthGroupData = this.buildPreviewLocalGrowthGroupData(
+                            owner,
+                            ownerCount,
+                            shapeRuntimeLevels
+                        );
+                        localGrowthGroupCache.set(growthGroupKey, growthGroupData);
+                    }
                     localGrowthPlan = this.buildLocalGrowthPlan(
                         card,
                         ownerCount,
@@ -1801,7 +1832,8 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                         this.previewRuntimeGlobals || this.buildPreviewRuntimeGlobals(0, 0, 0),
                         {
                             allowImplicitRootSequencedGrowth: rootGrowthPlan?.hasSource === true
-                                && String(card.dataType || "") === "sequenced_shape"
+                                && String(card.dataType || "") === "sequenced_shape",
+                            growthGroupData
                         }
                     );
                     localGrowthPlanCache.set(localGrowthKey, localGrowthPlan);
@@ -4120,6 +4152,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             ? this.previewFrameGrowthPlanCache
             : (this.previewFrameGrowthPlanCache = new Map());
         growthPlanFrameCache.clear();
+        const growthGroupFrameCache = new Map();
 
         const ownerIds = this.previewOwners;
         const ownerLocalIndex = this.previewOwnerLocalIndex;
@@ -4332,7 +4365,24 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                         shapeRuntimeLevels,
                         growthAgeTick,
                         runtimeElapsedTick,
-                        frameRuntimeGlobals
+                        frameRuntimeGlobals,
+                        {
+                            allowImplicitRootSequencedGrowth: rootGrowthPlan?.hasSource === true
+                                && String(card?.dataType || "") === "sequenced_shape",
+                            growthGroupData: (() => {
+                                const key = `${owner}|${ownerCountSafe}|${shapeRuntimeLevels.length}`;
+                                let data = growthGroupFrameCache.get(key);
+                                if (!data) {
+                                    data = this.buildPreviewLocalGrowthGroupData(
+                                        owner,
+                                        ownerCountSafe,
+                                        shapeRuntimeLevels
+                                    );
+                                    growthGroupFrameCache.set(key, data);
+                                }
+                                return data;
+                            })()
+                        }
                     );
                     if (canReuseGrowthPlan) {
                         growthPlanFrameCache.set(growthPlanKey, {
@@ -4367,7 +4417,13 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
 
             const ownerCount = Math.max(1, int(cached.ownerCount || ownerCountSafe));
             const visibleLimit = clamp(int(cached.visibleLimit), 0, ownerCount);
-            const isVisibleByGrowth = localIndex < visibleLimit;
+            const hasLocalUnlockPlan = Array.isArray(cached.localUnlockTickByIndex);
+            const localUnlockTick = Number(cached.localUnlockTickByIndex?.[localIndex]);
+            const isVisibleByLocalGrowth = hasLocalUnlockPlan
+                ? Number.isFinite(localUnlockTick)
+                : localIndex < visibleLimit;
+            // Root sequencing and local growth are independent visibility gates.
+            const isVisibleByGrowth = isVisibleByLocalGrowth && localIndex < visibleLimit;
             if (!isVisibleByGrowth) {
                 this.previewVisibleMask[i] = false;
                 positions[i * 3 + 0] = base.x;
@@ -4395,7 +4451,6 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
                 continue;
             }
 
-            const localUnlockTick = Number(cached.localUnlockTickByIndex?.[localIndex]);
             const pointDelayTick = Number.isFinite(localUnlockTick) ? Math.max(0, num(localUnlockTick)) : 0;
             const pointElapsedTick = Math.max(0, num(cached.elapsedTick) - pointDelayTick);
             const pointAgeTick = Math.max(0, num(cached.age) - pointDelayTick);
@@ -4799,7 +4854,13 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             colors[i * 3 + 2] = rgb[2];
             sizes[i] = Math.max(0.05, num(pointVisual.size));
             const visualAlphaFactor = visualParticleType === "cparticle"
-                ? this.resolveCParticleAlphaPreviewFactor(ownerCardRef, cached.age, cycleCfg, cached.statusAge)
+                ? this.resolveCParticleAlphaPreviewFactor(
+                    ownerCardRef,
+                    cached.age,
+                    cycleCfg,
+                    cached.statusAge,
+                    this.resolvePreviewCParticleAlphaSources(ownerCardRef, this.previewLevelMetas?.[i])
+                )
                 : projectAlphaFactor;
             alphas[i] = clamp(clamp(num(pointVisual.alpha), 0, 1) * visualAlphaFactor, 0, 1);
             this.previewVisibleMask[i] = true;
@@ -4896,9 +4957,57 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         }, cardCfg);
     }
 
-    resolveCParticleAlphaPreviewFactor(card, cardAge = 0, cycleCfg = null, statusAge = cardAge) {
-        if (!card || !isCParticleCard(card) || isLeafParticleType(String(card.dataType || "single"))) return 1;
-        const config = normalizeCParticleAlpha(card.cparticleAlpha);
+    resolvePreviewCParticleAlphaSources(card, levelMetas = []) {
+        if (!card) return [];
+        const sources = [];
+        const seen = new Set();
+        const addSource = (source) => {
+            if (!source || typeof source !== "object" || seen.has(source)) return;
+            seen.add(source);
+            sources.push(source);
+        };
+        let enabled = isCParticleCard(card);
+        if (enabled && !isLeafParticleType(String(card.dataType || "single"))) addSource(card);
+        for (const meta of (Array.isArray(levelMetas) ? levelMetas : [])) {
+            const node = meta?.node;
+            if (!node) continue;
+            const nodeType = String(node.type || "single");
+            const ownGpu = isLeafParticleType(nodeType)
+                ? (node.particleBackend === "cparticle" || usesPointsBuilderSource(node))
+                : node.useCParticle === true;
+            if (!enabled && !ownGpu) continue;
+            enabled = true;
+            if (!seen.has(node)) {
+                seen.add(node);
+                // Keep the actual tree node as the source so a leaf
+                // CParticle's own alpha config participates in nested calls.
+                sources.push(node);
+            }
+        }
+        return sources;
+    }
+
+    resolvePreviewCParticleAlphaConfig(card, levelMetas = [], sources = null) {
+        const alphaSources = Array.isArray(sources)
+            ? sources
+            : this.resolvePreviewCParticleAlphaSources(card, levelMetas);
+        // CParticleCompositionAlphaHelper walks the subtree and each deeper
+        // Composition call updates the same system transition. The deepest
+        // configured Composition therefore wins; an unconfigured leaf must
+        // never erase its parent's transition.
+        for (let index = alphaSources.length - 1; index >= 0; index--) {
+            const source = alphaSources[index];
+            const config = normalizePreviewCParticleAlpha(source?.cparticleAlpha);
+            if (config.fadeIn.enabled || config.fadeOut.enabled) return config;
+        }
+        return normalizePreviewCParticleAlpha(null);
+    }
+
+    resolveCParticleAlphaPreviewFactor(card, cardAge = 0, cycleCfg = null, statusAge = cardAge, sources = null) {
+        const alphaSources = Array.isArray(sources) && sources.length
+            ? sources
+            : this.resolvePreviewCParticleAlphaSources(card, []);
+        if (!alphaSources.length) return 1;
         const cycle = cycleCfg || this.getPreviewCycleConfig();
         const fadeInAge = Math.max(0, num(cardAge));
         const fadeOutAge = Math.max(0, num(statusAge));
@@ -4907,6 +5016,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             const progress = clamp(num(elapsed) / duration, 0, 1);
             return clamp(num(fade.fromAlpha) + (num(fade.toAlpha) - num(fade.fromAlpha)) * progress, 0, 1);
         };
+        const config = this.resolvePreviewCParticleAlphaConfig(card, [], alphaSources);
         if (config.fadeOut.enabled && fadeOutAge >= num(cycle.play || 0)) {
             return interpolate(config.fadeOut, fadeOutAge - num(cycle.play || 0));
         }
@@ -5297,6 +5407,125 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         return clamp(int(localLimit), 0, Math.max(1, ownerCount));
     }
 
+    buildPreviewLocalGrowthGroupData(ownerCardId, ownerCount, shapeRuntimeLevels = []) {
+        const maxCount = Math.max(1, int(ownerCount || 1));
+        const runtimeLevels = Array.isArray(shapeRuntimeLevels) ? shapeRuntimeLevels : [];
+        const groupIndexByLevel = new Array(runtimeLevels.length).fill(null);
+        const groupCountByLevel = new Array(runtimeLevels.length).fill(0);
+        const owners = Array.isArray(this.previewOwners) ? this.previewOwners : [];
+        const ownerLocalIndices = Array.isArray(this.previewOwnerLocalIndex) ? this.previewOwnerLocalIndex : [];
+        const anchorRefs = Array.isArray(this.previewAnchorRef) ? this.previewAnchorRef : [];
+        const rootOffsetIndices = Array.isArray(this.previewRootOffsetIndex) ? this.previewRootOffsetIndex : [];
+        const levelPaths = Array.isArray(this.previewLevelPaths) ? this.previewLevelPaths : [];
+        const levelRefs = Array.isArray(this.previewLevelRefs) ? this.previewLevelRefs : [];
+        const levelOffsetRefs = Array.isArray(this.previewLevelOffsetRefs) ? this.previewLevelOffsetRefs : [];
+        const levelMetas = Array.isArray(this.previewLevelMetas) ? this.previewLevelMetas : [];
+        const ownerKey = String(ownerCardId || "");
+
+        for (let levelIndex = 0; levelIndex < runtimeLevels.length; levelIndex++) {
+            if (runtimeLevels[levelIndex]?.sequenced !== true) continue;
+            const groupIndices = new Array(maxCount).fill(-1);
+            const groupsByParent = new Map();
+            let maxGroupCount = 0;
+
+            for (let pointIndex = 0; pointIndex < owners.length; pointIndex++) {
+                if (String(owners[pointIndex] || "") !== ownerKey) continue;
+                const localIndex = int(ownerLocalIndices[pointIndex] || 0);
+                if (localIndex < 0 || localIndex >= maxCount) continue;
+
+                const pointPaths = Array.isArray(levelPaths[pointIndex]) ? levelPaths[pointIndex] : [];
+                const pointRefs = Array.isArray(levelRefs[pointIndex]) ? levelRefs[pointIndex] : [];
+                const pointOffsetRefs = Array.isArray(levelOffsetRefs[pointIndex]) ? levelOffsetRefs[pointIndex] : [];
+                const pointMetas = Array.isArray(levelMetas[pointIndex]) ? levelMetas[pointIndex] : [];
+                const runtimeNode = runtimeLevels[levelIndex]?.node || null;
+                const matchedTupleLevelIndex = runtimeNode
+                    ? pointMetas.findIndex((meta) => meta?.node === runtimeNode)
+                    : -1;
+                // Tuple metadata contains a leaf level, while runtime levels
+                // contain only Composition nodes. Match the actual node so a
+                // nested Composition unlocks all of its CParticle children.
+                const tupleLevelIndex = matchedTupleLevelIndex >= 0
+                    ? matchedTupleLevelIndex
+                    : levelIndex;
+                const hasTupleMetadata = tupleLevelIndex < pointRefs.length || tupleLevelIndex < pointPaths.length;
+                const rootKey = `root:${int(anchorRefs[pointIndex] || 0)}:${int(rootOffsetIndices[pointIndex] || 0)}`;
+                const parentKey = hasTupleMetadata
+                    ? [
+                        rootKey,
+                        `parentPaths:${pointPaths.slice(0, tupleLevelIndex).map((path) => Array.isArray(path) ? path.join(".") : "").join("/")}`,
+                        `parentRefs:${pointRefs.slice(0, tupleLevelIndex).map((value) => int(value || 0)).join(".")}`,
+                        `parentOffsets:${pointOffsetRefs.slice(0, tupleLevelIndex).map((value) => int(value || 0)).join(".")}`
+                    ].join("|")
+                    : `fallback:${rootKey}`;
+                const childPath = Array.isArray(pointPaths[tupleLevelIndex]) ? pointPaths[tupleLevelIndex] : [];
+                // A node's own ref is its builder-point index; growth unlocks the whole node instance.
+                const childKey = hasTupleMetadata
+                    ? [
+                        `node:${childPath.join(".")}`,
+                        `offset:${int(pointOffsetRefs[tupleLevelIndex] || 0)}`
+                    ].join("|")
+                    : `point:${localIndex}`;
+                let groups = groupsByParent.get(parentKey);
+                if (!groups) {
+                    groups = new Map();
+                    groupsByParent.set(parentKey, groups);
+                }
+                let groupIndex = groups.get(childKey);
+                if (groupIndex === undefined) {
+                    groupIndex = groups.size;
+                    groups.set(childKey, groupIndex);
+                }
+                groupIndices[localIndex] = groupIndex;
+                maxGroupCount = Math.max(maxGroupCount, groups.size);
+            }
+
+            for (let localIndex = 0; localIndex < maxCount; localIndex++) {
+                if (groupIndices[localIndex] >= 0) continue;
+                const fallbackParent = `missing-parent:${localIndex}`;
+                let groups = groupsByParent.get(fallbackParent);
+                if (!groups) {
+                    groups = new Map();
+                    groupsByParent.set(fallbackParent, groups);
+                }
+                groupIndices[localIndex] = groups.size;
+                groups.set(`missing:${localIndex}`, groupIndices[localIndex]);
+                maxGroupCount = Math.max(maxGroupCount, groups.size);
+            }
+
+            groupIndexByLevel[levelIndex] = groupIndices;
+            groupCountByLevel[levelIndex] = Math.max(1, maxGroupCount);
+        }
+
+        return {
+            groupIndexByLevel,
+            groupCountByLevel
+        };
+    }
+
+    evaluateLocalGrowthLevelState(level, levelCount, growthAge, elapsedTick, runtimeVars = null) {
+        const safeCount = Math.max(1, int(levelCount || 1));
+        let levelLimit = safeCount;
+        let hasLevelGrowthSource = false;
+        if (Array.isArray(level?.growthAnimates) && level.growthAnimates.length) {
+            const count = this.computeAnimateVisibleCount(level.growthAnimates, growthAge, elapsedTick, 0, runtimeVars);
+            levelLimit = Math.min(levelLimit, count);
+            hasLevelGrowthSource = true;
+        }
+        const expressionCount = this.computeExpressionVisibleCount(level?.actions, safeCount, growthAge, {
+            scopeLevel: int(level?.scopeLevel || 0),
+            allowOrder: this.state.compositionType === "sequenced",
+            sequencedDepths: Array.isArray(level?.ancestorSequencedDepths) ? level.ancestorSequencedDepths : []
+        });
+        if (Number.isFinite(expressionCount)) {
+            levelLimit = Math.min(levelLimit, expressionCount);
+            hasLevelGrowthSource = true;
+        }
+        return {
+            hasSource: hasLevelGrowthSource,
+            visibleLimit: clamp(int(levelLimit), 0, safeCount)
+        };
+    }
+
     evaluateLocalGrowthVisibleLimit(card, ownerCount, growthAge, elapsedTick, shapeRuntimeLevels = [], runtimeVars = null, opts = null) {
         if (!card) return Math.max(1, ownerCount);
         let visibleLimit = Math.max(1, ownerCount);
@@ -5352,6 +5581,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const maxCount = Math.max(1, int(ownerCount || 1));
         const steps = Math.max(0, Math.floor(num(ageTick)));
         const unlockTickByIndex = new Array(maxCount).fill(Number.POSITIVE_INFINITY);
+        const visibleByIndex = new Array(maxCount).fill(false);
         let previousVisible = 0;
         const globalRuntimeActions = this.buildPreviewRuntimeActions(0, this.state?.displayActions || [], {
             scope: "display"
@@ -5365,6 +5595,75 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const replayStartAxis = this.resolveCompositionAxisDirection();
         const hasReplayExpressions = !!(replayGlobalVars && globalRuntimeActions.some((action) => action?.type === "expression"));
 
+        const growthGroupData = opts?.growthGroupData && typeof opts.growthGroupData === "object"
+            ? opts.growthGroupData
+            : null;
+        const groupedLevelIndices = Array.isArray(shapeRuntimeLevels)
+            ? shapeRuntimeLevels
+                .map((level, levelIndex) => level?.sequenced === true && Array.isArray(growthGroupData?.groupIndexByLevel?.[levelIndex])
+                    ? levelIndex
+                    : -1)
+                .filter((levelIndex) => levelIndex >= 0)
+            : [];
+
+        if (groupedLevelIndices.length) {
+            const unlockByLevel = new Map();
+            const previousVisibleByLevel = new Map();
+            for (const levelIndex of groupedLevelIndices) {
+                const groupCount = Math.max(1, int(growthGroupData.groupCountByLevel?.[levelIndex] || maxCount));
+                unlockByLevel.set(levelIndex, new Array(groupCount).fill(Number.POSITIVE_INFINITY));
+                previousVisibleByLevel.set(levelIndex, 0);
+            }
+
+            for (let t = 0; t <= steps; t++) {
+                let tickRuntimeScope = baseRuntimeScope;
+                if (hasReplayExpressions) {
+                    this.applyExpressionGlobalsOnce(globalRuntimeActions, t, t, replayGlobalVars, replayStartAxis);
+                    tickRuntimeScope = replayGlobalVars;
+                }
+                for (const levelIndex of groupedLevelIndices) {
+                    const level = shapeRuntimeLevels[levelIndex];
+                    const groupCount = Math.max(1, int(growthGroupData.groupCountByLevel?.[levelIndex] || maxCount));
+                    const levelState = this.evaluateLocalGrowthLevelState(level, groupCount, t, t, tickRuntimeScope);
+                    if (!levelState.hasSource) {
+                        if (opts?.allowImplicitRootSequencedGrowth === true && levelIndex === 0) {
+                            const unlockTicks = unlockByLevel.get(levelIndex);
+                            unlockTicks.fill(0);
+                            previousVisibleByLevel.set(levelIndex, groupCount);
+                        }
+                        continue;
+                    }
+                    const unlockTicks = unlockByLevel.get(levelIndex);
+                    const previousVisible = previousVisibleByLevel.get(levelIndex) || 0;
+                    const visibleLimit = levelState.visibleLimit;
+                    for (let groupIndex = previousVisible; groupIndex < visibleLimit; groupIndex++) {
+                        unlockTicks[groupIndex] = t;
+                    }
+                    previousVisibleByLevel.set(levelIndex, Math.max(previousVisible, visibleLimit));
+                }
+            }
+
+            for (let localIndex = 0; localIndex < maxCount; localIndex++) {
+                let unlockTick = 0;
+                for (const levelIndex of groupedLevelIndices) {
+                    const groupIndex = int(growthGroupData.groupIndexByLevel[levelIndex][localIndex] || 0);
+                    const levelUnlockTick = Number(unlockByLevel.get(levelIndex)?.[groupIndex]);
+                    if (!Number.isFinite(levelUnlockTick)) {
+                        unlockTick = Number.POSITIVE_INFINITY;
+                        break;
+                    }
+                    unlockTick = Math.max(unlockTick, levelUnlockTick);
+                }
+                unlockTickByIndex[localIndex] = unlockTick;
+            }
+
+            return {
+                steps,
+                visibleLimit: unlockTickByIndex.reduce((count, tick) => count + (Number.isFinite(tick) ? 1 : 0), 0),
+                unlockTickByIndex
+            };
+        }
+
         for (let t = 0; t <= steps; t++) {
             let tickRuntimeScope = baseRuntimeScope;
             if (hasReplayExpressions) {
@@ -5377,6 +5676,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             if (visible < previousVisible) visible = previousVisible;
             for (let idx = previousVisible; idx < visible; idx++) {
                 unlockTickByIndex[idx] = t;
+                visibleByIndex[idx] = true;
             }
             previousVisible = visible;
         }
@@ -6177,12 +6477,14 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         const suppressOwnAngleOffset = options?.suppressOwnAngleOffset === true;
         const inheritedCParticlePolicy = options?.inheritedCParticlePolicy || null;
         const nodePath = Array.isArray(options?.nodePath) ? options.nodePath.slice() : [];
-        const cparticlePolicy = inheritedCParticlePolicy?.enabled === true
+        const nodeType = String(node.type || "single");
+        const nodeOwnGpu = !isLeafParticleType(nodeType)
+            && node?.useCParticle === true;
+        const cparticlePolicy = inheritedCParticlePolicy?.enabled === true || nodeOwnGpu
             ? { enabled: true }
             : null;
         const src = this.resolveShapeSourcePoints(node.bindMode, node.point, node.builderState);
         if (!src.length) return [];
-        const nodeType = String(node.type || "single");
         const offsetCfg = suppressOwnAngleOffset ? null : this.resolvePreviewAngleOffsetConfig(node);
         const repeatCount = offsetCfg ? Math.max(1, int(offsetCfg.count || 1)) : 1;
         const leafTextureCfg = this.resolvePreviewTextureConfigForShapeLeaf(node, rootCard, cparticlePolicy);
@@ -6285,6 +6587,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
             scopeLevel: 0
         });
         levels.push({
+            node: card,
             scopeLevel: 0,
             ancestorSequencedDepths: rootScope.sequencedDepths,
             sequenced: card.dataType === "sequenced_shape",
@@ -6312,6 +6615,7 @@ export function installPreviewRuntimeMethods(CompositionBuilderApp, deps = {}) {
         });
         const suppressOwnAngleOffset = false;
         return {
+            node,
             scopeLevel: depth,
             ancestorSequencedDepths: scope.sequencedDepths,
             sequenced: node.type === "sequenced_shape",

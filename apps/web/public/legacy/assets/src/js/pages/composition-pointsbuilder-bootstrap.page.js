@@ -19,7 +19,8 @@ try {
     : "root";
   window.__PB_EDITOR_CONTEXT = {
     cardId: String(params.get("card") || "").trim(),
-    target
+    target,
+    compositionRevision: String(params.get("compositionRevision") || "").trim()
   };
 } catch {
   window.__PB_EDITOR_CONTEXT = null;

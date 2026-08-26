@@ -20,8 +20,11 @@ class DummySocial:
 class ServerTests(unittest.TestCase):
     def test_local_asset_responses_are_revalidated(self):
         root = Path("C:/tmp/coo-particles-cache-test")
-        asset = root / "assets" / "legacy" / "builder.js"
-        self.assertEqual(_cache_control_for(asset, root), "no-cache")
+        for asset in (
+            root / "assets" / "legacy" / "builder.js",
+            root / "legacy" / "assets" / "composition_builder" / "js" / "main.js",
+        ):
+            self.assertEqual(_cache_control_for(asset, root), "no-cache")
 
     def test_health_and_project_api(self):
         with tempfile.TemporaryDirectory() as temp:

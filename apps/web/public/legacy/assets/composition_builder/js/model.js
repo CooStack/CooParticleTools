@@ -75,8 +75,64 @@ export const COMPOSITION_CARD_SECTION_KEYS = [
     "shape_axis",
     "shape_display",
     "shape_scale",
+    "shape_controller",
     "growth"
 ];
+
+export const COMPOSITION_LAMBDA_RESERVED_NAMES = new Set([
+    "rel", "order", "axis", "thisAt", "status", "particle",
+    "age", "tick", "tickCount", "index", "currentAge", "lifetime", "lifeTime", "maxAge", "textureSheet",
+    "color", "particleColor", "size", "particleSize", "alpha", "particleAlpha",
+    "pos", "velocity", "valid", "scaleHelper", "alphaHelper",
+    "Math", "Random", "Number", "String", "Boolean", "Object", "Array", "Date", "JSON",
+    "parseInt", "parseFloat", "isNaN", "isFinite", "Infinity", "NaN", "PI",
+    "rotateToPoint", "rotateAsAxis", "rotateToWithAngle", "addSingle", "addMultiple", "addPreTickAction",
+    "setAlpha", "setColor", "setSize", "teleportTo", "setReversedScaleOnCompositionStatus",
+    "RelativeLocation", "Vec3", "Vec3d", "Vector3f"
+]);
+
+const COMPOSITION_KOTLIN_KEYWORDS = new Set([
+    "as", "break", "class", "continue", "do", "else", "false", "for", "fun", "if", "in", "interface",
+    "is", "null", "object", "package", "return", "super", "this", "throw", "true", "try", "typealias",
+    "typeof", "val", "var", "when", "while", "by", "catch", "constructor", "delegate", "dynamic", "field",
+    "file", "finally", "get", "import", "init", "param", "property", "receiver", "set", "setparam", "where",
+    "actual", "abstract", "annotation", "companion", "const", "crossinline", "data", "enum", "expect", "external",
+    "final", "infix", "inline", "inner", "internal", "lateinit", "noinline", "open", "operator", "out", "override",
+    "private", "protected", "public", "reified", "sealed", "suspend", "tailrec", "vararg"
+]);
+
+const COMPOSITION_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function getCompositionControllerVariableNameError(rawName, options = {}) {
+    const name = String(rawName || "").trim();
+    if (!name) return "变量名不能为空";
+    if (!COMPOSITION_IDENTIFIER_RE.test(name)) return "必须以字母或下划线开头，只能包含字母、数字或下划线";
+    if (COMPOSITION_KOTLIN_KEYWORDS.has(name)) return `不能使用 Kotlin 关键字 ${name}`;
+    if (COMPOSITION_LAMBDA_RESERVED_NAMES.has(name) || /^shape(?:Rel|Order)\d+$/.test(name)) {
+        return `不能使用运行时保留名 ${name}`;
+    }
+    const reserved = options.reservedNames instanceof Set ? options.reservedNames : new Set();
+    if (reserved.has(name)) return `不能与全局变量或常量 ${name} 重名`;
+    const existing = options.existingNames instanceof Set ? options.existingNames : new Set();
+    if (existing.has(name)) return `同一作用域内不能重复使用 ${name}`;
+    return "";
+}
+
+export function normalizeCompositionControllerVariableName(rawName, options = {}) {
+    const candidate = String(rawName || "").trim();
+    if (!getCompositionControllerVariableNameError(candidate, options)) return candidate;
+    const used = new Set([
+        ...(options.reservedNames instanceof Set ? options.reservedNames : []),
+        ...(options.existingNames instanceof Set ? options.existingNames : [])
+    ]);
+    const base = String(options.fallbackName || "temp").trim() || "temp";
+    let index = 1;
+    let next = base;
+    while (getCompositionControllerVariableNameError(next, { reservedNames: used })) {
+        next = `${base}${index++}`;
+    }
+    return next;
+}
 
 const COMPOSITION_DATA_TYPES = new Set(["single", "particle_shape", "sequenced_shape"]);
 const CPARTICLE_RENDER_LAYERS = new Set([
@@ -97,6 +153,14 @@ export function isCompositionLeafParticleType(type) {
 
 export function isCompositionShapeType(type) {
     return type === "particle_shape" || type === "sequenced_shape";
+}
+
+export function compositionShapeNodeHasParticleLeaf(node) {
+    if (!node || typeof node !== "object") return false;
+    if (isCompositionLeafParticleType(node.type)) return true;
+    const childLists = [node.children, node.shapeChildren];
+    return childLists.some((children) => Array.isArray(children)
+        && children.some((child) => compositionShapeNodeHasParticleLeaf(child)));
 }
 
 export function isCompositionCardUsingCParticle(card) {
@@ -152,6 +216,23 @@ function idFactory(options) {
 
 function ensureId(value, options) {
     return value || idFactory(options)();
+}
+
+function makeUniqueCompositionCardId(usedIds, options = {}) {
+    const factory = idFactory(options);
+    for (let attempt = 0; attempt < 1024; attempt += 1) {
+        const candidate = String(factory() || "").trim();
+        if (candidate && !usedIds.has(candidate)) {
+            usedIds.add(candidate);
+            return candidate;
+        }
+    }
+    let candidate = `card_${Date.now().toString(36)}_${usedIds.size.toString(36)}`;
+    while (usedIds.has(candidate)) {
+        candidate = `card_${Date.now().toString(36)}_${(usedIds.size + 1).toString(36)}`;
+    }
+    usedIds.add(candidate);
+    return candidate;
 }
 
 function normalizeDataType(value) {
@@ -248,10 +329,40 @@ function normalizeParticleInit(raw, options) {
 function normalizeControllerVariable(raw, options) {
     const item = raw && typeof raw === "object" ? { ...raw } : {};
     item.id = ensureId(item.id, options);
-    item.name = String(item.name || "tick");
+    const reservedNames = options?.controllerReservedNames instanceof Set
+        ? options.controllerReservedNames
+        : new Set();
+    const existingNames = options?.controllerExistingNames instanceof Set
+        ? options.controllerExistingNames
+        : new Set();
+    item.name = normalizeCompositionControllerVariableName(item.name, {
+        reservedNames,
+        existingNames,
+        fallbackName: options?.controllerFallbackName || "temp"
+    });
     item.type = String(item.type || "Boolean");
     item.expr = String(item.expr || "true");
     return item;
+}
+
+function normalizeControllerVariables(rawList, options = {}) {
+    const reservedNames = new Set([
+        ...COMPOSITION_LAMBDA_RESERVED_NAMES,
+        ...(options.controllerReservedNames instanceof Set ? options.controllerReservedNames : [])
+    ]);
+    const usedNames = new Set(reservedNames);
+    return Array.isArray(rawList)
+        ? rawList.map((item, index) => {
+            const normalized = normalizeControllerVariable(item, {
+                ...options,
+                controllerReservedNames: reservedNames,
+                controllerExistingNames: usedNames,
+                controllerFallbackName: `temp${index + 1}`
+            });
+            usedNames.add(normalized.name);
+            return normalized;
+        })
+        : [];
 }
 
 function isPlainNumericLiteralText(raw) {
@@ -433,7 +544,7 @@ function normalizeShapeBase(raw, index, options) {
     normalizeAngleOffset(shape);
     shape.scale = normalizeScaleHelperConfig(shape.scale, { type: "none" });
     shape.scale.runMode = "auto";
-    shape.growthAnimates = Array.isArray(shape.growthAnimates)
+    shape.growthAnimates = shape.type === "sequenced_shape" && Array.isArray(shape.growthAnimates)
         ? shape.growthAnimates.map((animate) => normalizeCompositionAnimate(animate, options))
         : [];
     return shape;
@@ -458,7 +569,7 @@ export function normalizeCompositionShapeNode(raw = {}, index = 0, options = {})
     node.name = String(node.name || `子节点 ${index + 1}`);
     node.effectClass = String(node.effectClass || DEFAULT_COMPOSITION_EFFECT_CLASS);
     node.useTexture = node.useTexture !== false;
-    node.useCParticle = false;
+    node.useCParticle = isCompositionShapeType(node.type) && node.useCParticle === true;
     node.cparticleRenderLayer = normalizeCParticleRenderLayer(node.cparticleRenderLayer);
     node.randomAgePreTick = node.randomAgePreTick === true;
     node.cparticleAlpha = normalizeCParticleAlphaConfig(node.cparticleAlpha);
@@ -466,9 +577,7 @@ export function normalizeCompositionShapeNode(raw = {}, index = 0, options = {})
     node.particleInit = Array.isArray(node.particleInit)
         ? node.particleInit.map((item) => normalizeParticleInit(item, options))
         : [];
-    node.controllerVars = Array.isArray(node.controllerVars)
-        ? node.controllerVars.map((item) => normalizeControllerVariable(item, options))
-        : [];
+    node.controllerVars = normalizeControllerVariables(node.controllerVars, options);
     node.controllerActions = Array.isArray(node.controllerActions)
         ? node.controllerActions.map((action) => normalizeCompositionControllerAction(action, options))
         : [];
@@ -562,9 +671,7 @@ export function normalizeCompositionCard(raw, index = 0, options = {}) {
     card.particleInit = Array.isArray(card.particleInit)
         ? card.particleInit.map((item) => normalizeParticleInit(item, options))
         : [];
-    card.controllerVars = Array.isArray(card.controllerVars)
-        ? card.controllerVars.map((item) => normalizeControllerVariable(item, options))
-        : [];
+    card.controllerVars = normalizeControllerVariables(card.controllerVars, options);
     card.controllerActions = Array.isArray(card.controllerActions)
         ? card.controllerActions.map((action) => normalizeCompositionControllerAction(action, options))
         : [];
@@ -593,7 +700,7 @@ export function normalizeCompositionCard(raw, index = 0, options = {}) {
     card.rotateAngleExpr = String(card.rotateAngleExpr || "speed / 180 * PI");
     card.rotateAnglePreset = String(card.rotateAnglePreset || card.rotateAngleExpr || "speed / 180 * PI");
     normalizeAngleOffset(card);
-    card.growthAnimates = Array.isArray(card.growthAnimates)
+    card.growthAnimates = card.dataType === "sequenced_shape" && Array.isArray(card.growthAnimates)
         ? card.growthAnimates.map((animate) => normalizeCompositionAnimate(animate, options))
         : [];
     card.sequencedAnimates = Array.isArray(card.sequencedAnimates)
@@ -757,13 +864,31 @@ export function normalizeCompositionProject(raw, options = {}) {
     project.projectScale = normalizeScaleHelperConfig(project.projectScale, { type: "none" });
     project.globalVars = project.globalVars.map((value) => normalizeCompositionGlobalVariable(value, options));
     project.globalConsts = project.globalConsts.map((value) => normalizeCompositionGlobalConstant(value, options));
+    const controllerReservedNames = new Set([
+        ...COMPOSITION_LAMBDA_RESERVED_NAMES,
+        ...project.globalVars.map((value) => String(value?.name || "").trim()).filter((name) => COMPOSITION_IDENTIFIER_RE.test(name)),
+        ...project.globalConsts.map((value) => String(value?.name || "").trim()).filter((name) => COMPOSITION_IDENTIFIER_RE.test(name))
+    ]);
     project.compositionAnimates = project.compositionAnimates.map(
         (animate) => normalizeCompositionAnimate(animate, options)
     );
     project.displayActions = project.displayActions.map(
         (action) => normalizeCompositionDisplayAction(action, options)
     );
-    project.cards = project.cards.map((card, index) => normalizeCompositionCard(card, index, options));
+    const usedCardIds = new Set();
+    project.cards = project.cards.map((card, index) => {
+        const normalized = normalizeCompositionCard(card, index, {
+            ...options,
+            controllerReservedNames
+        });
+        const cardId = String(normalized.id || "").trim();
+        if (!cardId || usedCardIds.has(cardId)) {
+            normalized.id = makeUniqueCompositionCardId(usedCardIds, options);
+        } else {
+            usedCardIds.add(cardId);
+        }
+        return normalized;
+    });
     const hasDirectionVariable = project.globalVars.some(
         (value) => String(value?.name || "").trim() === "direction"
     );

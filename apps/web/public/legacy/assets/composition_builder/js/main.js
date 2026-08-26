@@ -19,6 +19,9 @@ import {
     normalizeCompositionCard as normalizeCard,
     normalizeCompositionCardSectionCollapse as normalizeCardSectionCollapse,
     normalizeCompositionControllerAction as normalizeControllerAction,
+    getCompositionControllerVariableNameError,
+    normalizeCompositionControllerVariableName,
+    COMPOSITION_LAMBDA_RESERVED_NAMES,
     normalizeCompositionDisplayAction as normalizeDisplayAction,
     normalizeCompositionGlobalConstant as normalizeGlobalConst,
     normalizeCompositionGlobalVariable as normalizeGlobalVar,
@@ -30,8 +33,9 @@ import {
     isCompositionLeafParticleType,
     isCompositionShapeType,
     isCompositionCardUsingCParticle,
+    compositionShapeNodeHasParticleLeaf,
     findCompositionNestedShapePaths
-} from "./model.js?v=20260729_6";
+} from "./model.js?v=20260826_8";
 import {
     applyCompositionPreferences,
     extractCompositionPreferences,
@@ -40,6 +44,7 @@ import {
     saveCompositionPreferencesToStorage,
     saveCompositionStateToStorage
 } from "./preferences.js?v=20260729_3";
+import { loadLatestAutoStatePayload } from "../../points_builder/js/io.js?v=20260826_1";
 import {
     getCompositionKotlinTarget,
     normalizeCompositionMapping
@@ -79,12 +84,12 @@ import {
     hasAngleOffsetEaseSpecialParams,
     formatAngleValue
 } from "./angle_offset_utils.js";
-import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260826_1";
-import { installKotlinCodegenMethods } from "./kotlin_codegen_mixin.js?v=20260730_3";
+import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260825_3";
+import { installKotlinCodegenMethods } from "./kotlin_codegen_mixin.js?v=20260826_10";
 import { compositionVectorApiTypeDeclaration } from "./composition_vector_expression.js?v=20260729_3";
 import { installCodeOutputMethods } from "./code_output_mixin.js";
 import { installExpressionEditorMethods } from "./expression_editor_mixin.js?v=20260729_3";
-import { installCodeCompileMethods } from "./code_compile_mixin.js?v=20260309_2";
+import { installCodeCompileMethods } from "./code_compile_mixin.js?v=20260826_1";
 import { installTargetPresetMethods } from "./target_preset_mixin.js?v=20260727_1";
 import { installCompositionPresetMethods } from "./composition_preset_mixin.js?v=20260729_4";
 import {
@@ -114,7 +119,7 @@ const CPB_RETURN_CARD_KEY = `${CPB_PREFIX}return_card_v1`;
 const CPB_RETURN_TARGET_KEY = `${CPB_PREFIX}return_target_v1`;
 const CPB_COMP_CONTEXT_KEY = `${CPB_PREFIX}pb_comp_context_v1`;
 // Isolate persisted reference data when the sampling contract or Composition changes.
-const COMPOSITION_REFERENCE_BUILD_VERSION = "20260825_19";
+const COMPOSITION_REFERENCE_BUILD_VERSION = "20260825_22";
 const COMPOSITION_REFERENCE_STORAGE_PREFIX = "composition-reference-v3:";
 
 function compositionReferenceStateRevision(state) {
@@ -746,6 +751,7 @@ class CompositionBuilderApp {
         this.pendingImeMutate = null;
         this.pendingImeMutateTimer = 0;
         this.activeImeCompositionCount = 0;
+        this.pendingExpressionRefreshes = new Map();
 
         this.scene = null;
         this.camera = null;
@@ -824,9 +830,11 @@ class CompositionBuilderApp {
 
         this.selectState = null;
         this.selectPointerId = null;
+        this.previewPickVector = new THREE.Vector3();
 
         this.hotkeyCaptureActionId = null;
         this.builderModalCardId = null;
+        this.builderModalTarget = "root";
         this.bezierToolTarget = { scope: "project", cardId: "", treePath: "", kind: "scale" };
         this.confirmResolver = null;
         this.confirmKeydownHandler = null;
@@ -1035,6 +1043,7 @@ class CompositionBuilderApp {
             root.addEventListener("compositionstart", (e) => this.onEditableCompositionStart(e), true);
             root.addEventListener("compositionend", (e) => this.onEditableCompositionEnd(e), true);
             root.addEventListener("focusin", (e) => this.onCardFocusIn(e), true);
+            root.addEventListener("focusout", (e) => this.onControllerVariableFocusOut(e), true);
             root.addEventListener("focusout", (e) => this.onCodeEditorFocusOut(e), true);
         }
         if (d.btnCompileExpr) d.btnCompileExpr.addEventListener("click", () => this.compileAllCodeEditorSources({ force: true, showToast: true }));
@@ -1166,7 +1175,9 @@ class CompositionBuilderApp {
         });
         document.addEventListener("fullscreenchange", () => this.syncFullscreenUi());
         window.addEventListener("message", (e) => {
-            if (e?.data?.type === "cpb-builder-return") this.pullBuilderStateAndClose();
+            if (e?.data?.type === "cpb-builder-return") {
+                void this.consumeBuilderReturnState({ closeModal: true, pushHistory: true });
+            }
         });
         window.addEventListener("storage", (e) => {
             if (e?.key === CPB_RETURN_CARD_KEY) this.consumeBuilderReturnState();
@@ -1197,7 +1208,7 @@ class CompositionBuilderApp {
         this.controls.panSpeed = 0.8;
         this.controls.zoomSpeed = 0.95;
         this.controls.mouseButtons = {
-            LEFT: -1,
+            LEFT: null,
             MIDDLE: THREE.MOUSE.ROTATE,
             RIGHT: THREE.MOUSE.PAN
         };
@@ -1277,6 +1288,15 @@ class CompositionBuilderApp {
             this.syncTextureUniforms?.();
             const groupTransformSelectors = [];
             const groupScaleSelectors = [];
+            const gpuAlphaTransitionLines = [
+                "    if (aGpuFadeOut.x > 0.0 && previewCycleAge >= uGpuPreviewPlayTicks) {",
+                "      float progress = clamp((previewCycleAge - uGpuPreviewPlayTicks) / aGpuFadeOut.x, 0.0, 1.0);",
+                "      previewAlpha *= mix(aGpuFadeOut.y, aGpuFadeOut.z, progress);",
+                "    } else if (aGpuFadeIn.x > 0.0) {",
+                "      float progress = clamp(previewAge / aGpuFadeIn.x, 0.0, 1.0);",
+                "      previewAlpha *= mix(aGpuFadeIn.y, aGpuFadeIn.z, progress);",
+                "    }"
+            ];
             for (let i = 0; i < gpuTransformGroupLimit; i++) {
                 const groupUpperBound = (i + 1.5).toFixed(1);
                 groupTransformSelectors.push(
@@ -1401,13 +1421,7 @@ class CompositionBuilderApp {
                     "      vec3 gpuCurvedColor = srgbToLinearGpu(linearToSrgbGpu(gpuBaseColor) * gpuColorCurve);",
                     "      vGpuColorScale = gpuCurvedColor / max(gpuBaseColor, vec3(0.000001));",
                     "    }",
-                    "    if (aGpuFadeOut.x > 0.0 && previewCycleAge >= uGpuPreviewPlayTicks) {",
-                    "      float progress = clamp((previewCycleAge - uGpuPreviewPlayTicks) / aGpuFadeOut.x, 0.0, 1.0);",
-                    "      previewAlpha *= mix(aGpuFadeOut.y, aGpuFadeOut.z, progress);",
-                    "    } else if (aGpuFadeIn.x > 0.0) {",
-                    "      float progress = clamp(previewAge / aGpuFadeIn.x, 0.0, 1.0);",
-                    "      previewAlpha *= mix(aGpuFadeIn.y, aGpuFadeIn.z, progress);",
-                    "    }",
+                    ...gpuAlphaTransitionLines,
                     "    if (aGpuMeta.w > 0.5 && aGpuFadeIn.w > 0.5) {",
                     "      float randomValue = fract(sin(aGpuFadeIn.w + floor(uGpuPreviewTick) * 12.9898) * 43758.5453);",
                     "      previewFrameIndex = aGpuMeta.z + floor(randomValue * aGpuMeta.w);",
@@ -1527,7 +1541,7 @@ class CompositionBuilderApp {
         canvas.addEventListener("pointerdown", (e) => this.onPreviewPointerDown(e), true);
         canvas.addEventListener("pointermove", (e) => this.onPreviewPointerMove(e), true);
         canvas.addEventListener("pointerup", (e) => this.onPreviewPointerUp(e), true);
-        canvas.addEventListener("pointercancel", (e) => this.onPreviewPointerUp(e), true);
+        canvas.addEventListener("pointercancel", (e) => this.onPreviewPointerCancel(e), true);
     }
 
     applySettingsToDom() {
@@ -2133,6 +2147,7 @@ class CompositionBuilderApp {
         const t = e.target;
         if (!t) return;
         if (this.flushCodeEditorRefresh(t)) return;
+        if (this.flushDeferredExpressionRefresh(t, { forceImmediate: true })) return;
         if (this.commitGlobalSymbolNameOnBlur(t)) return;
         if (t.dataset.projectScaleField) {
             // 兼容只对 <select> 派发 "change" 的环境。
@@ -2575,6 +2590,16 @@ class CompositionBuilderApp {
             children = node.children;
         }
         return node;
+    }
+
+    isTreeNodeCParticleEnabled(card, path = []) {
+        let enabled = isCompositionCardUsingCParticle(card);
+        const parts = Array.isArray(path) ? path : [];
+        for (let depth = 1; depth <= parts.length; depth++) {
+            const node = this.getShapeNodeByPath(card, parts.slice(0, depth));
+            if (node && isCompositionShapeType(node.type) && node.useCParticle === true) enabled = true;
+        }
+        return enabled;
     }
 
     getCurrentViewNode(card) {
@@ -3025,7 +3050,7 @@ class CompositionBuilderApp {
                     const card = this.getCardById(cardId);
                     const treePath = btn.dataset.treePath ? JSON.parse(btn.dataset.treePath) : null;
                     const node = treePath ? this.getShapeNodeByPath(card, treePath) : null;
-                    if (node && idx >= 0 && idx < node.growthAnimates.length) node.growthAnimates.splice(idx, 1);
+                    if (node && Array.isArray(node.growthAnimates) && idx >= 0 && idx < node.growthAnimates.length) node.growthAnimates.splice(idx, 1);
                     break;
                 }
                 case "add-node-pinit": {
@@ -3051,7 +3076,12 @@ class CompositionBuilderApp {
                     const node = treePath ? this.getShapeNodeByPath(card, treePath) : null;
                     if (node) {
                         if (!Array.isArray(node.controllerVars)) node.controllerVars = [];
-                        node.controllerVars.push({ id: uid(), name: "tick", type: "Boolean", expr: "true" });
+                        node.controllerVars.push({
+                            id: uid(),
+                            name: this.nextControllerVariableName(card, node, node.controllerVars.length),
+                            type: "Boolean",
+                            expr: "true"
+                        });
                     }
                     break;
                 }
@@ -3250,13 +3280,39 @@ class CompositionBuilderApp {
                     if (node && Array.isArray(node.particleInit)) node.particleInit.splice(pIdx, 1);
                     break;
                 }
+                case "add-tree-node-growth-animate": {
+                    const card = this.getCardById(cardId);
+                    if (!card) return;
+                    const treePath = JSON.parse(btn.dataset.treePath || "[]");
+                    const node = this.getShapeNodeByPath(card, treePath);
+                    if (node && node.type === "sequenced_shape") {
+                        if (!Array.isArray(node.growthAnimates)) node.growthAnimates = [];
+                        node.growthAnimates.push(normalizeAnimate({ count: 1, condition: "" }));
+                    }
+                    break;
+                }
+                case "remove-tree-node-growth-animate": {
+                    const card = this.getCardById(cardId);
+                    if (!card) return;
+                    const treePath = JSON.parse(btn.dataset.treePath || "[]");
+                    const node = this.getShapeNodeByPath(card, treePath);
+                    if (node && Array.isArray(node.growthAnimates) && idx >= 0 && idx < node.growthAnimates.length) {
+                        node.growthAnimates.splice(idx, 1);
+                    }
+                    break;
+                }
                 case "add-tree-node-cvar": {
                     const card = this.getCardById(cardId);
                     if (!card) return;
                     const node = this.getCurrentViewNode(card);
                     if (node) {
                         if (!Array.isArray(node.controllerVars)) node.controllerVars = [];
-                        node.controllerVars.push({ name: "", type: "Double", expr: "0.0" });
+                        node.controllerVars.push({
+                            id: uid(),
+                            name: this.nextControllerVariableName(card, node, node.controllerVars.length),
+                            type: "Double",
+                            expr: "0.0"
+                        });
                     }
                     break;
                 }
@@ -3451,9 +3507,11 @@ class CompositionBuilderApp {
                 node.type = requestedType;
                 if (isCompositionLeafParticleType(node.type)) {
                     node.children = [];
+                    node.growthAnimates = [];
                 } else if (!node.children || !node.children.length) {
                     node.children = [normalizeShapeTreeNode({ type: "single" }, 0)];
                 }
+                if (node.type !== "sequenced_shape") node.growthAnimates = [];
                 this.afterStructureMutate({ rerenderCards: true, rebuildPreview: true, rerenderProject: false });
                 return;
             }
@@ -3477,6 +3535,11 @@ class CompositionBuilderApp {
             if (field === "useTexture") {
                 node.useTexture = !!t.checked;
                 this.afterValueMutate({ rebuildPreview: true });
+                return;
+            }
+            if (field === "useCParticle") {
+                node.useCParticle = isCompositionShapeType(node.type) && t.checked === true;
+                this.afterStructureMutate({ rerenderCards: true, rebuildPreview: true, rerenderProject: false });
                 return;
             }
             if (field === "cparticleRenderLayer") {
@@ -3839,21 +3902,22 @@ class CompositionBuilderApp {
             const idx = int(t.dataset.cardAnimateIdx);
             const key = t.dataset.cardAnimateType;
             if (!key) return;
-            if (String(key).startsWith("nodeGrowth:")) {
-                const treePath = JSON.parse(String(key).split("nodeGrowth:")[1] || "[]");
+            if (String(key).startsWith("nodeGrowth:") || String(key).startsWith("treeNodeGrowth:")) {
+                const prefix = String(key).startsWith("nodeGrowth:") ? "nodeGrowth:" : "treeNodeGrowth:";
+                const treePath = JSON.parse(String(key).slice(prefix.length) || "[]");
                 const node = this.getShapeNodeByPath(card, treePath);
-                if (!node || !Array.isArray(node.growthAnimates)) return;
+                if (!node || node.type !== "sequenced_shape" || !Array.isArray(node.growthAnimates)) return;
                 const item = node.growthAnimates[idx];
                 if (!item) return;
                 this.applyAnimateField(item, t.dataset.cardAnimateField, t);
-                this.afterValueMutate({ rebuildPreview: false });
+                this.afterValueMutate({ rebuildPreview: true });
                 return;
             }
             if (!["growthAnimates", "sequencedAnimates"].includes(key)) return;
             const item = card[key] && card[key][idx];
             if (!item) return;
             this.applyAnimateField(item, t.dataset.cardAnimateField, t);
-            this.afterValueMutate({ rebuildPreview: false });
+            this.afterValueMutate({ rebuildPreview: true });
         }
     }
 
@@ -3865,6 +3929,7 @@ class CompositionBuilderApp {
         const t = e?.target;
         if (!t || !t.matches) return;
         if (this.flushCodeEditorRefresh(t)) return;
+        if (this.flushDeferredExpressionRefresh(t, { forceImmediate: true })) return;
         if (!t.matches("select,input[type='checkbox']")) return;
         // 兼容部分只派发 "change" 的卡片控件，尤其是 <select>。
         this.onCardInput(e);
@@ -4115,6 +4180,8 @@ class CompositionBuilderApp {
     selectCardById(cardId, append = false, range = false) {
         const card = this.getCardById(cardId);
         if (!card) return;
+        const previousIds = new Set(this.selectedCardIds);
+        const previousFocusedCardId = this.focusedCardId;
         if (range) {
             const anchorId = this.selectionAnchorCardId || this.focusedCardId || card.id;
             const anchorIndex = this.getCardIndexById(anchorId);
@@ -4129,8 +4196,8 @@ class CompositionBuilderApp {
                 }
                 this.focusedCardId = card.id;
                 this.ensureSelectionValid();
-                this.renderCards();
-                this.updateSelectionStatus();
+                if (this.hasSelectionStateChanged(previousIds, previousFocusedCardId)) this.renderCards();
+                else this.updateSelectionStatus();
                 return;
             }
         }
@@ -4143,11 +4210,13 @@ class CompositionBuilderApp {
             this.selectionAnchorCardId = card.id;
         }
         this.ensureSelectionValid();
-        this.renderCards();
-        this.updateSelectionStatus();
+        if (this.hasSelectionStateChanged(previousIds, previousFocusedCardId)) this.renderCards();
+        else this.updateSelectionStatus();
     }
 
     selectCards(cardIds, append = false) {
+        const previousIds = new Set(this.selectedCardIds);
+        const previousFocusedCardId = this.focusedCardId;
         if (!append) this.selectedCardIds.clear();
         const ordered = [];
         for (const c of this.state.cards) {
@@ -4159,8 +4228,17 @@ class CompositionBuilderApp {
             if (!append || !this.selectionAnchorCardId) this.selectionAnchorCardId = ordered[0];
         }
         this.ensureSelectionValid();
-        this.renderCards();
-        this.updateSelectionStatus();
+        if (this.hasSelectionStateChanged(previousIds, previousFocusedCardId)) this.renderCards();
+        else this.updateSelectionStatus();
+    }
+
+    hasSelectionStateChanged(previousIds, previousFocusedCardId) {
+        if (previousFocusedCardId !== this.focusedCardId) return true;
+        if (!(previousIds instanceof Set) || previousIds.size !== this.selectedCardIds.size) return true;
+        for (const id of previousIds) {
+            if (!this.selectedCardIds.has(id)) return true;
+        }
+        return false;
     }
 
     updateSelectionStatus() {
@@ -4361,13 +4439,85 @@ class CompositionBuilderApp {
     addControllerVar(cardId) {
         const card = this.getCardById(cardId);
         if (!card) return;
-        card.controllerVars.push({ id: uid(), name: "tick", type: "Boolean", expr: "true" });
+        if (!Array.isArray(card.controllerVars)) card.controllerVars = [];
+        card.controllerVars.push({
+            id: uid(),
+            name: this.nextControllerVariableName(card, null, card.controllerVars.length),
+            type: "Boolean",
+            expr: "true"
+        });
     }
 
     removeControllerVar(cardId, idx) {
         const card = this.getCardById(cardId);
         if (!card) return;
         if (idx >= 0 && idx < card.controllerVars.length) card.controllerVars.splice(idx, 1);
+    }
+
+    getControllerVariableReservedNames() {
+        const names = new Set(COMPOSITION_LAMBDA_RESERVED_NAMES);
+        for (const item of [...(this.state?.globalVars || []), ...(this.state?.globalConsts || [])]) {
+            const name = String(item?.name || "").trim();
+            if (name) names.add(name);
+        }
+        return names;
+    }
+
+    nextControllerVariableName(card, node, index = 0) {
+        const list = node ? node.controllerVars : card?.controllerVars;
+        const existingNames = new Set((Array.isArray(list) ? list : []).map((item) => String(item?.name || "").trim()).filter(Boolean));
+        return normalizeCompositionControllerVariableName("", {
+            reservedNames: this.getControllerVariableReservedNames(),
+            existingNames,
+            fallbackName: `temp${Math.max(1, int(index) + 1)}`
+        });
+    }
+
+    normalizeControllerVariableNameForScope(card, node, item, index = 0) {
+        if (!item) return "";
+        const list = node ? node.controllerVars : card?.controllerVars;
+        const existingNames = new Set((Array.isArray(list) ? list : [])
+            .filter((candidate) => candidate && candidate !== item)
+            .map((candidate) => String(candidate.name || "").trim())
+            .filter(Boolean));
+        const reservedNames = this.getControllerVariableReservedNames();
+        const error = getCompositionControllerVariableNameError(item.name, { reservedNames, existingNames });
+        if (!error) return "";
+        item.name = normalizeCompositionControllerVariableName(item.name, {
+            reservedNames,
+            existingNames,
+            fallbackName: `temp${Math.max(1, int(index) + 1)}`
+        });
+        return error;
+    }
+
+    onControllerVariableFocusOut(event) {
+        const target = event?.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        const field = String(target.dataset.cvarField || target.dataset.treeNodeCvarField || "");
+        if (field !== "name") return;
+        const cardId = String(target.dataset.cardId || "");
+        const card = this.getCardById(cardId);
+        if (!card) return;
+        const treePathRaw = String(target.dataset.treePath || "").trim();
+        let node = null;
+        if (treePathRaw) {
+            try {
+                node = this.getShapeNodeByPath(card, JSON.parse(treePathRaw));
+            } catch {
+                return;
+            }
+        }
+        const list = node ? node.controllerVars : card.controllerVars;
+        const index = int(target.dataset.treeNodeCvarIdx ?? target.dataset.cvarIdx);
+        const item = Array.isArray(list) ? list[index] : null;
+        if (!item) return;
+        const error = this.normalizeControllerVariableNameForScope(card, node, item, index);
+        if (error) {
+            target.value = item.name;
+            this.showToast(`${error}，已改为 ${item.name}`, "warning");
+            this.afterStructureMutate({ rerenderCards: true, rebuildPreview: false, rerenderProject: false });
+        }
     }
 
     addCardAnimate(cardId, key) {
@@ -4472,6 +4622,10 @@ class CompositionBuilderApp {
             this.queuePendingImeMutate("value", opts);
             return;
         }
+        if (opts.forceImmediate !== true && this.shouldDeferFocusedExpressionMutation()) {
+            this.queueDeferredExpressionRefresh(document.activeElement, opts);
+            return;
+        }
         if (this.exprRuntime?.invalidateCache) this.exprRuntime.invalidateCache();
         this.ensureSelectionValid();
         const rerenderProject = !!opts.rerenderProject;
@@ -4489,6 +4643,54 @@ class CompositionBuilderApp {
             this.updatePreviewAnimation();
             this.renderer.render(this.scene, this.camera);
         }
+    }
+
+    isDeferredExpressionTarget(target) {
+        if (!target) return false;
+        if (target.dataset?.codeEditor) return false;
+        return target.matches?.("input.expr-input, textarea.expr-input") === true;
+    }
+
+    onCodeEditorFocusOut(event) {
+        const target = event?.target;
+        if (!target) return;
+        if (target instanceof HTMLTextAreaElement && this.flushCodeEditorRefresh?.(target)) return;
+        this.flushDeferredExpressionRefresh(target, { forceImmediate: true });
+    }
+
+    shouldDeferFocusedExpressionMutation() {
+        if (typeof document === "undefined") return false;
+        return this.isDeferredExpressionTarget(document.activeElement);
+    }
+
+    queueDeferredExpressionRefresh(target, opts = {}) {
+        if (!this.isDeferredExpressionTarget(target)) return false;
+        if (!(this.pendingExpressionRefreshes instanceof Map)) this.pendingExpressionRefreshes = new Map();
+        const next = { ...opts };
+        delete next.forceImmediate;
+        const previous = this.pendingExpressionRefreshes.get(target) || null;
+        this.pendingExpressionRefreshes.set(target, this.mergeMutateOptions(previous, next));
+        return true;
+    }
+
+    flushDeferredExpressionRefresh(target, opts = {}) {
+        if (!(this.pendingExpressionRefreshes instanceof Map)) return false;
+        const pending = this.pendingExpressionRefreshes.get(target);
+        if (!pending) return false;
+        this.pendingExpressionRefreshes.delete(target);
+        this.afterValueMutate({ ...pending, ...opts, forceImmediate: true });
+        return true;
+    }
+
+    flushAllDeferredExpressionRefreshes(opts = {}) {
+        if (!(this.pendingExpressionRefreshes instanceof Map) || !this.pendingExpressionRefreshes.size) return false;
+        let merged = null;
+        for (const pending of this.pendingExpressionRefreshes.values()) {
+            merged = this.mergeMutateOptions(merged, pending || {});
+        }
+        this.pendingExpressionRefreshes.clear();
+        this.afterValueMutate({ ...merged, ...opts, forceImmediate: true });
+        return true;
     }
 
     onEditableCompositionStart(e) {
@@ -4922,6 +5124,9 @@ class CompositionBuilderApp {
                         frameTicks: progress.frameTicks,
                         owners: progress.owners,
                         visibleMasks: progress.visibleMasks,
+                        colors: progress.colors,
+                        sizes: progress.sizes,
+                        alphas: progress.alphas,
                         currentAnchorRefs: progress.currentAnchorRefs,
                         currentSourcePoints: progress.currentSourcePoints,
                         groups: progress.groups,
@@ -4956,6 +5161,9 @@ class CompositionBuilderApp {
                         availableFrameCount,
                         frames: [],
                         visibleMasks: [],
+                        colors: [],
+                        sizes: [],
+                        alphas: [],
                         referenceVersion: COMPOSITION_REFERENCE_BUILD_VERSION,
                         compositionRevision,
                         complete: false
@@ -5023,6 +5231,9 @@ class CompositionBuilderApp {
                     encoding: snapshot.encoding,
                     frames: snapshot.frames,
                     visibleMasks: snapshot.visibleMasks,
+                    colors: snapshot.colors,
+                    sizes: snapshot.sizes,
+                    alphas: snapshot.alphas,
                     frameTicks: snapshot.frameTicks,
                     owners: snapshot.owners,
                     currentAnchorRefs: snapshot.currentAnchorRefs,
@@ -5067,6 +5278,9 @@ class CompositionBuilderApp {
                         : snapshot.frames.length,
                     frames: [],
                     visibleMasks: [],
+                    colors: [],
+                    sizes: [],
+                    alphas: [],
                     referenceVersion: COMPOSITION_REFERENCE_BUILD_VERSION,
                     compositionRevision,
                     complete: true
@@ -5185,6 +5399,9 @@ class CompositionBuilderApp {
         const workerUrl = new URL("./preview_render_cache_worker.js?v=20260826_1", import.meta.url);
         const workers = [];
         const frames = new Array(total);
+        const colors = new Array(total);
+        const sizes = new Array(total);
+        const alphas = new Array(total);
         const visibleMasks = new Array(total);
         const pending = new Map();
         let nextFrame = 0;
@@ -5223,6 +5440,9 @@ class CompositionBuilderApp {
                 frameTicks: ticks.slice(0, countReady),
                 owners: owners.map((owner) => String(owner || "")),
                 visibleMasks: visibleMasks.slice(0, countReady),
+                colors: colors.slice(0, countReady),
+                sizes: sizes.slice(0, countReady),
+                alphas: alphas.slice(0, countReady),
                 currentAnchorRefs: currentSourceRefs,
                 currentSourcePoints: currentSourcePoints?.length ? currentSourcePoints : null,
                 groups: groups.filter((group) => group.pointCount > 0),
@@ -5294,13 +5514,25 @@ class CompositionBuilderApp {
                 const positions = data.frame.positions;
                 if (!(positions instanceof Float32Array) || positions.length !== count * 3) return fail("invalid-positions");
                 frames[index] = Float32Array.from(positions);
+                const colorFrame = data.frame.colors;
+                colors[index] = colorFrame && typeof colorFrame.length === "number"
+                    ? (colorFrame instanceof Uint8Array ? Uint8Array.from(colorFrame) : Float32Array.from(colorFrame))
+                    : null;
+                const sizeFrame = data.frame.sizes;
+                sizes[index] = sizeFrame && typeof sizeFrame.length === "number"
+                    ? Float32Array.from(sizeFrame)
+                    : null;
+                const alphaFrame = data.frame.alphas;
+                alphas[index] = alphaFrame && typeof alphaFrame.length === "number"
+                    ? (alphaFrame instanceof Uint8Array ? Uint8Array.from(alphaFrame) : Float32Array.from(alphaFrame))
+                    : null;
                 const mask = data.frame.visibleMask;
                 visibleMasks[index] = mask instanceof Uint8Array
                     ? Uint8Array.from(mask)
                     : Uint8Array.from({ length: count }, (_, pointIndex) => mask?.[pointIndex] === false || mask?.[pointIndex] === 0 ? 0 : 1);
                 completed += 1;
                 publishProgress();
-                if (completed >= total) return finish({ frames, visibleMasks });
+                if (completed >= total) return finish({ frames, colors, sizes, alphas, visibleMasks });
                 dispatchNext(worker);
             };
             try {
@@ -5361,6 +5593,7 @@ class CompositionBuilderApp {
         const liveClearPreviewRenderCache = this.clearPreviewRenderCache;
         const liveDisposePreviewRenderCacheWorkerPool = this.disposePreviewRenderCacheWorkerPool;
         const liveSyncPreviewGpuParticleStatus = this.syncPreviewGpuParticleStatus;
+        const livePreviewAnimStart = this.previewAnimStart;
         try {
             // Build the all-card metadata on a detached geometry. The reference
             // sampler must not reconfigure the live Composition geometry: doing so
@@ -5403,14 +5636,17 @@ class CompositionBuilderApp {
             this.previewRuntimeAppliedTick = -1;
             this.previewRuntimeCycleIndex = -1;
             this.previewManualProjectScaleTick = 0;
+            // GPU animation code derives the tick from `now - previewAnimStart`.
+            // A detached sampler may not have a live animation clock; use a
+            // deterministic epoch so nested Composition transforms still
+            // advance at the requested tick instead of collapsing at Tick 0.
+            const animationBase = Number(this.previewAnimStart);
+            this.previewAnimStart = Number.isFinite(animationBase) ? animationBase : 0;
             const timeline = [];
             for (const tick of frameTicks) {
                 const elapsedTick = Math.max(0, Number(tick) || 0);
                 if (typeof this.updatePreviewGpuParticleAnimation === "function") {
-                    const animationBase = Number(this.previewAnimStart);
-                    const now = Number.isFinite(animationBase)
-                        ? animationBase + elapsedTick * 50
-                        : performance.now();
+                    const now = this.previewAnimStart + elapsedTick * 50;
                     this.updatePreviewGpuParticleAnimation(now);
                 } else {
                     this.updatePreviewGpuParticleTransforms?.(elapsedTick, cycleCfg, { force: true });
@@ -5486,6 +5722,7 @@ class CompositionBuilderApp {
             this.clearPreviewRenderCache = liveClearPreviewRenderCache;
             this.disposePreviewRenderCacheWorkerPool = liveDisposePreviewRenderCacheWorkerPool;
             this.syncPreviewGpuParticleStatus = liveSyncPreviewGpuParticleStatus;
+            this.previewAnimStart = livePreviewAnimStart;
             for (const [key, value] of transientValues) this[key] = value;
             this.previewReferenceAllCards = originalReferenceAllCards;
             referencePointsGeom.dispose?.();
@@ -5621,6 +5858,9 @@ class CompositionBuilderApp {
                 frameTicks,
                 owners: owners.map((owner) => String(owner || "")),
                 visibleMasks: workerResult.visibleMasks,
+                colors: workerResult.colors,
+                sizes: workerResult.sizes,
+                alphas: workerResult.alphas,
                 currentAnchorRefs: currentSourceRefs,
                 currentSourcePoints: currentSourcePoints.length ? currentSourcePoints : null,
                 groups: groups.filter((group) => group.pointCount > 0),
@@ -5705,6 +5945,9 @@ class CompositionBuilderApp {
                 for (const child of (Array.isArray(card.shapeChildren) ? card.shapeChildren : [])) collectSequenced(child);
             }
             const frames = [];
+            const colors = [];
+            const sizes = [];
+            const alphas = [];
             const visibleMasks = [];
             for (let frameIndex = 0; frameIndex < frameTicks.length; frameIndex++) {
                 if (requestId && requestId !== this.builderCompositionReferenceRequestId) return null;
@@ -5738,6 +5981,18 @@ class CompositionBuilderApp {
                 frames.push(positions && positions.length === basePoints.length * 3
                     ? Float32Array.from(positions)
                     : null);
+                const frameColors = frame?.colors;
+                colors.push(frameColors && frameColors.length === basePoints.length * 3
+                    ? Float32Array.from(frameColors)
+                    : null);
+                const frameSizes = frame?.sizes;
+                sizes.push(frameSizes && frameSizes.length === basePoints.length
+                    ? Float32Array.from(frameSizes)
+                    : null);
+                const frameAlphas = frame?.alphas;
+                alphas.push(frameAlphas && frameAlphas.length === basePoints.length
+                    ? Float32Array.from(frameAlphas)
+                    : null);
                 const visibleMask = frame?.visibleMask;
                 if (visibleMask && visibleMask.length === basePoints.length) {
                     const mask = visibleMask instanceof Uint8Array
@@ -5754,6 +6009,9 @@ class CompositionBuilderApp {
                         frameTicks: frameTicks.slice(0, frames.length),
                         owners: owners.map((owner) => String(owner || "")),
                         visibleMasks: visibleMasks.slice(),
+                        colors: colors.slice(),
+                        sizes: sizes.slice(),
+                        alphas: alphas.slice(),
                         currentAnchorRefs: currentSourceRefs,
                         currentSourcePoints: currentSourcePoints.length ? currentSourcePoints : null,
                         groups: groups.filter((group) => group.pointCount > 0),
@@ -5774,6 +6032,9 @@ class CompositionBuilderApp {
                 frameTicks,
                 owners: owners.map((owner) => String(owner || "")),
                 visibleMasks,
+                colors,
+                sizes,
+                alphas,
                 currentAnchorRefs: currentSourceRefs,
                 currentSourcePoints: currentSourcePoints.length ? currentSourcePoints : null,
                 groups: groups.filter((group) => group.pointCount > 0),
@@ -5888,6 +6149,9 @@ class CompositionBuilderApp {
         sampledRuntime.previewCanResumeRuntimeState = false;
         sampledRuntime.previewManualProjectScaleTick = 0;
         let typed = null;
+        let fallbackColors = null;
+        let fallbackSizes = null;
+        let fallbackAlphas = null;
         let maskSource = null;
         try {
             this.previewReferenceAllCards = true;
@@ -5919,17 +6183,31 @@ class CompositionBuilderApp {
                     typed[i * 3 + 2] = Number(basePoints[i]?.z) || 0;
                 }
             }
+            fallbackColors = frame?.colors && frame.colors.length === basePoints.length * 3
+                ? Float32Array.from(frame.colors)
+                : new Float32Array(basePoints.length * 3).fill(1);
+            fallbackSizes = frame?.sizes && frame.sizes.length === basePoints.length
+                ? Float32Array.from(frame.sizes)
+                : new Float32Array(basePoints.length).fill(1);
+            fallbackAlphas = frame?.alphas && frame.alphas.length === basePoints.length
+                ? Float32Array.from(frame.alphas)
+                : new Float32Array(basePoints.length).fill(1);
             maskSource = frame?.visibleMask || this.previewVisibleMask;
         } finally {
             restoreReferenceMode();
             installRuntime(liveRuntime);
         }
         if (!typed) return null;
-        const bytes = new Uint8Array(typed.buffer);
-        let binary = "";
-        for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-            binary += String.fromCharCode(...bytes.subarray(offset, Math.min(bytes.length, offset + 0x8000)));
-        }
+        const encodeFloat32 = (value) => {
+            if (!(value instanceof Float32Array)) return "";
+            const bytes = new Uint8Array(value.buffer);
+            let binary = "";
+            for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+                binary += String.fromCharCode(...bytes.subarray(offset, Math.min(bytes.length, offset + 0x8000)));
+            }
+            return btoa(binary);
+        };
+        const binary = encodeFloat32(typed);
         const mask = Uint8Array.from({ length: owners.length }, (_, index) => maskSource?.[index] === false ? 0 : 1);
         let maskBinary = "";
         for (let offset = 0; offset < mask.length; offset += 0x8000) {
@@ -5958,6 +6236,9 @@ class CompositionBuilderApp {
             frameTicks: [0],
             owners: normalizedOwners,
             visibleMasks: [btoa(maskBinary)],
+            colors: fallbackColors ? [encodeFloat32(fallbackColors)] : [],
+            sizes: fallbackSizes ? [encodeFloat32(fallbackSizes)] : [],
+            alphas: fallbackAlphas ? [encodeFloat32(fallbackAlphas)] : [],
             currentAnchorRefs: this.getBuilderCompositionReferenceCurrentSourceRefs(normalizedOwners, currentId, normalizedTarget),
             currentSourcePoints: currentSourcePoints.length ? currentSourcePoints : null,
             groups: groupRows,
@@ -6172,7 +6453,7 @@ class CompositionBuilderApp {
                         <input class="input" data-var-idx="${i}" data-var-field="name" value="${esc(v.name)}" placeholder="变量名"/>
                         <select class="input" data-var-idx="${i}" data-var-field="type">${typeOptions}</select>
                     </div>
-                    <input class="input" data-var-idx="${i}" data-var-field="value" value="${esc(v.value)}" placeholder="默认值"/>
+                    <input class="input expr-input" data-var-idx="${i}" data-var-field="value" value="${esc(v.value)}" placeholder="默认值"/>
                     ${actionRow}
                 </div>
             `;
@@ -6200,7 +6481,7 @@ class CompositionBuilderApp {
                     <input class="input" data-var-idx="${i}" data-var-field="name" value="${esc(v.name)}" placeholder="变量名"/>
                     <select class="input" data-var-idx="${i}" data-var-field="type">${typeOptions}</select>
                 </div>
-                <input class="input mono" data-var-idx="${i}" data-var-field="value" value="${esc(v.value)}" placeholder="默认值"/>
+                <input class="input mono expr-input" data-var-idx="${i}" data-var-field="value" value="${esc(v.value)}" placeholder="默认值"/>
                 ${vectorInputs}
                 ${actionRow}
             </div>
@@ -6218,7 +6499,7 @@ class CompositionBuilderApp {
             <div class="kv-row grid-const">
                 <input class="input" data-const-idx="${i}" data-const-field="name" value="${esc(v.name)}" placeholder="常量名"/>
                 <select class="input" data-const-idx="${i}" data-const-field="type">${typeOptions.replace(`value="${esc(v.type)}"`, `value="${esc(v.type)}" selected`)}</select>
-                <input class="input" data-const-idx="${i}" data-const-field="value" value="${esc(v.value)}" placeholder="值"/>
+                <input class="input expr-input" data-const-idx="${i}" data-const-field="value" value="${esc(v.value)}" placeholder="值"/>
                 <button class="btn small" data-act="remove-global-const" data-idx="${i}">删除</button>
             </div>
         `).join("");
@@ -6620,20 +6901,28 @@ class CompositionBuilderApp {
         const isShape = isCompositionShapeType(type);
         const rootCard = isRootCard ? target : opts.card;
         const rootGpuEnabled = isCompositionCardUsingCParticle(rootCard);
-        const enabled = rootGpuEnabled;
         const isLeaf = isCompositionLeafParticleType(type);
+        const parentPath = treePath ? treePath.slice(0, -1) : [];
+        const inheritedGpuEnabled = isRootCard ? false : this.isTreeNodeCParticleEnabled(rootCard, parentPath);
+        const ownGpuEnabled = isShape && target?.useCParticle === true;
+        const enabled = isRootCard ? rootGpuEnabled : (inheritedGpuEnabled || ownGpuEnabled);
+        const hasParticleLeaf = isShape && compositionShapeNodeHasParticleLeaf(target);
         if (isRootCard && isLeaf && !enabled) return "";
-        if (!isRootCard && (!enabled || !isLeaf)) return "";
+        if (!isRootCard && isLeaf && !enabled) return "";
+        if (!isRootCard && isShape && !hasParticleLeaf) return "";
         const alpha = normalizeCParticleAlphaConfig(target?.cparticleAlpha);
         const renderFade = (phase, title) => {
             const fade = alpha[phase];
+            const fadeDataAttrs = isRootCard
+                ? `data-card-cparticle-fade="${phase}" data-card-cparticle-fade-field="FIELD"`
+                : `${pathAttr} data-tree-node-cparticle-fade="${phase}" data-tree-node-cparticle-fade-field="FIELD"`;
             return `
                 <div class="cparticle-fade-row">
                     <strong>${title}</strong>
-                    <label class="chk compact"><input type="checkbox" data-card-id="${cardId}" data-card-cparticle-fade="${phase}" data-card-cparticle-fade-field="enabled" ${fade.enabled ? "checked" : ""}/><span>启用</span></label>
-                    <input class="input" title="时长 (tick)" aria-label="${title}时长" type="number" min="1" step="1" data-card-id="${cardId}" data-card-cparticle-fade="${phase}" data-card-cparticle-fade-field="durationTicks" value="${esc(String(fade.durationTicks))}"/>
-                    <input class="input" title="起始透明度" aria-label="${title}起始透明度" type="number" min="0" max="1" step="${this.state.settings.paramStep}" data-card-id="${cardId}" data-card-cparticle-fade="${phase}" data-card-cparticle-fade-field="fromAlpha" value="${esc(formatNumberCompact(fade.fromAlpha))}"/>
-                    <input class="input" title="结束透明度" aria-label="${title}结束透明度" type="number" min="0" max="1" step="${this.state.settings.paramStep}" data-card-id="${cardId}" data-card-cparticle-fade="${phase}" data-card-cparticle-fade-field="toAlpha" value="${esc(formatNumberCompact(fade.toAlpha))}"/>
+                    <label class="chk compact"><input type="checkbox" data-card-id="${cardId}" ${fadeDataAttrs.replace("FIELD", "enabled")} ${fade.enabled ? "checked" : ""}/><span>启用</span></label>
+                    <input class="input" title="时长 (tick)" aria-label="${title}时长" type="number" min="1" step="1" data-card-id="${cardId}" ${fadeDataAttrs.replace("FIELD", "durationTicks")} value="${esc(String(fade.durationTicks))}"/>
+                    <input class="input" title="起始透明度" aria-label="${title}起始透明度" type="number" min="0" max="1" step="${this.state.settings.paramStep}" data-card-id="${cardId}" ${fadeDataAttrs.replace("FIELD", "fromAlpha")} value="${esc(formatNumberCompact(fade.fromAlpha))}"/>
+                    <input class="input" title="结束透明度" aria-label="${title}结束透明度" type="number" min="0" max="1" step="${this.state.settings.paramStep}" data-card-id="${cardId}" ${fadeDataAttrs.replace("FIELD", "toAlpha")} value="${esc(formatNumberCompact(fade.toAlpha))}"/>
                 </div>`;
         };
         const leafSettings = enabled && isLeaf ? `
@@ -6641,7 +6930,15 @@ class CompositionBuilderApp {
                 <label class="field"><span>CParticle RenderLayer</span><select class="input" data-card-id="${cardId}"${pathAttr} ${isRootCard ? "data-card-field" : "data-tree-node-field"}="cparticleRenderLayer">${CPARTICLE_RENDER_LAYER_OPTIONS.map((layer) => `<option value="${layer}" ${target?.cparticleRenderLayer === layer ? "selected" : ""}>${layer}</option>`).join("")}</select></label>
                 <label class="chk"><input type="checkbox" data-card-id="${cardId}"${pathAttr} ${isRootCard ? "data-card-field" : "data-tree-node-field"}="randomAgePreTick" ${target?.randomAgePreTick === true ? "checked" : ""}/><span>每 Tick 随机动画帧</span></label>
             </div>` : "";
-        if (!isRootCard || isLeaf) return `<div class="mini-note">GPU 粒子配置</div>${leafSettings}`;
+        const nestedShapeToggle = !isRootCard && isShape ? `
+            <label class="chk" title="启用后，该 Composition 的粒子叶节点使用 GPU 粒子">
+                <input type="checkbox" data-card-id="${cardId}"${pathAttr} data-tree-node-field="useCParticle" ${enabled ? "checked" : ""}${inheritedGpuEnabled ? " disabled" : ""}/>
+                <span>使用 GPU 粒子${inheritedGpuEnabled ? "（继承父级）" : ""}</span>
+            </label>` : "";
+        const nestedFadeBox = !isRootCard && isShape && enabled && hasParticleLeaf
+            ? `<div class="subgroup subgroup-tight cparticle-fade-box"><div class="subgroup-title">不透明度过渡</div><div class="cparticle-fade-grid"><div class="cparticle-fade-head"><span>阶段</span><span>状态</span><span>时长</span><span>起始</span><span>结束</span></div>${renderFade("fadeIn", "淡入")}${renderFade("fadeOut", "淡出")}</div></div>`
+            : "";
+        if (!isRootCard || isLeaf) return `<div class="mini-note">GPU 粒子配置</div>${nestedShapeToggle}${leafSettings}${nestedFadeBox}`;
         return `
             <div class="mini-note">GPU 粒子</div>
             <div class="grid2">
@@ -6651,7 +6948,7 @@ class CompositionBuilderApp {
                 </label>
             </div>
             ${leafSettings}
-            ${enabled && isShape ? `<div class="subgroup subgroup-tight cparticle-fade-box"><div class="subgroup-title">不透明度过渡</div><div class="cparticle-fade-grid"><div class="cparticle-fade-head"><span>阶段</span><span>状态</span><span>时长</span><span>起始</span><span>结束</span></div>${renderFade("fadeIn", "淡入")}${renderFade("fadeOut", "淡出")}</div></div>` : ""}`;
+            ${enabled && isShape && compositionShapeNodeHasParticleLeaf(target) ? `<div class="subgroup subgroup-tight cparticle-fade-box"><div class="subgroup-title">不透明度过渡</div><div class="cparticle-fade-grid"><div class="cparticle-fade-head"><span>阶段</span><span>状态</span><span>时长</span><span>起始</span><span>结束</span></div>${renderFade("fadeIn", "淡入")}${renderFade("fadeOut", "淡出")}</div></div>` : ""}`;
     }
 
     renderSingleGpuSettings(card) {
@@ -6673,7 +6970,7 @@ class CompositionBuilderApp {
 
     _renderTreeNodeEditorInner(card, node, treePath, tp, cardId, nodeType, bindMode, builderNodeCount, builderPointCount, effectHtml, opts = {}) {
         const step = this.state.settings.paramStep;
-        const gpuContext = card.useCParticle === true;
+        const gpuContext = this.isTreeNodeCParticleEnabled(card, treePath);
         const typeOptions = `
                 <option value="single" ${nodeType === "single" ? "selected" : ""}>${gpuContext ? "CParticle" : "单粒子"}</option>
                 <option value="particle_shape" ${nodeType === "particle_shape" ? "selected" : ""}>${gpuContext ? "GPU Composition" : "形状 Composition"}</option>
@@ -6781,7 +7078,7 @@ class CompositionBuilderApp {
     }
 
     _renderTreeNodeSingleView(card, node, tp, cardId, typeBlock, bindBlock, axisBlock, displayBlock, angleOffsetBlock, scaleBlock, effectHtml, treePath) {
-        const isGpuCParticle = isCompositionCardUsingCParticle(card);
+        const isGpuCParticle = this.isTreeNodeCParticleEnabled(card, treePath);
         const cparticleBlock = this.renderCParticleNodeSettings(node, { card, cardId, treePath });
         const controllerBlock = isGpuCParticle
             ? `<div class="mini-note">CParticle 不支持 preTick action；透明度、颜色和大小曲线由 GPU 生命周期数据处理。</div>`
@@ -6798,7 +7095,7 @@ class CompositionBuilderApp {
                             <select class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="type">
                                 ${CONTROLLER_VAR_TYPES.map((t) => `<option value="${esc(t)}" ${it.type === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
                             </select>
-                            <input class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
+                            <input class="input expr-input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
                             <div></div><div></div>
                             <button class="btn small" data-act="remove-tree-node-cvar" data-card-id="${cardId}" data-tree-path="${tp}" data-idx="${cIdx}">删除</button>
                         </div>
@@ -6834,12 +7131,37 @@ class CompositionBuilderApp {
     _renderTreeNodeShapeView(card, node, tp, cardId, typeBlock, bindBlock, axisBlock, displayBlock, angleOffsetBlock, scaleBlock, nodeType, treePath, opts = {}) {
         const growthBlock = nodeType === "sequenced_shape"
             ? this.renderCardAnimates(
-                card.id, `treeNodeGrowth:${JSON.stringify(treePath)}`,
+                card.id, `nodeGrowth:${JSON.stringify(treePath)}`,
                 node.growthAnimates || [],
                 "生长动画", "add-tree-node-growth-animate", "remove-tree-node-growth-animate",
                 { embedOnly: true }
             ).replaceAll(`data-card-id="${card.id}"`, `data-card-id="${card.id}" data-tree-path="${tp}"`)
             : "";
+        const controllerBlock = `
+            <div class="subgroup" data-section-key="shape_controller">
+                <div class="subgroup-title">Composition 局部变量</div>
+                <div class="mini-note">名称须符合变量命名规则，且不能与 rel、order、shapeRel/shapeOrder、运行时变量或全局变量/常量重名。</div>
+                <div class="list-tools">
+                    <button class="btn small primary" data-act="add-tree-node-cvar" data-card-id="${cardId}" data-tree-path="${tp}">添加局部变量</button>
+                    <button class="btn small primary" data-act="add-tree-node-caction" data-card-id="${cardId}" data-tree-path="${tp}">添加每帧动作</button>
+                </div>
+                <div class="kv-list">
+                    ${(node.controllerVars || []).map((it, cIdx) => `
+                        <div class="kv-row grid-var">
+                            <input class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="name" value="${esc(it.name)}" placeholder="name"/>
+                            <select class="input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="type">
+                                ${CONTROLLER_VAR_TYPES.map((type) => `<option value="${esc(type)}" ${it.type === type ? "selected" : ""}>${esc(type)}</option>`).join("")}
+                            </select>
+                            <input class="input mono expr-input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-cvar-idx="${cIdx}" data-tree-node-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
+                            <div></div><div></div>
+                            <button class="btn small" data-act="remove-tree-node-cvar" data-card-id="${cardId}" data-tree-path="${tp}" data-idx="${cIdx}">删除</button>
+                        </div>
+                    `).join("")}
+                </div>
+                <div class="kv-list">
+                    ${(node.controllerActions || []).map((action, actionIdx) => this.renderTreeNodeControllerActionRow(cardId, tp, action, actionIdx)).join("")}
+                </div>
+            </div>`;
         const childrenList = opts.includeChildren === false ? "" : this._renderTreeNodeChildrenList(card, node, treePath, cardId);
         const cparticleBlock = this.renderCParticleNodeSettings(node, { card, cardId, treePath });
         return `
@@ -6850,6 +7172,7 @@ class CompositionBuilderApp {
             ${displayBlock}
             ${angleOffsetBlock}
             ${scaleBlock}
+            ${controllerBlock}
             ${growthBlock}
             ${opts.includeChildren === false ? "" : `<div class="mini-note">并列子节点</div>${childrenList}`}`;
     }
@@ -6857,7 +7180,7 @@ class CompositionBuilderApp {
     renderTreeNodeParticleInitRows(cardId, node, tp, treePath = []) {
         const list = Array.isArray(node?.particleInit) ? node.particleInit : [];
         const card = this.getCardById(cardId);
-        const useCParticle = isCompositionCardUsingCParticle(card);
+        const useCParticle = this.isTreeNodeCParticleEnabled(card, treePath);
         return list.map((it, pIdx) => {
             const targetOptions = this.getParticleInitTargetOptionsHtml(it.target, useCParticle ? "cparticle" : "single");
             const codegenOnly = this.isParticleInitCodegenOnlyTarget(it.target);
@@ -7800,7 +8123,7 @@ class CompositionBuilderApp {
                                 <select class="input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="type">
                                     ${CONTROLLER_VAR_TYPES.map((tp) => `<option value="${esc(tp)}" ${it.type === tp ? "selected" : ""}>${esc(tp)}</option>`).join("")}
                                 </select>
-                                <input class="input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
+                                <input class="input expr-input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
                                 <div></div><div></div>
                                 <button class="btn small" data-act="remove-cvar" data-card-id="${card.id}" data-idx="${cIdx}">删除</button>
                             </div>
@@ -7856,13 +8179,15 @@ class CompositionBuilderApp {
     }
 
     renderShapeStackPanel(card) {
+        const showRootGrowth = card.dataType === "sequenced_shape"
+            && (!Array.isArray(card.viewPath) || card.viewPath.length === 0);
         return `
             <div class="workbench-panel-title">
                 <span>Composition 栈</span>
                 <span class="badge">${card.dataType === "sequenced_shape" ? "序列形状" : "形状"}</span>
             </div>
             ${this.renderShapeTreePanel(card)}
-            ${card.dataType === "sequenced_shape"
+            ${showRootGrowth
                 ? `<div class="effect-stack-content">${this.renderCardAnimates(card.id, "growthAnimates", card.growthAnimates, "生长动画", "add-growth-animate", "remove-growth-animate", { sectionKey: "growth" })}</div>`
                 : ""}
         `;
@@ -8060,7 +8385,7 @@ class CompositionBuilderApp {
                                                 <select class="input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="type">
                                                     ${CONTROLLER_VAR_TYPES.map((tp) => `<option value="${esc(tp)}" ${it.type === tp ? "selected" : ""}>${esc(tp)}</option>`).join("")}
                                                 </select>
-                                                <input class="input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
+                                                <input class="input expr-input" data-card-id="${card.id}" data-cvar-idx="${cIdx}" data-cvar-field="expr" value="${esc(it.expr)}" placeholder="初始值"/>
                                                 <div></div><div></div>
                                                 <button class="btn small" data-act="remove-cvar" data-card-id="${card.id}" data-idx="${cIdx}">删除</button>
                                             </div>
@@ -10080,8 +10405,10 @@ class CompositionBuilderApp {
             x1: e.clientX,
             y1: e.clientY,
             moved: false,
-            append: !!(e.ctrlKey || e.metaKey)
+            append: !!(e.ctrlKey || e.metaKey),
+            hostRect: this.dom.viewerWrap?.getBoundingClientRect?.() || null
         };
+        this.controls.enabled = false;
         this.hideSelectBox();
         try {
             this.renderer.domElement.setPointerCapture(e.pointerId);
@@ -10099,13 +10426,13 @@ class CompositionBuilderApp {
         if (dx >= 3 || dy >= 3) this.selectState.moved = true;
         if (this.selectState.moved) {
             this.controls.enabled = false;
-            this.applySelectBoxRect(this.getSelectionRectFromState(this.selectState));
+            this.applySelectBoxRect(this.getSelectionRectFromState(this.selectState), this.selectState.hostRect);
         }
     }
 
     onPreviewPointerUp(e) {
-        if (this.previewDistanceTool?.isActive()) return;
         if (!this.selectState || this.selectPointerId !== e.pointerId) return;
+        const distanceToolActive = this.previewDistanceTool?.isActive();
         const sel = this.selectState;
         this.selectState = null;
         this.selectPointerId = null;
@@ -10115,6 +10442,11 @@ class CompositionBuilderApp {
         }
         this.controls.enabled = true;
 
+        if (distanceToolActive) {
+            this.hideSelectBox();
+            return;
+        }
+
         if (sel.moved) {
             const rect = this.getSelectionRectFromState(sel);
             this.selectCardsByClientRect(rect, sel.append);
@@ -10122,12 +10454,21 @@ class CompositionBuilderApp {
             const picked = this.pickCardAtClientPoint(sel.x1, sel.y1);
             if (picked) this.selectCardById(picked, sel.append);
             else if (!sel.append) {
-                this.selectedCardIds.clear();
-                this.renderCards();
-                this.updatePreviewGeometry(this.previewPoints, this.previewOwners);
-                this.updateSelectionStatus();
+                this.selectCards([], false);
             }
         }
+        this.hideSelectBox();
+    }
+
+    onPreviewPointerCancel(e) {
+        if (!this.selectState || this.selectPointerId !== e.pointerId) return;
+        this.selectState = null;
+        this.selectPointerId = null;
+        try {
+            this.renderer.domElement.releasePointerCapture(e.pointerId);
+        } catch {
+        }
+        this.controls.enabled = true;
         this.hideSelectBox();
     }
 
@@ -10139,10 +10480,11 @@ class CompositionBuilderApp {
         return { x, y, w, h };
     }
 
-    applySelectBoxRect(clientRect) {
-        const hostRect = this.dom.viewerWrap.getBoundingClientRect();
-        const x = clientRect.x - hostRect.left;
-        const y = clientRect.y - hostRect.top;
+    applySelectBoxRect(clientRect, hostRect = null) {
+        const resolvedHostRect = hostRect || this.dom.viewerWrap?.getBoundingClientRect?.();
+        if (!resolvedHostRect) return;
+        const x = clientRect.x - resolvedHostRect.left;
+        const y = clientRect.y - resolvedHostRect.top;
         this.dom.selectBox.style.left = `${x}px`;
         this.dom.selectBox.style.top = `${y}px`;
         this.dom.selectBox.style.width = `${clientRect.w}px`;
@@ -10162,24 +10504,30 @@ class CompositionBuilderApp {
         const positions = this.getPreviewInteractionPositionArray?.();
         const visibleMask = this.getPreviewInteractionVisibleMask?.() || this.previewVisibleMask;
         const pointCount = positions ? Math.floor(positions.length / 3) : this.previewPoints.length;
+        const canvas = this.renderer?.domElement;
+        const rect = canvas?.getBoundingClientRect?.();
+        const projector = this.previewPickVector || (this.previewPickVector = new THREE.Vector3());
+        if (!rect || rect.width <= 0 || rect.height <= 0 || !this.camera) return null;
         for (let i = 0; i < pointCount; i++) {
             if (visibleMask && (visibleMask[i] === false || visibleMask[i] === 0)) continue;
-            const point = positions
-                ? { x: positions[i * 3], y: positions[i * 3 + 1], z: positions[i * 3 + 2] }
-                : this.previewPoints[i];
-            const screen = this.worldToClient(point);
-            if (!screen) continue;
-            const dx = screen.x - clientX;
-            const dy = screen.y - clientY;
+            const point = positions ? null : this.previewPoints[i];
+            const px = positions ? positions[i * 3] : point?.x;
+            const py = positions ? positions[i * 3 + 1] : point?.y;
+            const pz = positions ? positions[i * 3 + 2] : point?.z;
+            if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) continue;
+            projector.set(px, py, pz).project(this.camera);
+            if (!Number.isFinite(projector.x) || !Number.isFinite(projector.y) || !Number.isFinite(projector.z)) continue;
+            const dx = rect.left + (projector.x * 0.5 + 0.5) * rect.width - clientX;
+            const dy = rect.top + (-projector.y * 0.5 + 0.5) * rect.height - clientY;
             const d2 = dx * dx + dy * dy;
             if (d2 >= bestDist) continue;
             bestDist = d2;
             best = {
                 ownerId: this.previewOwners[i] || null,
                 point: {
-                    x: num(point?.x),
-                    y: num(point?.y),
-                    z: num(point?.z)
+                    x: num(px),
+                    y: num(py),
+                    z: num(pz)
                 },
                 index: i
             };
@@ -10244,14 +10592,25 @@ class CompositionBuilderApp {
         const positions = this.getPreviewInteractionPositionArray?.();
         const visibleMask = this.getPreviewInteractionVisibleMask?.() || this.previewVisibleMask;
         const pointCount = positions ? Math.floor(positions.length / 3) : this.previewPoints.length;
+        const canvas = this.renderer?.domElement;
+        const rect = canvas?.getBoundingClientRect?.();
+        const projector = this.previewPickVector || (this.previewPickVector = new THREE.Vector3());
+        if (!rect || rect.width <= 0 || rect.height <= 0 || !this.camera) {
+            this.selectCards([], append);
+            return;
+        }
         for (let i = 0; i < pointCount; i++) {
             if (visibleMask && (visibleMask[i] === false || visibleMask[i] === 0)) continue;
-            const point = positions
-                ? { x: positions[i * 3], y: positions[i * 3 + 1], z: positions[i * 3 + 2] }
-                : this.previewPoints[i];
-            const screen = this.worldToClient(point);
-            if (!screen) continue;
-            if (screen.x >= clientRect.x && screen.x <= x2 && screen.y >= clientRect.y && screen.y <= y2) {
+            const point = positions ? null : this.previewPoints[i];
+            const px = positions ? positions[i * 3] : point?.x;
+            const py = positions ? positions[i * 3 + 1] : point?.y;
+            const pz = positions ? positions[i * 3 + 2] : point?.z;
+            if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) continue;
+            projector.set(px, py, pz).project(this.camera);
+            if (!Number.isFinite(projector.x) || !Number.isFinite(projector.y) || !Number.isFinite(projector.z)) continue;
+            const screenX = rect.left + (projector.x * 0.5 + 0.5) * rect.width;
+            const screenY = rect.top + (-projector.y * 0.5 + 0.5) * rect.height;
+            if (screenX >= clientRect.x && screenX <= x2 && screenY >= clientRect.y && screenY <= y2) {
                 const id = this.previewOwners[i];
                 if (id && !ids.includes(id)) ids.push(id);
             }
@@ -11394,6 +11753,7 @@ class CompositionBuilderApp {
                 card: card.id,
                 return: "composition_builder.html",
                 target: normalizedTarget,
+                compositionRevision,
                 t: String(Date.now())
             });
             try {
@@ -11478,7 +11838,7 @@ class CompositionBuilderApp {
         navigate();
     }
 
-    consumeBuilderReturnState() {
+    async consumeBuilderReturnState(options = {}) {
         let cardId = "";
         let target = "root";
         try {
@@ -11490,16 +11850,36 @@ class CompositionBuilderApp {
         } catch {
             return;
         }
-        const card = this.getCardById(cardId) || this.getFocusedCard() || this.state.cards[0];
-        const state = card
-            ? this.readBuilderSandboxState(card.id, target, compositionReferenceStateRevision(this.state))
-            : null;
+        // The return payload is bound to the card that opened PointsBuilder.
+        // Never fall back to the focused/first card: a stale or delayed return
+        // must be ignored rather than applying card 2's model to card 3.
+        const card = this.getCardById(cardId);
+        const expectedRevision = compositionReferenceStateRevision(this.state);
+        let state = null;
+        if (card) {
+            try {
+                const latest = await loadLatestAutoStatePayload({
+                    storageKey: CPB_STATE_KEY,
+                    expectedContext: {
+                        cardId: card.id,
+                        target,
+                        compositionRevision: expectedRevision
+                    }
+                });
+                state = latest?.state ? normalizeBuilderState(latest.state) : null;
+            } catch {
+                state = null;
+            }
+            if (!state) state = this.readBuilderSandboxState(card.id, target, expectedRevision);
+        }
         if (!card || !state) {
+            if (options?.closeModal === true) this.hideBuilderModal();
             this.showToast("Builder 返回状态与当前卡片不匹配，已忽略", "error");
             return;
         }
         // Returning from PointsBuilder only transfers the edited point model.
         // Do not silently change a card that was using manual point semantics.
+        if (options?.pushHistory === true) this.pushHistory();
         this.setCardBuilderState(card, target, state, { activateBinding: false });
         this.focusedCardId = card.id;
         this.selectedCardIds = new Set([card.id]);
@@ -11509,6 +11889,7 @@ class CompositionBuilderApp {
         } else {
             this.saveStateNow();
         }
+        if (options?.closeModal === true) this.hideBuilderModal();
         let msg = "已返回 PointsBuilder 并加载根 Builder";
         if (target === "shape") msg = "已返回并加载 Shape Builder";
         if (/^tree_node:/.test(target)) {
@@ -11621,6 +12002,7 @@ class CompositionBuilderApp {
         this.dom.builderModal.classList.add("hidden");
         this.dom.builderMask.classList.add("hidden");
         this.builderModalCardId = null;
+        this.builderModalTarget = "root";
     }
 
     parseBezierToolTreePath(raw) {
@@ -12038,24 +12420,17 @@ class CompositionBuilderApp {
 
     reloadBuilderFrame() {
         if (!this.builderModalCardId) return;
-        const url = `./composition_pointsbuilder.html?card=${encodeURIComponent(this.builderModalCardId)}&target=root&t=${Date.now()}`;
-        this.dom.builderFrame.src = url;
+        const q = new URLSearchParams({
+            card: String(this.builderModalCardId),
+            target: normalizeBuilderTarget(this.builderModalTarget || "root"),
+            compositionRevision: compositionReferenceStateRevision(this.state),
+            t: String(Date.now())
+        });
+        this.dom.builderFrame.src = `./composition_pointsbuilder.html?${q.toString()}`;
     }
 
     pullBuilderStateAndClose() {
-        if (!this.builderModalCardId) return this.hideBuilderModal();
-        const card = this.getCardById(this.builderModalCardId);
-        if (!card) return this.hideBuilderModal();
-        const state = this.readBuilderSandboxState();
-        if (!state) {
-            this.showToast("未读取到 Builder 数据", "error");
-            return;
-        }
-        this.pushHistory();
-        this.setCardBuilderState(card, "root", state);
-        this.hideBuilderModal();
-        this.afterStructureMutate({ rerenderProject: false, rerenderCards: true, rebuildPreview: true });
-        this.showToast("Builder 已读取", "success");
+        void this.consumeBuilderReturnState({ closeModal: true, pushHistory: true });
     }
 
     readBuilderSandboxState(expectedCardId = "", expectedTarget = "root", expectedRevision = "") {
@@ -12069,8 +12444,8 @@ class CompositionBuilderApp {
                     || normalizeBuilderTarget(context?.target || "root") !== normalizeBuilderTarget(expectedTarget || "root")) {
                     return null;
                 }
-                if (expectedRevision && context?.compositionRevision
-                    && String(context.compositionRevision) !== String(expectedRevision)) return null;
+                if (expectedRevision
+                    && String(context?.compositionRevision || "") !== String(expectedRevision)) return null;
             }
             return normalizeBuilderState(parsed?.state || parsed);
         } catch (e) {
@@ -13051,7 +13426,11 @@ installKotlinCodegenMethods(CompositionBuilderApp, {
     normalizeAngleUnit,
     translateJsBlockToKotlin,
     normalizeParticleFloatAssignmentExpr,
+    getCompositionControllerVariableNameError,
+    normalizeCompositionControllerVariableName,
+    COMPOSITION_LAMBDA_RESERVED_NAMES,
     isCompositionShapeType,
+    compositionShapeNodeHasParticleLeaf,
     findCompositionNestedShapePaths,
     DEFAULT_EFFECT_CLASS
 });
@@ -13098,10 +13477,12 @@ try {
 app.init();
 
 window.addEventListener("coo-legacy-before-route-leave", () => {
+    app.flushAllDeferredExpressionRefreshes();
     app.saveStateNow();
 });
 
 window.addEventListener("pagehide", () => {
+    app.flushAllDeferredExpressionRefreshes();
     app.savePreferencesNow();
 });
 
