@@ -1,0 +1,13 @@
+{
+  "name": "ControlableSmallGustEffect",
+  "displayName": "SmallGust",
+  "textures": [
+    "assets/particles/small_gust/small_gust_0.png",
+    "assets/particles/small_gust/small_gust_1.png",
+    "assets/particles/small_gust/small_gust_2.png",
+    "assets/particles/small_gust/small_gust_3.png",
+    "assets/particles/small_gust/small_gust_4.png",
+    "assets/particles/small_gust/small_gust_5.png",
+    "assets/particles/small_gust/small_gust_6.png"
+  ]
+}

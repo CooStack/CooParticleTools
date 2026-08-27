@@ -1,1 +1,2 @@
-python run_electron.py
+@echo off
+python "%~dp0run_electron.py"

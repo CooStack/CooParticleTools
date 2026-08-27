@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Composition 构建器</title>
+    <link rel="stylesheet" href="./assets/composition_builder/css/style.css?v=20260823_1"/>
+    <link rel="stylesheet" href="./assets/shared/css/glass-theme.css?v=20260824_1"/>
+    <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
+</head>
+<body data-theme="dark-1">
+<div id="app">
+    <header class="topbar">
+        <div class="topbar-left">
+            <a class="btn" href="./index.html" data-spa-route="workbench">项目</a>
+            <div class="brand">
+                <div class="brand-title">Composition 构建器</div>
+                <div class="brand-sub">卡片编辑 / Three.js 预览 / Kotlin 代码生成</div>
+            </div>
+        </div>
+        <div class="topbar-right">
+            <div class="page-switch">
+                <button id="btnPageEditor" class="btn small primary">编辑</button>
+                <button id="btnPageCode" class="btn small">代码</button>
+            </div>
+            <span class="sep"></span>
+            <button id="btnSettings" class="btn">设置</button>
+            <button id="btnHotkeys" class="btn">快捷键</button>
+        </div>
+    </header>
+
+    <main id="pageEditor" class="page page-editor">
+        <aside class="panel left composition-layer-sidebar">
+            <div class="composition-side-workbench">
+                <div id="compositionLayersRoot" class="composition-layers-root"></div>
+            </div>
+        </aside>
+        <div id="editorResizer" class="editor-resizer" aria-hidden="true"></div>
+        <section class="panel right">
+            <div class="panel-title preview-title-row">
+                <span>预览</span>
+                <div class="preview-actions">
+                    <button id="btnPausePreview" class="btn small">暂停</button>
+                    <button id="btnReplayPreview" class="btn small">重播</button>
+                    <button id="btnCompileExpr" class="btn small">编译表达式</button>
+                    <button id="btnJumpPreviewEnd" class="btn small">跳到消散前</button>
+                    <button id="btnResetCamera" class="btn small">重置镜头</button>
+                    <button id="btnFullscreen" class="btn small">全屏</button>
+                </div>
+            </div>
+            <div class="viewer-hud">
+                <div class="hud-left">
+                    <div id="statusPoints" class="badge">点数: 0</div>
+                    <div id="statusSnapMode" class="badge hidden"></div>
+                    <div id="statusSelection" class="badge">选中: 无</div>
+                    <div id="statusFps" class="badge">FPS: --</div>
+                    <div id="statusGpu" class="badge">GPU: --</div>
+                    <div id="statusCache" class="badge">缓存: --</div>
+                </div>
+                <div class="hud-right">
+                    <div class="badge">中键旋转 / 右键平移 / 滚轮缩放</div>
+                    <div class="badge">左键框选</div>
+                </div>
+            </div>
+            <div class="preview-workbench">
+                <div id="viewerWrap" class="viewer-wrap">
+                    <div id="threeHost" class="three-host"></div>
+                    <div id="selectBox" class="select-box hidden"></div>
+                </div>
+                <aside class="preview-editor-column">
+                    <nav class="preview-editor-tabs" role="tablist" aria-label="设置范围">
+                        <button id="btnProjectEditorTab" class="preview-editor-tab" type="button" role="tab" aria-selected="false" aria-controls="projectSection" tabindex="-1">
+                            <span>全局设置</span>
+                            <span class="badge">全局</span>
+                        </button>
+                        <button id="btnCardEditorTab" class="preview-editor-tab active" type="button" role="tab" aria-selected="true" aria-controls="cardsRoot" tabindex="0">
+                            <span>卡片设置</span>
+                            <span id="activeCardTabLabel" class="badge">卡片 1</span>
+                        </button>
+                    </nav>
+                    <section id="projectSection" class="project-section preview-editor-view hidden" role="tabpanel" aria-labelledby="btnProjectEditorTab"></section>
+                    <aside id="cardsRoot" class="cards composition-card-editor-root preview-editor-root preview-editor-view" role="tabpanel" aria-labelledby="btnCardEditorTab"></aside>
+                </aside>
+            </div>
+        </section>
+    </main>
+
+    <section id="pageCode" class="page page-code hidden">
+        <div class="panel code-panel">
+            <div class="panel-title code-title-row">
+                <span>Kotlin 输出</span>
+                <div class="preview-actions">
+                    <button id="btnGenerateCode2" class="btn small primary">重新生成</button>
+                    <button id="btnCopyCode2" class="btn small">复制</button>
+                    <button id="btnDownloadCode" class="btn small">导出 Kotlin 代码</button>
+                </div>
+            </div>
+            <pre id="kotlinOut" class="code code-highlight" aria-readonly="true"></pre>
+        </div>
+    </section>
+
+    <div id="settingsMask" class="modal-mask hidden"></div>
+    <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <div class="modal-title">设置</div>
+            <button id="btnCloseSettings" class="btn icon">X</button>
+        </div>
+        <div class="modal-body">
+            <div class="settings-layout">
+                <div class="settings-panel">
+                    <div class="settings-panel-title">数值</div>
+                    <div class="settings-form">
+                        <div class="settings-row">
+                            <div class="settings-label">参数步长</div>
+                            <input id="inpParamStep" class="input" type="number" min="0.000001" step="0.01" value="0.1"/>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">点大小</div>
+                            <input id="inpPointSize" class="input" type="number" min="0.001" step="0.01" value="0.5"/>
+                        </div>
+                        <label class="chk settings-toggle">
+                            <input id="chkPreviewRenderCache" type="checkbox" checked/>
+                            <span>开启预览缓存</span>
+                        </label>
+                        <div class="settings-row">
+                            <div class="settings-label">缓存线程</div>
+                            <input id="inpPreviewCacheWorkers" class="input" type="number" min="0" max="16" step="1" value="0"/>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-panel">
+                    <div class="settings-panel-title">显示</div>
+                    <div class="settings-form">
+                        <div class="settings-row">
+                            <div class="settings-label">主题</div>
+                            <select id="themeSelect" class="input">
+                                <optgroup label="扁平">
+                                    <option value="dark-1">深色</option>
+                                    <option value="light-1">浅色</option>
+                                </optgroup>
+                                <optgroup label="玻璃拟态 · 深色">
+                                    <option value="glass-dark-blue">蓝</option>
+                                    <option value="glass-dark-green">绿</option>
+                                    <option value="glass-dark-violet">紫</option>
+                                    <option value="glass-dark-neutral">黑</option>
+                                </optgroup>
+                                <optgroup label="玻璃拟态 · 浅色">
+                                    <option value="glass-light-blue">蓝</option>
+                                    <option value="glass-light-green">绿</option>
+                                    <option value="glass-light-violet">紫</option>
+                                    <option value="glass-light-neutral">白</option>
+                                </optgroup>
+                            </select>
+                        </div>
+                        <label class="chk settings-toggle">
+                            <input id="chkAxes" type="checkbox" checked/>
+                            <span>显示坐标轴</span>
+                        </label>
+                        <label class="chk settings-toggle">
+                            <input id="chkGrid" type="checkbox" checked/>
+                            <span>显示网格</span>
+                        </label>
+                        <label class="chk settings-toggle">
+                            <input id="chkRealtimeCode2" type="checkbox" checked/>
+                            <span>实时生成代码</span>
+                        </label>
+                        <label class="chk settings-toggle">
+                            <input id="chkPreviewFocusSingleCard" type="checkbox" disabled/>
+                            <span>卡片页聚焦时只显示当前卡片</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="settings-panel settings-panel-wide">
+                    <div class="settings-panel-title">快捷键</div>
+                    <div class="settings-form">
+                        <div class="settings-row">
+                            <div class="settings-label">网格吸附快捷键</div>
+                            <label class="chk settings-toggle">
+                                <input id="chkSnapGridKeyToggleMode" type="checkbox"/>
+                                <span>切换模式（单点切换）</span>
+                            </label>
+                        </div>
+                        <div class="settings-row">
+                            <div class="settings-label">粒子吸附快捷键</div>
+                            <label class="chk settings-toggle">
+                                <input id="chkSnapParticleKeyToggleMode" type="checkbox"/>
+                                <span>切换模式（单点切换）</span>
+                            </label>
+                        </div>
+                        <div class="settings-actions">
+                            <button id="btnOpenHotkeys" class="btn primary">打开快捷键设置</button>
+                            <button id="btnExportSettings" class="btn">导出设置</button>
+                            <button id="btnImportSettings" class="btn">导入设置</button>
+                            <input id="fileSettings" type="file" accept="application/json" hidden/>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="hkMask" class="modal-mask hidden"></div>
+    <div id="hkModal" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <div class="modal-title">快捷键设置</div>
+            <input id="hkSearch" class="input" placeholder="搜索快捷键"/>
+            <button id="btnCloseHotkeys" class="btn icon">X</button>
+        </div>
+        <div class="modal-body">
+            <div id="hkHint" class="hint-line">点击“设置”后按下按键（Esc 取消，Backspace 清空）。</div>
+            <div id="hkList" class="hk-list"></div>
+        </div>
+        <div class="modal-foot">
+            <button id="btnHotkeysReset" class="btn">恢复默认</button>
+            <span class="flex-spacer"></span>
+            <button id="btnCloseHotkeys2" class="btn primary">关闭</button>
+        </div>
+    </div>
+
+    <div id="cardPresetMask" class="modal-mask hidden"></div>
+    <div id="cardPresetModal" class="modal modal-preset hidden" role="dialog" aria-modal="true" aria-labelledby="cardPresetTitle">
+        <div class="modal-head modal-head-simple">
+            <div id="cardPresetTitle" class="modal-title">卡片预设</div>
+            <button id="btnCloseCardPreset" class="btn icon" type="button" aria-label="关闭卡片预设窗口">X</button>
+        </div>
+        <div class="modal-body preset-modal-body">
+            <div id="cardPresetContext" class="preset-context">当前卡片</div>
+            <div class="preset-browser-layout">
+                <nav class="preset-tree" aria-label="卡片预设分类">
+                    <div class="preset-tree-head">
+                        <div class="preset-tree-root">presets/</div>
+                    </div>
+                    <div class="preset-tree-folders" data-preset-folder-list></div>
+                    <div class="preset-folder-editor hidden" data-preset-folder-editor>
+                        <input class="input" type="text" data-preset-folder-name placeholder="文件夹名称" maxlength="80" autocomplete="off"/>
+                        <button class="btn icon" type="button" data-preset-action="confirm-folder" title="确认创建" aria-label="确认创建">✓</button>
+                        <button class="btn icon" type="button" data-preset-action="cancel-folder" title="取消创建" aria-label="取消创建">×</button>
+                    </div>
+                </nav>
+                <div class="preset-browser-content">
+                    <div class="preset-directory-head">
+                        <span class="preset-directory-path">presets/cards/</span>
+                        <input id="cardPresetSearch" class="input preset-search-input" data-preset-search type="search" placeholder="搜索预设" autocomplete="off"/>
+                    </div>
+                    <div id="cardPresetList" class="preset-list" data-preset-list role="listbox" aria-label="卡片预设列表"></div>
+                    <div id="cardPresetStatus" class="preset-status" role="status"></div>
+                    <fieldset class="preset-apply-options">
+                        <legend>应用内容</legend>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="position" checked/>
+                            <span><strong>位置信息</strong><small>PointsBuilder 或单个点配置</small></span>
+                        </label>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="particle" checked/>
+                            <span><strong>粒子信息</strong><small>单粒子或 Composition 类型</small></span>
+                        </label>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="properties" checked/>
+                            <span><strong>粒子属性</strong><small>particleInit、缩放助手、显示行为与生长动画</small></span>
+                        </label>
+                    </fieldset>
+                </div>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <span class="flex-spacer"></span>
+            <button id="btnCloseCardPreset2" class="btn" type="button">取消</button>
+            <button class="btn primary" type="button" data-preset-action="apply">应用预设</button>
+        </div>
+        <div class="preset-context-menu hidden" data-preset-context-menu role="menu" aria-label="卡片预设操作"></div>
+        <div class="preset-save-dialog-mask hidden" data-preset-save-dialog-mask data-preset-action="cancel-save"></div>
+        <div class="preset-save-dialog hidden" data-preset-save-dialog role="dialog" aria-modal="true" aria-labelledby="cardPresetSaveTitle">
+            <div id="cardPresetSaveTitle" class="preset-save-dialog-title">保存为预设</div>
+            <input class="input" type="text" data-preset-save-name aria-label="预设名称" placeholder="输入预设名称" maxlength="80" autocomplete="off"/>
+            <div class="preset-save-dialog-actions">
+                <button class="btn" type="button" data-preset-action="cancel-save">取消</button>
+                <button class="btn primary" type="button" data-preset-action="confirm-save">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="nodePresetMask" class="modal-mask hidden"></div>
+    <div id="nodePresetModal" class="modal modal-preset hidden" role="dialog" aria-modal="true" aria-labelledby="nodePresetTitle">
+        <div class="modal-head modal-head-simple">
+            <div id="nodePresetTitle" class="modal-title">卡片子节点预设</div>
+            <button id="btnCloseNodePreset" class="btn icon" type="button" aria-label="关闭子节点预设窗口">X</button>
+        </div>
+        <div class="modal-body preset-modal-body">
+            <div id="nodePresetContext" class="preset-context">当前子节点</div>
+            <div class="preset-browser-layout">
+                <nav class="preset-tree" aria-label="子节点预设分类">
+                    <div class="preset-tree-head">
+                        <div class="preset-tree-root">presets/</div>
+                    </div>
+                    <div class="preset-tree-folders" data-preset-folder-list></div>
+                    <div class="preset-folder-editor hidden" data-preset-folder-editor>
+                        <input class="input" type="text" data-preset-folder-name placeholder="文件夹名称" maxlength="80" autocomplete="off"/>
+                        <button class="btn icon" type="button" data-preset-action="confirm-folder" title="确认创建" aria-label="确认创建">✓</button>
+                        <button class="btn icon" type="button" data-preset-action="cancel-folder" title="取消创建" aria-label="取消创建">×</button>
+                    </div>
+                </nav>
+                <div class="preset-browser-content">
+                    <div class="preset-directory-head">
+                        <span class="preset-directory-path">presets/nodes/</span>
+                        <input id="nodePresetSearch" class="input preset-search-input" data-preset-search type="search" placeholder="搜索预设" autocomplete="off"/>
+                    </div>
+                    <div id="nodePresetList" class="preset-list" data-preset-list role="listbox" aria-label="子节点预设列表"></div>
+                    <div id="nodePresetStatus" class="preset-status" role="status"></div>
+                    <fieldset class="preset-apply-options">
+                        <legend>应用内容</legend>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="position" checked/>
+                            <span><strong>位置信息</strong><small>PointsBuilder 或单个点配置</small></span>
+                        </label>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="particle" checked/>
+                            <span><strong>粒子信息</strong><small>单粒子或 Composition 类型</small></span>
+                        </label>
+                        <label class="preset-option">
+                            <input type="checkbox" data-preset-section="properties" checked/>
+                            <span><strong>粒子属性</strong><small>particleInit、缩放助手、显示行为与生长动画</small></span>
+                        </label>
+                    </fieldset>
+                </div>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <span class="flex-spacer"></span>
+            <button id="btnCloseNodePreset2" class="btn" type="button">取消</button>
+            <button class="btn primary" type="button" data-preset-action="apply">应用预设</button>
+        </div>
+        <div class="preset-context-menu hidden" data-preset-context-menu role="menu" aria-label="节点预设操作"></div>
+        <div class="preset-save-dialog-mask hidden" data-preset-save-dialog-mask data-preset-action="cancel-save"></div>
+        <div class="preset-save-dialog hidden" data-preset-save-dialog role="dialog" aria-modal="true" aria-labelledby="nodePresetSaveTitle">
+            <div id="nodePresetSaveTitle" class="preset-save-dialog-title">保存为预设</div>
+            <input class="input" type="text" data-preset-save-name aria-label="预设名称" placeholder="输入预设名称" maxlength="80" autocomplete="off"/>
+            <div class="preset-save-dialog-actions">
+                <button class="btn" type="button" data-preset-action="cancel-save">取消</button>
+                <button class="btn primary" type="button" data-preset-action="confirm-save">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="builderMask" class="modal-mask hidden"></div>
+    <div id="builderModal" class="modal modal-xl hidden" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <div class="modal-title">Builder 编辑器</div>
+            <div class="modal-head-actions">
+                <button id="btnReloadBuilderFrame" class="btn small">重载</button>
+                <button id="btnPullBuilderState" class="btn small primary">拉取并返回</button>
+                <button id="btnCloseBuilderModal" class="btn icon">X</button>
+            </div>
+        </div>
+        <div class="modal-body no-pad">
+            <iframe id="builderFrame" class="builder-frame" title="PointsBuilder 编辑器"></iframe>
+        </div>
+        <div class="modal-foot">
+            <div class="hint-line">Builder 草稿独立保存，预设与用户设置和 pointsbuilder 互通。</div>
+            <span class="flex-spacer"></span>
+            <button id="btnCloseBuilderModal2" class="btn">取消</button>
+            <button id="btnPullBuilderState2" class="btn primary">拉取并返回</button>
+        </div>
+    </div>
+
+    <div id="bezierMask" class="modal-mask hidden"></div>
+    <div id="bezierModal" class="modal modal-bezier hidden" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <div class="modal-title">Bezier 工具</div>
+            <button id="btnCloseBezierModal" class="btn icon">X</button>
+        </div>
+        <div class="modal-body no-pad">
+            <iframe id="bezierFrame" class="bezier-frame" title="Bezier 工具"></iframe>
+        </div>
+        <div class="modal-foot">
+            <div class="hint-line">点击“应用到当前缩放”将读取工具输出并写回当前 scale helper。</div>
+            <span class="flex-spacer"></span>
+            <button id="btnCloseBezierModal2" class="btn">取消</button>
+            <button id="btnApplyBezierModal" class="btn primary">应用到当前缩放</button>
+        </div>
+    </div>
+
+    <div id="confirmMask" class="modal-mask hidden modal-mask-confirm"></div>
+    <div id="confirmModal" class="modal modal-confirm hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+        <div class="modal-head modal-head-simple">
+            <div id="confirmTitle" class="modal-title">请确认</div>
+            <button id="btnCloseConfirmModal" class="btn icon">X</button>
+        </div>
+        <div class="modal-body">
+            <div id="confirmMessage" class="confirm-message">确认执行该操作？</div>
+        </div>
+        <div class="modal-foot">
+            <span class="flex-spacer"></span>
+            <button id="btnCancelConfirmModal" class="btn">取消</button>
+            <button id="btnOkConfirmModal" class="btn primary">确定</button>
+        </div>
+    </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="./assets/src/js/pages/composition-builder.page.js?v=20260824_7"></script>
+</body>
+</html>

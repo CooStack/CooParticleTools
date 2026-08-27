@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>CompositionBuilder - PointsBuilder 编辑器</title>
-    <link rel="stylesheet" href="./assets/points_builder/css/style.css?v=20260825_4"/>
+    <link rel="stylesheet" href="./assets/points_builder/css/style.css?v=20260827_3"/>
     <link rel="stylesheet" href="./assets/shared/css/glass-theme.css?v=20260825_1"/>
     <link rel="stylesheet" href="./assets/shared/css/custom-select.css?v=20260825_2"/>
     <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
@@ -88,10 +88,12 @@
                 <span id="builderColumnTitleLabel">构建列</span>
                 <div id="builderColumnTabs" class="builder-column-tabs" role="tablist" aria-label="构建列页面">
                     <button id="btnBuilderColumnTab" class="builder-column-tab active" type="button" role="tab" aria-selected="true">Builder</button>
+                    <button id="btnReferenceGuidesTab" class="builder-column-tab" type="button" role="tab" aria-selected="false">参考线</button>
                     <button id="btnCompositionColumnTab" class="builder-column-tab" type="button" role="tab" aria-selected="false">Composition 参考</button>
                 </div>
             </div>
             <div id="cardsRoot" class="cards" role="tabpanel" aria-label="Builder 编辑器"></div>
+            <div id="referenceGuidesRoot" class="reference-guides-root" role="tabpanel" aria-label="参考线" hidden></div>
             <div id="compositionReferenceRoot" class="composition-reference-root" role="tabpanel" aria-label="Composition 参考点" hidden></div>
             <div id="builderColumnFootnote" class="panel-footnote">
                 拖拽 ≡ 排序；长按左键可框选多卡片；子元素可放入父卡片。
@@ -114,6 +116,10 @@
                     <label class="chk">
                         <input id="chkSnapParticle" type="checkbox" checked>
                         吸附粒子
+                    </label>
+                    <label class="chk">
+                        <input id="chkSnapReferenceEndpoints" type="checkbox" checked/>
+                        吸附参考端点
                     </label>
                     <label class="chk">
                         <span style="opacity:.7;">吸附平面</span>
@@ -501,6 +507,6 @@
       }
     }
 </script>
-<script type="module" src="./assets/src/js/pages/composition-pointsbuilder.page.js?v=20260826_9"></script>
+<script type="module" src="./assets/src/js/pages/composition-pointsbuilder.page.js?v=20260827_1"></script>
 </body>
 </html>

@@ -1,0 +1,7 @@
+{
+  "name": "ControlableFallingNectarEffect",
+  "displayName": "FallingNectar",
+  "textures": [
+    "assets/particles/falling_nectar/drip_fall.png"
+  ]
+}

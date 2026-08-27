@@ -133,6 +133,7 @@ test('generator emits custom doTick before hidden variable automation', () => {
   };
   project.parameters.variables.push(phase, radius);
   project.doTick.source = 'phase += 1';
+  project.emitters[0].emitter.type = 'sphere';
   project.emitters[0].bindings['emitter.sphere.r'] = 'radius + sin(phase)';
 
   const kotlin = generateEmitterKotlin(project);

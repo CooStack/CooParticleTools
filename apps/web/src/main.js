@@ -9,6 +9,7 @@ import {
   installGlassReveal,
   watchGlassSurface
 } from './modules/theme/glass-surface.js';
+import { installShellCustomSelects } from './modules/theme/custom-select.js';
 import './assets/styles/base.css';
 import './assets/styles/theme.css';
 import './assets/styles/layout.css';
@@ -32,4 +33,6 @@ installGlassReveal();
 installElectronShellBridge(router);
 
 createApp(App).use(router).mount('#app');
-
+// Enhance the mounted Vue controls with the same listbox used by legacy pages.
+// The observer keeps newly-rendered tab/editor fields in the same theme.
+installShellCustomSelects();

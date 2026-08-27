@@ -35,7 +35,7 @@ const GENERATOR_TYPE_DEFINITIONS = [
     aliases: ['vector3f'],
     inputs: ['vector3f', 'color'],
     category: 'vector',
-    defaultValue: 'Vector3f(0.0f, 0.0f, 0.0f)',
+    defaultValue: 'Vector3f(0F, 0F, 0F)',
     literal: 'vector'
   }
 ];
@@ -217,7 +217,7 @@ export function formatGeneratorKotlinLiteral(type, value) {
   const literal = TYPE_DEFINITION_BY_TYPE.get(normalized)?.literal;
   if (literal === 'int') return formatInteger(value);
   if (literal === 'long') return `${normalizeGeneratorLongValue(value)}L`;
-  if (literal === 'float') return `${formatDouble(value)}f`;
+  if (literal === 'float') return `${formatDouble(value)}F`;
   if (literal === 'double') return formatDouble(value);
   if (literal === 'boolean') return value === true || value === 'true' ? 'true' : 'false';
   if (literal === 'string') return formatString(value);
@@ -325,7 +325,7 @@ function formatVectorComponent(type, value) {
   const safe = Number.isFinite(numeric) ? numeric : 0;
   const rounded = Math.abs(safe) < 0.0000005 ? 0 : Number(safe.toFixed(6));
   const literal = Number.isInteger(rounded) ? `${rounded}.0` : String(rounded);
-  return type === 'Vector3f' ? `${literal}f` : literal;
+  return type === 'Vector3f' ? `${literal}F` : literal;
 }
 
 function formatDouble(value, fallback = 0) {

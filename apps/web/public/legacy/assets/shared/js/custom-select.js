@@ -35,6 +35,9 @@ function closeOpen() {
  * all of them.
  */
 let globalsInstalled = false;
+let numericObserverInstalled = false;
+let selectObserverInstalled = false;
+const liveNumericInstances = new Set();
 
 function installGlobals() {
     if (globalsInstalled || typeof document === 'undefined') return;
@@ -81,6 +84,166 @@ function installGlobals() {
     }, true);
 
     window.addEventListener('resize', closeOpen);
+}
+
+/*
+ * Legacy numeric fields use the same interaction contract as the Vue control:
+ * the input remains a normal editable/selectable field, while only the narrow
+ * right-hand rail acts as a vertical scrub handle. A click on the rail alone
+ * is intentionally inert; movement is required before a value changes.
+ */
+function numericStep(input) {
+    const value = Number(input.dataset.cpNumberStep || input.step);
+    return Number.isFinite(value) && value > 0 ? value : 0.01;
+}
+
+function hasPureNumericValue(input) {
+    const value = String(input.value ?? '').trim();
+    return value !== '' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value);
+}
+
+export function numericScrubValue(start, pixels, input, scale = 1) {
+    const step = numericStep(input);
+    let next = Number(start) + Number(pixels || 0) * step * scale;
+    const minText = String(input.min ?? '').trim();
+    const maxText = String(input.max ?? '').trim();
+    const min = minText ? Number(minText) : Number.NaN;
+    const max = maxText ? Number(maxText) : Number.NaN;
+    if (Number.isFinite(min)) next = Math.max(min, next);
+    if (Number.isFinite(max)) next = Math.min(max, next);
+    const precision = Math.min(8, Math.max(0, (String(step).split('.')[1] || '').length + (scale < 1 ? 1 : 0)));
+    const rounded = Number(next.toFixed(precision));
+    return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function makeNumericSvg(path) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 12 12');
+    svg.setAttribute('aria-hidden', 'true');
+    const node = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    node.setAttribute('d', path);
+    svg.appendChild(node);
+    return svg;
+}
+
+function enhanceNumericInput(input) {
+    if (!(input instanceof HTMLInputElement)
+        || input.dataset.cpNumber === 'on'
+        || input.dataset.cpNumberSkip === 'on'
+        || (input.type !== 'number' && !input.hasAttribute('data-pb-expression-input'))
+        || input.closest('.numeric-input')
+        || input.closest('.cp-number')) return null;
+
+    input.dataset.cpNumber = 'on';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'cp-number';
+    input.parentNode.insertBefore(wrapper, input);
+    wrapper.appendChild(input);
+    input.classList.add('cp-number-native');
+
+    const stepper = document.createElement('div');
+    stepper.className = 'cp-number-stepper';
+    stepper.setAttribute('role', 'presentation');
+    stepper.setAttribute('aria-hidden', 'true');
+    const up = document.createElement('span');
+    up.className = 'cp-number-step cp-number-step-up';
+    up.appendChild(makeNumericSvg('m2.2 7.6 3.8-3.8 3.8 3.8'));
+    const down = document.createElement('span');
+    down.className = 'cp-number-step cp-number-step-down';
+    down.appendChild(makeNumericSvg('m2.2 4.4 3.8 3.8 3.8-3.8'));
+    stepper.append(up, down);
+    wrapper.appendChild(stepper);
+
+    let scrubState = null;
+    let lastNumericValue = Number.isFinite(Number(input.value)) ? Number(input.value) : null;
+    const sync = () => {
+        const disabled = input.disabled || !hasPureNumericValue(input);
+        wrapper.classList.toggle('cp-number--disabled', disabled);
+        stepper.classList.toggle('cp-number-stepper--disabled', disabled);
+    };
+    const dispatchValue = (value, commit = false) => {
+        input.value = String(value);
+        lastNumericValue = Number.isFinite(Number(value)) ? Number(value) : lastNumericValue;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        if (commit) input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const move = (event) => {
+        if (!scrubState || !Number.isFinite(scrubState.startValue)) return;
+        const pixels = scrubState.startY - event.clientY;
+        if (!scrubState.active && Math.abs(pixels) < 2) return;
+        scrubState.active = true;
+        event.preventDefault();
+        const scale = event.shiftKey ? 0.1 : (event.ctrlKey || event.metaKey) ? 10 : 1;
+        dispatchValue(numericScrubValue(scrubState.startValue, pixels, input, scale));
+    };
+    const finish = (event) => {
+        if (!scrubState) return;
+        const active = scrubState.active;
+        scrubState = null;
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', finish);
+        window.removeEventListener('pointercancel', finish);
+        if (active) {
+            event?.preventDefault?.();
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        sync();
+    };
+    const start = (event) => {
+        if (event.button !== 0 || input.disabled || !hasPureNumericValue(input)) return;
+        const startValue = Number(input.value);
+        if (!Number.isFinite(startValue)) return;
+        lastNumericValue = startValue;
+        event.preventDefault();
+        stepper.setPointerCapture?.(event.pointerId);
+        scrubState = { startY: event.clientY, startValue, active: false };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', finish, { once: true });
+        window.addEventListener('pointercancel', finish, { once: true });
+    };
+    stepper.addEventListener('pointerdown', start);
+    stepper.addEventListener('pointerup', finish);
+    stepper.addEventListener('pointercancel', finish);
+    stepper.addEventListener('contextmenu', (event) => event.preventDefault());
+    input.addEventListener('input', () => {
+        if (hasPureNumericValue(input)) lastNumericValue = Number(input.value);
+        sync();
+    });
+    input.addEventListener('change', () => {
+        if (hasPureNumericValue(input)) lastNumericValue = Number(input.value);
+        sync();
+    });
+    sync();
+
+    const instance = { input, wrapper, sync, destroy() {
+        if (scrubState) finish();
+        liveNumericInstances.delete(instance);
+        stepper.remove();
+        input.classList.remove('cp-number-native');
+        input.dataset.cpNumber = '';
+        wrapper.replaceWith(input);
+    }};
+    liveNumericInstances.add(instance);
+    return instance;
+}
+
+function installNumericInputs(root = document) {
+    if (typeof document === 'undefined' || !root?.querySelectorAll) return;
+    for (const input of root.querySelectorAll('input.input[type="number"]:not([data-cp-number="on"]), input.input[data-pb-expression-input]:not([data-cp-number="on"])')) {
+        enhanceNumericInput(input);
+    }
+    if (numericObserverInstalled || typeof MutationObserver !== 'function') return;
+    numericObserverInstalled = true;
+    const observer = new MutationObserver((records) => {
+        for (const record of records) {
+            for (const node of record.addedNodes) {
+                if (node.nodeType !== 1) continue;
+                if (node.matches?.('input.input[type="number"], input.input[data-pb-expression-input]')) enhanceNumericInput(node);
+                installNumericInputs(node);
+            }
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
 }
 
 /** Reads the <select>'s options and groups into a flat, renderable model. */
@@ -140,6 +303,7 @@ function enhance(select) {
     const panel = document.createElement('div');
     panel.className = 'cp-select-panel';
     panel.setAttribute('role', 'listbox');
+    panel.dataset.state = 'closed';
     panel.hidden = true;
 
     select.parentNode.insertBefore(root, select);
@@ -160,14 +324,24 @@ function enhance(select) {
     let activeIndex = -1;
     let typeahead = '';
     let typeaheadTimer = 0;
+    let lastValue = select.value;
+    let lastLabel = '';
+    let lastDisabled = select.disabled;
+    let closeTimer = 0;
 
     const optionRows = () => rows
         .map((row, index) => ({ row, index }))
         .filter((entry) => entry.row.type === 'option' && !entry.row.disabled);
 
     const syncTriggerText = () => {
-        const current = rows.find((row) => row.type === 'option' && row.value === select.value);
-        text.textContent = current ? current.label : (select.options[select.selectedIndex]?.text || '');
+        const current = select.options[select.selectedIndex];
+        text.textContent = current?.textContent?.trim() || '';
+    };
+
+    const syncDisabledState = () => {
+        trigger.disabled = select.disabled;
+        trigger.setAttribute('aria-disabled', select.disabled ? 'true' : 'false');
+        if (select.disabled && openInstance?.trigger === trigger) closeOpen();
     };
 
     const setActive = (index, { scroll = true } = {}) => {
@@ -185,6 +359,7 @@ function enhance(select) {
     };
 
     const render = () => {
+        const previousActiveValue = rows[activeIndex]?.value;
         rows = readModel(select);
         panel.textContent = '';
         optionEls = [];
@@ -220,9 +395,23 @@ function enhance(select) {
         });
 
         syncTriggerText();
+        syncDisabledState();
+        const nextActive = rows.findIndex((row) => row.type === 'option' && row.value === previousActiveValue && !row.disabled);
+        const selectedActive = rows.findIndex((row) => row.type === 'option' && row.value === select.value && !row.disabled);
+        activeIndex = nextActive >= 0 ? nextActive : selectedActive;
+        if (activeIndex >= 0) {
+            for (const el of optionEls) {
+                const isActive = Number(el.dataset.index) === activeIndex;
+                el.classList.toggle('active', isActive);
+                if (isActive) panel.setAttribute('aria-activedescendant', el.id);
+            }
+        } else {
+            panel.removeAttribute('aria-activedescendant');
+        }
     };
 
     const commit = (value) => {
+        if (select.disabled) return;
         if (select.value === value) return;
         select.value = value;
         // The tools listen for `change`; a programmatic .value assignment does not
@@ -261,10 +450,13 @@ function enhance(select) {
     };
 
     const open = () => {
+        if (select.disabled) return;
         if (openInstance === instance) return;
         closeOpen();
+        if (closeTimer) window.clearTimeout(closeTimer);
         render();
         panel.hidden = false;
+        panel.dataset.state = 'closed';
         root.classList.add(OPEN_CLASS);
         trigger.setAttribute('aria-expanded', 'true');
         openInstance = instance;
@@ -275,19 +467,64 @@ function enhance(select) {
         setActive(current ? current.index : (optionRows()[0]?.index ?? -1), { scroll: false });
         // Now that a row is marked, bring it into view if the list is long.
         panel.querySelector('.cp-select-option.active')?.scrollIntoView({ block: 'nearest' });
+        requestAnimationFrame(() => {
+            if (openInstance === instance) panel.dataset.state = 'open';
+        });
     };
 
     const close = () => {
-        panel.hidden = true;
+        if (panel.hidden) return;
+        panel.dataset.state = 'closed';
         root.classList.remove(OPEN_CLASS);
         trigger.setAttribute('aria-expanded', 'false');
         panel.removeAttribute('aria-activedescendant');
         if (openInstance === instance) openInstance = null;
+        const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+        const hide = () => {
+            closeTimer = 0;
+            panel.hidden = true;
+        };
+        if (reducedMotion) hide();
+        else {
+            if (closeTimer) window.clearTimeout(closeTimer);
+            closeTimer = window.setTimeout(hide, 180);
+        }
     };
 
-    const instance = { root, panel, trigger, place, close, render, syncTriggerText };
+    const syncState = () => {
+        if (!select.isConnected) {
+            instance.destroy();
+            return;
+        }
+        const selectedLabel = select.options[select.selectedIndex]?.textContent?.trim() || '';
+        const valueChanged = select.value !== lastValue;
+        const labelChanged = selectedLabel !== lastLabel;
+        const disabledChanged = select.disabled !== lastDisabled;
+        if (valueChanged || labelChanged) syncTriggerText();
+        if (disabledChanged) syncDisabledState();
+        if (openInstance === instance && (valueChanged || labelChanged || disabledChanged)) {
+            render();
+            place();
+        }
+        lastValue = select.value;
+        lastLabel = selectedLabel;
+        lastDisabled = select.disabled;
+    };
+
+    let modelObserver = null;
+    const destroy = () => {
+        if (openInstance === instance) close();
+        if (closeTimer) window.clearTimeout(closeTimer);
+        modelObserver?.disconnect();
+        panel.remove();
+        instances.delete(select);
+        liveInstances.delete(instance);
+    };
+
+    const instance = { root, panel, trigger, place, close, render, syncTriggerText, syncState, destroy };
 
     trigger.addEventListener('click', () => {
+        if (select.disabled) return;
         if (openInstance === instance) close();
         else open();
     });
@@ -315,6 +552,7 @@ function enhance(select) {
     };
 
     trigger.addEventListener('keydown', (event) => {
+        if (select.disabled) return;
         const isOpen = openInstance === instance;
 
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -368,7 +606,28 @@ function enhance(select) {
         }
     });
 
+    /*
+     * Option labels and disabled flags can change without replacing the select.
+     * Re-render an open popup immediately; closed controls are also mirrored by
+     * the lightweight state loop below, which catches property-only v-model
+     * assignments that MutationObserver cannot see.
+     */
+    if (typeof MutationObserver === 'function') {
+        modelObserver = new MutationObserver(() => {
+            render();
+            if (openInstance === instance) place();
+        });
+        modelObserver.observe(select, {
+            attributes: true,
+            attributeFilter: ['disabled', 'label', 'selected', 'value'],
+            childList: true,
+            characterData: true,
+            subtree: true
+        });
+    }
+
     render();
+    lastLabel = text.textContent;
     return instance;
 }
 
@@ -382,6 +641,48 @@ function hash(text) {
 }
 
 const instances = new WeakMap();
+const liveInstances = new Set();
+
+function isEnhanceableSelect(node, selector) {
+    return node?.nodeType === 1
+        && node.matches?.(selector)
+        && !node.multiple
+        && node.size <= 1;
+}
+
+function installSelectObserver(selector) {
+    if (selectObserverInstalled || typeof MutationObserver !== 'function' || !document.body) return;
+    selectObserverInstalled = true;
+    const observer = new MutationObserver((records) => {
+        let hasNewControls = false;
+        for (const record of records) {
+            for (const node of record.removedNodes || []) {
+                if (node.nodeType !== 1) continue;
+                if (node.matches?.('.cp-select, select[data-cp-select="on"]')
+                    || node.querySelector?.('.cp-select, select[data-cp-select="on"]')) {
+                    hasNewControls = true;
+                }
+            }
+            for (const node of record.addedNodes || []) {
+                if (node.nodeType !== 1) continue;
+                if (isEnhanceableSelect(node, selector)) {
+                    const instance = enhance(node);
+                    if (instance) {
+                        instances.set(node, instance);
+                        liveInstances.add(instance);
+                    }
+                    continue;
+                }
+                if (node.matches?.(selector) || node.querySelector?.(selector)) {
+                    hasNewControls = true;
+                    installCustomSelects(node, selector);
+                }
+            }
+        }
+        if (hasNewControls) refreshCustomSelects(document);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+}
 
 /**
  * Replaces the native popup on every matching <select>.
@@ -389,14 +690,45 @@ const instances = new WeakMap();
  * Idempotent: a select that has already been enhanced is skipped, so this is safe
  * to call again after a tool rebuilds part of its DOM.
  */
-export function installCustomSelects(root = document, selector = 'select.input, select.theme-select') {
+export function installCustomSelects(root = document, selector = 'select:not([multiple]):not([size])') {
     if (typeof document === 'undefined') return;
     installGlobals();
+    installSelectObserver(selector);
+    installNumericInputs(root);
+    if (isEnhanceableSelect(root, selector)) {
+        const instance = enhance(root);
+        if (instance) {
+            instances.set(root, instance);
+            liveInstances.add(instance);
+        }
+    }
     for (const select of root.querySelectorAll(selector)) {
         // A multiple/size select is a list box, not a dropdown; leave it alone.
         if (select.multiple || select.size > 1) continue;
         const instance = enhance(select);
-        if (instance) instances.set(select, instance);
+        if (instance) {
+            instances.set(select, instance);
+            liveInstances.add(instance);
+        }
+    }
+}
+
+/**
+ * Mirrors property-only framework updates and removes panels whose selects were
+ * unmounted. Call after a host UI update; opening a dropdown also re-renders its
+ * model, so this never needs a permanent animation-frame polling loop.
+ */
+export function refreshCustomSelects(root = document) {
+    if (typeof document === 'undefined') return;
+    for (const instance of [...liveInstances]) {
+        if (!instance.root.isConnected) instance.destroy();
+    }
+    for (const select of root.querySelectorAll('select[data-cp-select="on"]')) {
+        instances.get(select)?.syncState();
+    }
+    for (const instance of [...liveNumericInstances]) {
+        if (!instance.input.isConnected) instance.destroy();
+        else instance.sync();
     }
 }
 

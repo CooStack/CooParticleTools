@@ -8,7 +8,6 @@ import {
 } from './particle-textures.js';
 
 const PREVIEW_SPRITE_SCALE = 1.6;
-const PREVIEW_RENDER_SCALE = 0.6;
 const MAX_RENDERED_SPRITES = 65536;
 const DEFAULT_INTERPOLATION_MS = 50;
 const INFINITE_GRID_PLANE_SIZE = 1000000;
@@ -164,9 +163,6 @@ void main() {
 
 const infiniteGridFragmentShader = `
 uniform float uFineStep;
-uniform float uCoarseStep;
-uniform float uNextStep;
-uniform float uFarStep;
 uniform float uLodBlend;
 uniform vec2 uCenterXZ;
 uniform mat4 uInvProjection;
@@ -174,8 +170,7 @@ uniform mat4 uInvView;
 uniform vec3 uPlaneOrigin;
 uniform float uFadeStart;
 uniform float uFadeEnd;
-uniform vec3 uMinorColor;
-uniform vec3 uMajorColor;
+uniform vec3 uGridColor;
 varying vec2 vScreenUv;
 
 vec3 unproject(vec2 uv, float depth) {
@@ -185,18 +180,12 @@ vec3 unproject(vec2 uv, float depth) {
   return (uInvView * vec4(viewPosition.xyz, 1.0)).xyz;
 }
 
-float gridLine(vec2 coordinate) {
+float gridLine(vec2 coordinate, vec2 derivative) {
   vec2 distanceToLine = abs(fract(coordinate - 0.5) - 0.5);
-  vec2 derivative = fwidth(coordinate);
   vec2 antiAlias = clamp(derivative * 1.5, vec2(0.0001), vec2(0.22));
   vec2 line = 1.0 - smoothstep(vec2(0.0), antiAlias, distanceToLine);
   float pixelCoverage = min(1.0, 0.5 / max(max(derivative.x, derivative.y), 0.0001));
   return max(line.x, line.y) * pixelCoverage;
-}
-
-float gridDensity(vec2 coordinate, float step) {
-  vec2 derivative = fwidth(coordinate / max(step, 0.0001));
-  return max(derivative.x, derivative.y);
 }
 
 void main() {
@@ -208,28 +197,30 @@ void main() {
   float rayDistance = (uPlaneOrigin.y - rayStart.y) / denominator;
   if (rayDistance < 0.0) discard;
   vec3 worldPosition = rayStart + rayDirection * rayDistance;
-  float fineDensity = gridDensity(worldPosition.xz, uFineStep);
-  float coarseDensity = gridDensity(worldPosition.xz, uCoarseStep);
-  float nextDensity = gridDensity(worldPosition.xz, uNextStep);
-  float fineToCoarse = max(smoothstep(0.45, 0.9, fineDensity), uLodBlend);
-  float coarseToNext = smoothstep(0.45, 0.9, coarseDensity);
-  float nextToFar = smoothstep(0.45, 0.9, nextDensity);
-  float fineLine = gridLine(worldPosition.xz / max(uFineStep, 0.0001));
-  float coarseLine = gridLine(worldPosition.xz / max(uCoarseStep, 0.0001));
-  float nextLine = gridLine(worldPosition.xz / max(uNextStep, 0.0001));
-  float farLine = gridLine(worldPosition.xz / max(uFarStep, 0.0001));
+  vec2 worldDerivative = fwidth(worldPosition.xz);
+  float baseDensity = max(worldDerivative.x, worldDerivative.y) / max(uFineStep, 0.0001);
+  float densityLevel = clamp(floor(log2(max(baseDensity / 0.45, 1.0))), 0.0, 20.0);
+  float densityScale = exp2(densityLevel);
+  float localFineStep = uFineStep * densityScale;
+  float localCoarseStep = localFineStep * 2.0;
+  float localDensity = baseDensity / densityScale;
+  float cameraBlend = densityLevel < 0.5 ? uLodBlend : 0.0;
+  float fineToCoarse = max(smoothstep(0.45, 0.9, localDensity), cameraBlend);
+  float fineLine = gridLine(
+    worldPosition.xz / max(localFineStep, 0.0001),
+    worldDerivative / max(localFineStep, 0.0001)
+  );
+  float coarseLine = gridLine(
+    worldPosition.xz / max(localCoarseStep, 0.0001),
+    worldDerivative / max(localCoarseStep, 0.0001)
+  );
   float distanceToCenter = distance(worldPosition.xz, uCenterXZ);
   float fade = 1.0 - smoothstep(uFadeStart, uFadeEnd, distanceToCenter);
-  float coarseMix = smoothstep(0.2, 1.0, uLodBlend);
-  float fineAlpha = fineLine * (1.0 - fineToCoarse) * 0.52;
-  float coarseAlpha = coarseLine * fineToCoarse * (1.0 - coarseToNext) * 0.92;
-  float nextAlpha = nextLine * coarseToNext * (1.0 - nextToFar) * 0.86;
-  float farAlpha = farLine * nextToFar * 0.78;
-  float alpha = max(max(fineAlpha, coarseAlpha), max(nextAlpha, farAlpha)) * fade;
+  float fineAlpha = fineLine * (1.0 - fineToCoarse) * 0.92;
+  float coarseAlpha = coarseLine * 0.92;
+  float alpha = max(fineAlpha, coarseAlpha) * fade;
   if (alpha <= 0.01) discard;
-  float coarseWeight = coarseAlpha / max(alpha, 0.0001);
-  vec3 color = mix(uMinorColor, uMajorColor, clamp(coarseWeight, 0.0, 1.0));
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = vec4(uGridColor, alpha);
 }
 `;
 
@@ -392,6 +383,13 @@ function getFullscreenElement() {
   return document.fullscreenElement || document.webkitFullscreenElement || null;
 }
 
+function resolveGridColor(host) {
+  const themeHost = host?.closest?.('[data-theme]') || document.body;
+  const cssColor = getComputedStyle(themeHost).getPropertyValue('--grid-color').trim();
+  if (cssColor) return cssColor;
+  return themeHost?.getAttribute?.('data-theme') === 'light-1' ? '#6e7f8f' : '#617d9b';
+}
+
 function splitPreviewPoints(points, billboard, oriented) {
   billboard.length = 0;
   oriented.length = 0;
@@ -404,8 +402,8 @@ function splitPreviewPoints(points, billboard, oriented) {
 }
 
 export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFpsChange = null }) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(1);
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setClearColor(0x000000, 0);
   if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
 
@@ -437,6 +435,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
   scene.add(ambient);
   scene.add(directional);
 
+  const themeHost = host.closest?.('[data-theme]') || document.body;
   const gridMaterial = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
@@ -445,9 +444,6 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     extensions: { derivatives: true },
     uniforms: {
       uFineStep: { value: ADAPTIVE_GRID_BASE_STEP },
-      uCoarseStep: { value: ADAPTIVE_GRID_BASE_STEP * 2 },
-      uNextStep: { value: ADAPTIVE_GRID_BASE_STEP * 10 },
-      uFarStep: { value: ADAPTIVE_GRID_BASE_STEP * 250 },
       uLodBlend: { value: 0 },
       uCenterXZ: { value: new THREE.Vector2() },
       uInvProjection: { value: new THREE.Matrix4() },
@@ -455,8 +451,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
       uPlaneOrigin: { value: new THREE.Vector3(0, -0.01, 0) },
       uFadeStart: { value: 12 },
       uFadeEnd: { value: 64 },
-      uMinorColor: { value: new THREE.Color(0x3f5e82) },
-      uMajorColor: { value: new THREE.Color(0x7594b8) }
+      uGridColor: { value: new THREE.Color(resolveGridColor(host)) }
     },
     vertexShader: infiniteGridVertexShader,
     fragmentShader: infiniteGridFragmentShader
@@ -468,6 +463,10 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
   scene.add(grid);
   scene.add(axes);
   let gridStep = ADAPTIVE_GRID_BASE_STEP;
+  const themeObserver = typeof MutationObserver === 'function'
+    ? new MutationObserver(() => gridMaterial.uniforms.uGridColor.value.set(resolveGridColor(host)))
+    : null;
+  themeObserver?.observe(themeHost, { attributes: true, attributeFilter: ['data-theme'] });
 
   const matrix = new THREE.Matrix4();
   const basis = new THREE.Matrix4();
@@ -537,16 +536,12 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
 
   function resize() {
     if (disposed) return;
-    const width = host.clientWidth || 420;
-    const height = host.clientHeight || 280;
-    const renderWidth = Math.max(1, Math.round(width * PREVIEW_RENDER_SCALE));
-    const renderHeight = Math.max(1, Math.round(height * PREVIEW_RENDER_SCALE));
-    renderer.setSize(
-      renderWidth,
-      renderHeight,
-      false
-    );
-    viewportHeight = renderHeight;
+    const width = canvas.clientWidth || host.clientWidth || 420;
+    const height = canvas.clientHeight || host.clientHeight || 280;
+    const renderWidth = Math.max(1, Math.round(width));
+    const renderHeight = Math.max(1, Math.round(height));
+    renderer.setSize(renderWidth, renderHeight, false);
+    viewportHeight = renderer.domElement.height || renderHeight;
     camera.aspect = width / Math.max(height, 1);
     camera.updateProjectionMatrix();
     applyViewportUniforms(billboardMaterial);
@@ -565,9 +560,6 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
     });
     if (Math.abs(lod.fineStep - gridStep) > Math.max(1e-6, lod.fineStep * 1e-6)) {
       gridMaterial.uniforms.uFineStep.value = lod.fineStep;
-      gridMaterial.uniforms.uCoarseStep.value = lod.coarseStep;
-      gridMaterial.uniforms.uNextStep.value = lod.coarseStep * 5;
-      gridMaterial.uniforms.uFarStep.value = lod.coarseStep * 125;
       gridStep = lod.fineStep;
     }
     gridMaterial.uniforms.uLodBlend.value = lod.blend;
@@ -1162,6 +1154,7 @@ export function createThreePointsPreview({ canvas, host, pointSize = 0.07, onFps
   function dispose() {
     disposed = true;
     cancelAnimationFrame(frameId);
+    themeObserver?.disconnect();
     clearPoints();
     grid.geometry.dispose();
     grid.material.dispose();

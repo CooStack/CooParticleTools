@@ -1,0 +1,7 @@
+{
+  "name": "ControlableElectricSparkEffect",
+  "displayName": "ElectricSpark",
+  "textures": [
+    "assets/particles/electric_spark/glow.png"
+  ]
+}

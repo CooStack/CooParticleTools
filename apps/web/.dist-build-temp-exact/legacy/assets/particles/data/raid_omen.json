@@ -1,0 +1,7 @@
+{
+  "name": "ControlableRaidOmenEffect",
+  "displayName": "RaidOmen",
+  "textures": [
+    "assets/particles/raid_omen/raid_omen.png"
+  ]
+}

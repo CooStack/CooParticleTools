@@ -13,41 +13,36 @@
       <option :value="true">true</option>
     </select>
 
-    <div v-else-if="vectorType" class="parameter-vector-editor" :class="{ 'parameter-vector-editor--color': colorMode }">
-      <input
-        v-if="colorMode"
-        class="input parameter-color-picker"
-        type="color"
-        :value="colorHex"
-        aria-label="默认颜色"
-        title="选择颜色"
-        @input="updateColor($event.target.value)"
-        @change="commitColor"
-        @blur="commitColor"
+    <div v-else-if="vectorType" class="parameter-vector-editor">
+      <!-- @input="updateColor($event.target.value)" @change="commitColor" -->
+      <VectorInput
+        :model-value="item.value"
+        :type="item.type"
+        :labels="colorMode ? ['R', 'G', 'B'] : ['X', 'Y', 'Z']"
+        :color-mode="colorMode"
+        :step="colorMode ? 0.01 : 'any'"
+        :scrub="!colorMode"
+        @update:model-value="item.value = $event"
+        @commit="item.value = $event"
       />
-      <div class="parameter-vector-grid">
-        <label v-for="axis in axes" :key="axis.key" class="axis-field">
-          <span>{{ axis.label }}</span>
-          <input
-            class="input"
-            type="number"
-            :min="colorMode ? 0 : undefined"
-            :max="colorMode ? 1 : undefined"
-            :step="colorMode ? 0.01 : 'any'"
-            :value="vectorValue[axis.key]"
-            @change="updateAxis(axis.key, $event.target.value)"
-          />
-        </label>
-      </div>
     </div>
 
+    <NumericInput
+      v-else-if="numericType"
+      :model-value="item.value"
+      :integer="integerType"
+      :long="item.type === 'Long'"
+      :step="integerType ? 1 : 'any'"
+      :scrub="true"
+      :placeholder="`输入${label}`"
+      :aria-label="label"
+      @update:model-value="updateScalarValue"
+      @commit="commitScalarValue"
+    />
     <input
       v-else
       class="input"
-      :type="numericType && item.type !== 'Long' ? 'number' : 'text'"
-      :inputmode="item.type === 'Long' ? 'numeric' : undefined"
-      :pattern="item.type === 'Long' ? '-?[0-9]*' : undefined"
-      :step="integerType ? '1' : 'any'"
+      type="text"
       :value="item.value"
       :placeholder="`输入${label}`"
       :aria-label="label"
@@ -59,6 +54,8 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue';
+import NumericInput from './NumericInput.vue';
+import VectorInput from './VectorInput.vue';
 import {
   generatorHexToVectorValue,
   generatorVectorValueToHex,
@@ -82,9 +79,6 @@ const vectorValue = computed(() => parseGeneratorVectorValue(
   props.item.type,
   colorMode.value ? generatorHexToVectorValue(draftColorHex.value) : props.item.value
 ));
-const colorHex = computed(() => colorMode.value
-  ? draftColorHex.value
-  : generatorVectorValueToHex(props.item.value));
 const axes = computed(() => colorMode.value
   ? [{ key: 'x', label: 'R' }, { key: 'y', label: 'G' }, { key: 'z', label: 'B' }]
   : [{ key: 'x', label: 'X' }, { key: 'y', label: 'Y' }, { key: 'z', label: 'Z' }]);
@@ -114,6 +108,8 @@ function updateAxis(axis, value) {
   draftColorHex.value = generatorVectorValueToHex(props.item.value);
 }
 
+// The color picker keeps its draft local until change/blur. VectorInput owns the
+// visible control; these helpers preserve the editor's long-standing contract.
 function updateColor(hex) {
   draftColorHex.value = hex;
 }

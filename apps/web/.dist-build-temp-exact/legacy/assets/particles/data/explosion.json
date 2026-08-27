@@ -1,0 +1,22 @@
+{
+  "name": "ControlableExplosionEffect",
+  "displayName": "Explosion",
+  "textures": [
+    "assets/particles/explosion/explosion_0.png",
+    "assets/particles/explosion/explosion_1.png",
+    "assets/particles/explosion/explosion_2.png",
+    "assets/particles/explosion/explosion_3.png",
+    "assets/particles/explosion/explosion_4.png",
+    "assets/particles/explosion/explosion_5.png",
+    "assets/particles/explosion/explosion_6.png",
+    "assets/particles/explosion/explosion_7.png",
+    "assets/particles/explosion/explosion_8.png",
+    "assets/particles/explosion/explosion_9.png",
+    "assets/particles/explosion/explosion_10.png",
+    "assets/particles/explosion/explosion_11.png",
+    "assets/particles/explosion/explosion_12.png",
+    "assets/particles/explosion/explosion_13.png",
+    "assets/particles/explosion/explosion_14.png",
+    "assets/particles/explosion/explosion_15.png"
+  ]
+}

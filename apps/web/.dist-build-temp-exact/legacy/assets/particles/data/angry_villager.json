@@ -1,0 +1,7 @@
+{
+  "name": "ControlableAngryVillagerEffect",
+  "displayName": "AngryVillager",
+  "textures": [
+    "assets/particles/angry_villager/angry.png"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "ControlableHeartEffect",
+  "displayName": "Heart",
+  "textures": [
+    "assets/particles/heart/heart.png"
+  ]
+}

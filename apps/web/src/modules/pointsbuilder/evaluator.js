@@ -14,13 +14,21 @@ export function evaluatePointsNodes(nodes = []) {
 export function evaluatePointsProject(project, options = {}) {
   const normalized = normalizePointsBuilderProject(project, project?.tool || 'pointsbuilder');
   resolvePreviewExpressions(getProjectNodes(normalized), options.parameters);
-  return evalBuilder(getProjectNodes(normalized));
+  return evalBuilder(getProjectNodes(normalized), undefined, {
+    snapshots: normalized.state.builderSnapshots,
+    referenceCache: options.referenceCache,
+    resolveExpressions: (nodes) => resolvePreviewExpressions(nodes, options.parameters)
+  });
 }
 
 export function evaluatePointsProjectWithMeta(project, options = {}) {
   const normalized = normalizePointsBuilderProject(project, project?.tool || 'pointsbuilder');
   resolvePreviewExpressions(getProjectNodes(normalized), options.parameters);
-  return evalBuilderWithMeta(getProjectNodes(normalized));
+  return evalBuilderWithMeta(getProjectNodes(normalized), undefined, {
+    snapshots: normalized.state.builderSnapshots,
+    referenceCache: options.referenceCache,
+    resolveExpressions: (nodes) => resolvePreviewExpressions(nodes, options.parameters)
+  });
 }
 
 function resolvePreviewExpressions(nodes, parameters) {

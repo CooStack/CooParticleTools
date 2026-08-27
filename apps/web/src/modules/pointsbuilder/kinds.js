@@ -81,7 +81,12 @@ const KOTLIN_MODE_OPTIONS = [
   { label: '预声明变量', value: 'valRel' }
 ];
 
-export const BUILDER_CONTAINER_KINDS = new Set(['add_builder', 'add_with', 'clear_as_mask', 'apply_bezier_distribution']);
+export const BUILDER_CONTAINER_KINDS = new Set([
+  'add_builder',
+  'add_with',
+  'clear_as_mask',
+  'apply_bezier_distribution'
+]);
 
 function offsetFrom(params = {}) {
   return v(num(params.ox), num(params.oy), num(params.oz));
@@ -196,6 +201,77 @@ export const FOURIER_TERM_FIELDS = [
 ];
 
 export const POINTS_NODE_KINDS = {
+  builder_reference: {
+    title: '实例',
+    group: '容器',
+    description: '引用项目内保存的 PointsBuilder 实例原型；内部节点只读。',
+    defaultParams: {
+      snapshotId: '',
+      parameterId: '',
+      instanceMode: 'static',
+      instanceBindingMode: 'registered',
+      ox: 0,
+      oy: 0,
+      oz: 0,
+      scale: 1,
+      rotationDeg: 0,
+      rotationAxisX: 0,
+      rotationAxisY: 1,
+      rotationAxisZ: 0,
+      overrides: {}
+    },
+    supportsChildren: false,
+    fields: [
+      { key: 'snapshotId', label: '实例原型 ID', type: 'text', readonly: true },
+      { key: 'instanceMode', label: '实例类型', type: 'select', options: [['static', '静态实例'], ['construct', '构造实例']] },
+      { key: 'ox', label: '偏移 X', type: 'number', step: 0.1 },
+      { key: 'oy', label: '偏移 Y', type: 'number', step: 0.1 },
+      { key: 'oz', label: '偏移 Z', type: 'number', step: 0.1 },
+      { key: 'scale', label: '缩放', type: 'number', step: 0.1 },
+      { key: 'rotationDeg', label: '旋转角', type: 'number', step: 1 },
+      { key: 'rotationAxisX', label: '旋转轴 X', type: 'number', step: 0.1 },
+      { key: 'rotationAxisY', label: '旋转轴 Y', type: 'number', step: 0.1 },
+      { key: 'rotationAxisZ', label: '旋转轴 Z', type: 'number', step: 0.1 }
+    ],
+    apply() {}
+  },
+  effect_ring: {
+    title: '环形阵列实例',
+    group: '参数化实例',
+    description: '沿圆环重复放置项目内的实例原型。',
+    defaultParams: {
+      snapshotIds: [],
+      count: 12,
+      radius: 3,
+      startDeg: 0,
+      originX: 0,
+      originY: 0,
+      originZ: 0,
+      axisX: 0,
+      axisY: 0,
+      axisZ: 1,
+      offsetX: 0,
+      offsetY: 0,
+      offsetZ: 0,
+      faceCenter: true,
+      reverse: false
+    },
+    supportsChildren: false,
+    fields: [
+      { key: 'count', label: '数量', type: 'number', step: 1, min: 1 },
+      { key: 'radius', label: '半径', type: 'number', step: 0.1 },
+      { key: 'startDeg', label: '起角', type: 'number', step: 1 },
+      { key: 'originX', label: '圆心 X', type: 'number', step: 0.1 },
+      { key: 'originY', label: '圆心 Y', type: 'number', step: 0.1 },
+      { key: 'originZ', label: '圆心 Z', type: 'number', step: 0.1 },
+      { key: 'offsetX', label: '偏移 X', type: 'number', step: 0.1 },
+      { key: 'offsetY', label: '偏移 Y', type: 'number', step: 0.1 },
+      { key: 'offsetZ', label: '偏移 Z', type: 'number', step: 0.1 },
+      { key: 'faceCenter', label: '朝向圆心', type: 'checkbox' },
+      { key: 'reverse', label: '反向', type: 'checkbox' }
+    ],
+    apply() {}
+  },
   axis: {
     title: '对称轴',
     group: '变换',

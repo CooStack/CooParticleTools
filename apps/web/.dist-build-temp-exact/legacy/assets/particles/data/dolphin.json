@@ -1,0 +1,7 @@
+{
+  "name": "ControlableDolphinEffect",
+  "displayName": "Dolphin",
+  "textures": [
+    "assets/particles/dolphin/generic_0.png"
+  ]
+}

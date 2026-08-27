@@ -723,7 +723,7 @@ onBeforeUnmount(() => {
   --curve-selected-color: var(--ok, var(--warning));
   --curve-selected-border: color-mix(in srgb, var(--ok, #f59e0b) 50%, transparent);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius2, 12px);
   background: var(--bg-soft);
   padding: 10px;
   display: grid;
@@ -812,7 +812,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   background: var(--bg-panel);
   color: inherit;
-  border-radius: 8px;
+  border-radius: var(--radius3, 10px);
   min-height: 30px;
 }
 
@@ -837,7 +837,7 @@ onBeforeUnmount(() => {
 .curve-stage {
   position: relative;
   min-height: 164px;
-  border-radius: 8px;
+  border-radius: var(--radius3, 10px);
   overflow: hidden;
   background: var(--curve-canvas-bg);
 }
@@ -851,7 +851,7 @@ onBeforeUnmount(() => {
   min-height: 26px !important;
   appearance: textfield;
   border: 1px solid transparent !important;
-  border-radius: 4px !important;
+  border-radius: var(--radius3, 10px) !important;
   outline: none;
   background: transparent !important;
   box-shadow: none !important;
@@ -952,7 +952,7 @@ onBeforeUnmount(() => {
 .curve-frame-row {
   justify-content: space-between;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius3, 10px);
   padding: 6px;
   background: var(--bg-soft);
 }

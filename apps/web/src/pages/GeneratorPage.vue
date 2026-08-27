@@ -36,21 +36,18 @@
       <aside class="generator-panel generator-left">
         <div class="panel-title-row">
           <strong>粒子发射器</strong>
-          <button class="btn small primary" @click="addEmitter">+ 发射器</button>
+          <button class="btn small primary" @click="addEmitter">增加发射器</button>
         </div>
 
-        <section class="left-block">
-          <div class="block-title">预览</div>
-          <label class="field">
-            <span>Tick/秒</span>
-            <input v-model.number="project.ticksPerSecond" class="input" type="number" min="1" max="200" step="1" />
-          </label>
-        </section>
-
         <nav class="left-tabs" aria-label="页面切换">
-          <button v-for="tab in leftTabs" :key="tab.id" type="button" :class="{ active: tab.id === 'settings' ? settingsOpen : project.leftTab === tab.id }" @click="selectGeneratorTab(tab.id)">
-            {{ tab.label }}
-          </button>
+          <section v-for="group in leftTabGroups" :key="group.id" class="left-tab-group">
+            <div class="left-tab-group-title">{{ group.label }}</div>
+            <div class="left-tab-grid">
+              <button v-for="tab in group.tabs" :key="tab.id" type="button" :class="{ active: project.leftTab === tab.id }" @click="selectGeneratorTab(tab.id)">
+                {{ tab.label }}
+              </button>
+            </div>
+          </section>
         </nav>
 
         <section v-if="project.leftTab === 'emitters'" class="left-block">
@@ -69,7 +66,7 @@
                   <div class="sub emitter-card-meta">
                     <span>{{ emitterTypeLabel(card.emitter.type) }}</span>
                     <span v-if="card.useGPU" class="chip">GPU</span>
-                    <span v-if="duplicateEmitterSignCount(card)" class="duplicate-sign-badge">sign 重复</span>
+                    <span v-if="!card.useGPU && duplicateEmitterSignCount(card)" class="duplicate-sign-badge">sign 重复</span>
                   </div>
                 </div>
               </div>
@@ -85,8 +82,8 @@
 
         <section v-else-if="project.leftTab === 'queues'" class="left-block">
           <div class="panel-title-row compact">
-            <span class="block-title">命令队列</span>
-            <button class="btn small" @click="addQueue">+ 队列</button>
+            <span class="block-title">CPU 粒子处理力</span>
+            <button class="btn small" @click="addQueue">增加一个处理力</button>
           </div>
           <article
             v-for="queue in project.commandQueues"
@@ -100,85 +97,54 @@
           </article>
         </section>
 
-        <section v-else-if="project.leftTab === 'gpu_commands'" class="left-block">
+        <section v-else-if="project.leftTab === 'force_commands'" class="left-block">
           <div class="panel-title-row compact">
-            <span class="block-title">GPU Commands</span>
-            <button class="btn small" :disabled="project.gpuCommands.length >= 16" @click="addGpuCommand">+ Command</button>
+            <span class="block-title">GPU 粒子处理力</span>
+            <button class="btn small" :disabled="enabledCParticleForceCount >= cparticleForceLimit" @click="addForceCommandFromSidebar">增加一个处理力</button>
           </div>
-          <div class="sub">{{ project.gpuCommands.length }} / 16</div>
+          <div class="sub">{{ enabledCParticleForceCount }} / {{ cparticleForceLimit }}</div>
+          <div class="compatibility-note">为 CParticle GPU compute 定义粒子处理力与 Selector。</div>
+          <div v-if="!project.forceCommands.length" class="empty-state">当前没有 GPU 粒子处理力。</div>
+        </section>
+
+        <section v-else-if="project.leftTab === 'resources'" class="left-block">
+          <div class="panel-title-row compact">
+            <span class="block-title">Force 资源声明</span>
+            <button class="btn small" type="button" @click="addForceResourceFromSidebar">增加资源</button>
+          </div>
+          <div class="sub">Texture：{{ textureForceResourceCount }}</div>
+          <div class="sub">FluidFlow：{{ fluidForceResourceCount }}</div>
+          <div class="compatibility-note">Texture 上传用于 Web 预览；Kotlin 根据 ResourceLocation 绑定资源包纹理。</div>
+          <div class="compatibility-note">Texture 使用 CParticleTextureResource 的默认资源包绑定，不填写 OpenGL texture id。FluidFlow 仍需客户端注册 CParticleForceResourceBinding。</div>
+          <div v-if="!project.forceResources.length" class="empty-state">暂无 Force 资源。</div>
+        </section>
+
+        <section v-else-if="project.leftTab === 'cparticle_masks'" class="left-block">
+          <div class="panel-title-row compact">
+            <span class="block-title">CParticle 标记与掩码</span>
+            <div class="inline-actions">
+              <button class="btn small" type="button" @click="addCParticleSignFromSidebar">增加一个 sign</button>
+              <button class="btn small" type="button" :disabled="nextCParticleCommandMaskValue === null" @click="addCParticleCommandMaskFromSidebar">增加一个 commandMask</button>
+            </div>
+          </div>
+          <div class="compatibility-note">
+            sign 是用户定义的逻辑标签，例如火焰、烟雾或碎片；commandMask 是粒子参与 Command 类别的 32-bit 位掩码。
+          </div>
+          <div class="sub">sign：{{ project.signs.length }}</div>
+          <div class="sub">commandMask：{{ project.commandMasks.length }}</div>
         </section>
 
         <section v-else-if="project.leftTab === 'project'" class="left-block">
           <div class="block-title">项目设置</div>
           <label class="field"><span>类名</span><input v-model="project.kotlin.className" class="input" type="text" /></label>
           <label class="field"><span>包名</span><input v-model="project.kotlin.packageName" class="input" type="text" placeholder="cn.coostack.generated.emitters" /></label>
+          <label class="field"><span>Tick/秒</span><NumericInput v-model="project.ticksPerSecond" :min="1" :max="200" :step="1" integer /></label>
+          <label class="field"><span>预览 Tick</span><NumericInput v-model="project.previewTicks" :min="1" :max="2000" :step="1" integer @commit="restartPreview" /></label>
           <label class="field"><span>映射</span><select v-model="project.kotlin.mapping" class="input"><option value="yarn">Yarn (Fabric)</option><option value="mojmap">Mojang / Mojmap</option></select></label>
           <label class="field"><span>发射器运行模式</span><select v-model="project.rootLifecycle.mode" class="input" @change="restartPreviewAfterRootLifecycleChange"><option value="once">只运行一次</option><option value="interval">持续运行</option><option value="interval_n_tick">按总 Tick 运行</option></select></label>
           <div class="grid2">
-            <label class="field"><span>发射间隔 Tick</span><input v-model.number="project.rootLifecycle.intervalTick" class="input" type="number" min="1" step="1" @change="restartPreviewAfterRootLifecycleChange" /></label>
-            <label class="field"><span>运行时长 Tick</span><input v-model.number="project.rootLifecycle.maxTick" class="input" type="number" min="1" step="1" @change="restartPreviewAfterRootLifecycleChange" /></label>
-          </div>
-          <div class="panel-title-row compact">
-            <span class="block-title">变量</span>
-            <button class="btn small" type="button" @click="addProjectVariable">+ 变量</button>
-          </div>
-          <div v-if="!project.parameters.variables.length" class="empty-state">暂无 @CodecField 变量。</div>
-          <div v-for="item in project.parameters.variables" :key="item.id" class="parameter-editor">
-            <div class="parameter-editor-head">
-              <label class="field parameter-name-field"><span>变量名</span><input :value="item.name" class="input" type="text" placeholder="变量名" @input="updateParameterName(item, $event)" /></label>
-              <button class="btn small danger parameter-delete" type="button" @click="removeProjectVariable(item.id)">删除变量</button>
-            </div>
-            <div class="parameter-field-grid">
-              <label class="field">
-                <span>类型</span>
-                <select v-model="item.type" class="input" @change="syncParameterType(item)">
-                  <option v-for="type in generatorValueTypes" :key="type" :value="type">{{ type }}</option>
-                </select>
-              </label>
-              <GeneratorParameterValueEditor :item="item" label="默认值" />
-            </div>
-            <label class="check-row parameter-codec"><input v-model="item.codec" type="checkbox" />生成 @CodecField</label>
-            <details v-if="isNumericVariable(item)" class="variable-automation">
-              <summary>
-                <span>变量变化</span>
-                <label class="check-row" @click.stop><input v-model="item.automation.enabled" type="checkbox" />启用</label>
-              </summary>
-              <div v-if="item.automation.enabled" class="variable-automation-body">
-                <div class="grid2">
-                  <label class="field"><span>自变量</span><select v-model="item.automation.source" class="input"><option value="lifecycle">Emitter 生命周期</option><option value="variable">指定变量</option></select></label>
-                  <label v-if="item.automation.source === 'variable'" class="field"><span>来源变量</span><select v-model="item.automation.sourceVariable" class="input"><option value="">请选择</option><option v-for="source in automationSourceVariables(item)" :key="source.name" :value="source.name">{{ source.name }}</option></select></label>
-                </div>
-                <div v-if="item.automation.source === 'variable'" class="grid2">
-                  <label class="field"><span>来源最小值</span><input v-model.number="item.automation.sourceMin" class="input" type="number" step="any" /></label>
-                  <label class="field"><span>来源最大值</span><input v-model.number="item.automation.sourceMax" class="input" type="number" step="any" /></label>
-                </div>
-                <div class="grid2">
-                  <label class="field"><span>变量最小值</span><input v-model.number="item.automation.targetMin" class="input" type="number" step="any" /></label>
-                  <label class="field"><span>变量最大值</span><input v-model.number="item.automation.targetMax" class="input" type="number" step="any" /></label>
-                </div>
-                <LifecycleCurveEditor title="Progress 采样" :curve="item.automation.curve" :hard-min="0" :hard-max="1" />
-              </div>
-            </details>
-          </div>
-          <div class="panel-title-row compact">
-            <span class="block-title">常量</span>
-            <button class="btn small" type="button" @click="addProjectConstant">+ 常量</button>
-          </div>
-          <div v-if="!project.parameters.constants.length" class="empty-state">暂无常量。</div>
-          <div v-for="item in project.parameters.constants" :key="item.id" class="parameter-editor">
-            <div class="parameter-editor-head">
-              <label class="field parameter-name-field"><span>常量名</span><input :value="item.name" class="input" type="text" placeholder="常量名" @input="updateParameterName(item, $event)" /></label>
-              <button class="btn small danger parameter-delete" type="button" @click="removeProjectConstant(item.id)">删除常量</button>
-            </div>
-            <div class="parameter-field-grid">
-              <label class="field">
-                <span>类型</span>
-                <select v-model="item.type" class="input" @change="syncParameterType(item)">
-                  <option v-for="type in generatorValueTypes" :key="type" :value="type">{{ type }}</option>
-                </select>
-              </label>
-              <GeneratorParameterValueEditor :item="item" label="值" />
-            </div>
+            <label class="field"><span>发射间隔 Tick</span><NumericInput v-model="project.rootLifecycle.intervalTick" :min="1" :step="1" integer @commit="restartPreviewAfterRootLifecycleChange" /></label>
+            <label class="field"><span>运行时长 Tick</span><NumericInput v-model="project.rootLifecycle.maxTick" :min="1" :step="1" integer @commit="restartPreviewAfterRootLifecycleChange" /></label>
           </div>
         </section>
 
@@ -233,6 +199,12 @@
             <li v-for="item in previewErrors" :key="item.key || item.message">{{ item.message }}</li>
           </ul>
         </div>
+        <div v-if="previewWarnings.length && !hasVisibleAutocomplete" class="preview-warning-overlay" role="status">
+          <strong>预览提示</strong>
+          <ul>
+            <li v-for="item in previewWarnings" :key="item.key || item.message">{{ item.message }}</li>
+          </ul>
+        </div>
       </section>
 
       <div class="panel-resizer panel-resizer--right" role="separator" aria-label="调整右侧面板宽度" @pointerdown="startPanelResize('right', $event)"></div>
@@ -240,20 +212,18 @@
       <aside class="generator-panel generator-right">
         <template v-if="project.leftTab === 'queues' && selectedQueue">
           <div class="panel-title-row">
-            <strong>CPU 命令队列</strong>
+            <strong>CPU 粒子处理力</strong>
             <div class="inline-actions">
               <span class="chip">{{ selectedQueue.name }}</span>
-              <button class="btn small" @click="convertSelectedQueueToGpu">转为 GPU</button>
               <button class="btn small danger" :disabled="project.commandQueues.length <= 1" @click="removeQueue(selectedQueue.id)">删除队列</button>
             </div>
           </div>
           <label class="field"><span>队列名称</span><input v-model="selectedQueue.name" class="input" type="text" /></label>
           <label class="field"><span>标记列表</span><input class="input" type="text" :value="selectedQueue.signs.join(', ')" placeholder="例如：0, 1, 2；留空表示全部" @input="updateQueueSigns($event.target.value)" /></label>
-          <div v-if="commandConversionMessage" class="compatibility-note" :class="{ 'compatibility-note--error': commandConversionWarning }">{{ commandConversionMessage }}</div>
           <section class="editor-section">
             <div class="panel-title-row compact">
-              <span class="section-title">命令</span>
-              <button class="btn small primary" @click="addQueueCommandToSelected">+ 添加命令</button>
+              <span class="section-title">处理力</span>
+              <button class="btn small primary" @click="addQueueCommandToSelected">增加一个处理力</button>
             </div>
             <div v-if="!selectedQueue.commands.length" class="empty-state">当前队列没有命令。</div>
             <article v-for="(command, index) in selectedQueue.commands" :key="command.id" class="command-card">
@@ -296,53 +266,84 @@
           </section>
         </template>
 
-        <template v-else-if="project.leftTab === 'gpu_commands'">
+        <CParticleForceEditor v-else-if="project.leftTab === 'force_commands'" :project="project" />
+
+        <CParticleResourceEditor v-else-if="project.leftTab === 'resources'" :project="project" @preview-change="restartPreview" />
+
+        <CParticleMaskEditor v-else-if="project.leftTab === 'cparticle_masks'" :project="project" />
+
+        <template v-else-if="project.leftTab === 'project'">
           <div class="panel-title-row">
-            <strong>GPU Commands</strong>
-            <div class="inline-actions">
-              <span class="chip">{{ project.gpuCommands.length }} / 16</span>
-              <button class="btn small" :disabled="!project.gpuCommands.length" @click="convertGpuCommandsToSelectedQueue">转为 CPU</button>
-              <button class="btn small primary" :disabled="project.gpuCommands.length >= 16" @click="addGpuCommand">+ Command</button>
-            </div>
+            <strong>项目变量与常量</strong>
           </div>
-          <div v-if="commandConversionMessage" class="compatibility-note" :class="{ 'compatibility-note--error': commandConversionWarning }">{{ commandConversionMessage }}</div>
-          <div v-if="!project.gpuCommands.length" class="empty-state">当前没有 GPU Command。</div>
-          <article v-for="command in project.gpuCommands" :key="command.id" class="command-card">
+
+          <section class="editor-section">
             <div class="panel-title-row compact">
-              <label class="check-row"><input v-model="command.enabled" type="checkbox" />启用</label>
-              <button class="icon-btn" title="删除 GPU Command" @click="removeGpuCommand(command.id)">×</button>
+              <span class="section-title">变量</span>
+              <button class="btn small primary" type="button" @click="addProjectVariable">增加变量</button>
             </div>
-            <div class="grid2">
-              <label class="field"><span>名称</span><input v-model="command.label" class="input" type="text" /></label>
-              <label class="field"><span>类型</span><select v-model="command.type" class="input" @change="syncCommandType(command)"><option v-for="item in gpuCommandTypeOptions" :key="item.id" :value="item.id">{{ item.label }}</option></select></label>
+            <div v-if="!project.parameters.variables.length" class="empty-state">暂无 @CodecField 变量。</div>
+            <div v-for="item in project.parameters.variables" :key="item.id" class="parameter-editor">
+              <div class="parameter-editor-head">
+                <label class="field parameter-name-field"><span>变量名</span><input :value="item.name" class="input" type="text" placeholder="变量名" @input="updateParameterName(item, $event)" /></label>
+                <button class="btn small danger parameter-delete" type="button" @click="removeProjectVariable(item.id)">删除变量</button>
+              </div>
+              <div class="parameter-field-grid">
+                <label class="field">
+                  <span>类型</span>
+                  <select v-model="item.type" class="input" @change="syncParameterType(item)">
+                    <option v-for="type in generatorValueTypes" :key="type" :value="type">{{ type }}</option>
+                  </select>
+                </label>
+                <GeneratorParameterValueEditor :item="item" label="默认值" />
+              </div>
+              <label class="check-row parameter-codec"><input v-model="item.codec" type="checkbox" />生成 @CodecField</label>
+              <details v-if="isNumericVariable(item)" class="variable-automation">
+                <summary>
+                  <span>变量变化</span>
+                  <label class="check-row" @click.stop><input v-model="item.automation.enabled" type="checkbox" />启用</label>
+                </summary>
+                <div v-if="item.automation.enabled" class="variable-automation-body">
+                  <div class="grid2">
+                    <label class="field"><span>自变量</span><select v-model="item.automation.source" class="input"><option value="lifecycle">Emitter 生命周期</option><option value="variable">指定变量</option></select></label>
+                    <label v-if="item.automation.source === 'variable'" class="field"><span>来源变量</span><select v-model="item.automation.sourceVariable" class="input"><option value="">请选择</option><option v-for="source in automationSourceVariables(item)" :key="source.name" :value="source.name">{{ source.name }}</option></select></label>
+                  </div>
+                  <div v-if="item.automation.source === 'variable'" class="grid2">
+                    <label class="field"><span>来源最小值</span><input v-model.number="item.automation.sourceMin" class="input" type="number" step="any" /></label>
+                    <label class="field"><span>来源最大值</span><input v-model.number="item.automation.sourceMax" class="input" type="number" step="any" /></label>
+                  </div>
+                  <div class="grid2">
+                    <label class="field"><span>变量最小值</span><input v-model.number="item.automation.targetMin" class="input" type="number" step="any" /></label>
+                    <label class="field"><span>变量最大值</span><input v-model.number="item.automation.targetMax" class="input" type="number" step="any" /></label>
+                  </div>
+                  <LifecycleCurveEditor title="Progress 采样" :curve="item.automation.curve" :hard-min="0" :hard-max="1" />
+                </div>
+              </details>
             </div>
-            <div v-if="commandParamFields(command).length" class="command-param-grid">
-              <label v-for="field in commandParamFields(command)" :key="field.key" class="mini-field">
-                <span>{{ field.label }}</span>
-                <select v-if="field.type === 'select'" v-model="command.params[field.key]" class="input">
-                  <option v-for="option in field.options" :key="option.value" :value="option.value">{{ option.label }}</option>
-                </select>
-                <select
-                  v-else-if="field.type === 'boolean'"
-                  class="input"
-                  :value="String(command.params[field.key])"
-                  @change="command.params[field.key] = $event.target.value === 'true'"
-                >
-                  <option value="true">开启</option>
-                  <option value="false">关闭</option>
-                </select>
-                <input
-                  v-else
-                  v-model.number="command.params[field.key]"
-                  class="input"
-                  type="number"
-                  :step="field.step || '0.01'"
-                  :min="field.min"
-                  :max="field.max"
-                />
-              </label>
+          </section>
+
+          <section class="editor-section">
+            <div class="panel-title-row compact">
+              <span class="section-title">常量</span>
+              <button class="btn small primary" type="button" @click="addProjectConstant">增加常量</button>
             </div>
-          </article>
+            <div v-if="!project.parameters.constants.length" class="empty-state">暂无常量。</div>
+            <div v-for="item in project.parameters.constants" :key="item.id" class="parameter-editor">
+              <div class="parameter-editor-head">
+                <label class="field parameter-name-field"><span>常量名</span><input :value="item.name" class="input" type="text" placeholder="常量名" @input="updateParameterName(item, $event)" /></label>
+                <button class="btn small danger parameter-delete" type="button" @click="removeProjectConstant(item.id)">删除常量</button>
+              </div>
+              <div class="parameter-field-grid">
+                <label class="field">
+                  <span>类型</span>
+                  <select v-model="item.type" class="input" @change="syncParameterType(item)">
+                    <option v-for="type in generatorValueTypes" :key="type" :value="type">{{ type }}</option>
+                  </select>
+                </label>
+                <GeneratorParameterValueEditor :item="item" label="值" />
+              </div>
+            </div>
+          </section>
         </template>
 
         <template v-else-if="selectedEmitter">
@@ -364,6 +365,15 @@
               <div v-if="selectedEmitter.useGPU" class="gpu-parameter-options">
                 <label class="field"><span>更新模式</span><select v-model="selectedEmitter.gpu.updateMode" class="input"><option value="static">STATIC</option><option value="dynamic">DYNAMIC</option></select></label>
                 <label class="field"><span>随机种子</span><input v-model.number="selectedEmitter.gpu.randomSeed" class="input" type="number" step="1" placeholder="自动" /></label>
+                <label class="field"><span>sign 逻辑标签</span><select v-model="selectedEmitter.gpu.signRef" class="input"><option value="">未设置</option><option v-for="sign in project.signs" :key="sign.id" :value="sign.id">{{ sign.name }} = {{ sign.value }}</option></select></label>
+                <label class="field"><span>metadataFlags</span><input v-model.number="selectedEmitter.gpu.metadataFlags" class="input" type="number" step="1" /></label>
+                <label class="field"><span>charge</span><input v-model.number="selectedEmitter.gpu.charge" class="input" type="number" step="any" placeholder="留空 = Float.NaN" /></label>
+                <label class="field"><span>粒子物理半径（Lennard-Jones）</span><input v-model.number="selectedEmitter.gpu.radius" class="input" type="number" min="0" step="any" /></label>
+                <div class="field gpu-command-mask-field">
+                  <span>commandMask 类别</span>
+                  <div v-if="!project.commandMasks.length" class="sub">请先在 CParticle 掩码页创建命名类别。</div>
+                  <label v-for="mask in project.commandMasks" :key="mask.id" class="check-row"><input type="checkbox" :checked="selectedEmitter.gpu.commandMaskRefs.includes(mask.id)" @change="toggleGpuCommandMask(selectedEmitter, mask.id, $event.target.checked)" />{{ mask.name }} = {{ mask.value }}</label>
+                </div>
               </div>
             </div>
 
@@ -444,7 +454,7 @@
                 />
               </label>
             </div>
-            <div v-if="selectedEmitter.useGPU" class="compatibility-note">GPU 碰撞写入 ControlableCParticleData.blockCollision；碰撞目标仅用于 CPU 粒子的 sign 筛选。GPU 运动使用 GPU Commands。</div>
+            <div v-if="selectedEmitter.useGPU" class="compatibility-note">GPU 碰撞写入 ControlableCParticleData.blockCollision；碰撞目标仅用于 CPU 粒子的 sign 筛选。CParticle 运动使用独立的 Force Commands。</div>
           </section>
 
           <section class="editor-section">
@@ -474,7 +484,7 @@
               <BindableField :card="selectedEmitter" path="render.baseScale.y" label="高度倍率" value-type="float" min="0" step="0.01" />
             </div>
             <div class="grid3 sign-grid-row">
-              <div class="field-pack sign-field-wrap" :class="{ 'duplicate-sign-field': duplicateEmitterSignCount(selectedEmitter) }">
+              <div v-if="!selectedEmitter.useGPU" class="field-pack sign-field-wrap" :class="{ 'duplicate-sign-field': duplicateEmitterSignCount(selectedEmitter) }">
                 <BindableField :card="selectedEmitter" path="render.sign" label="标记值" value-type="int" step="1" />
                 <small v-if="duplicateEmitterSignCount(selectedEmitter)" class="duplicate-sign-message">
                   与 {{ duplicateEmitterSignCount(selectedEmitter) }} 个启用发射器 sign 重复
@@ -528,7 +538,7 @@
           </section>
         </template>
 
-        <div v-else class="empty-state">在左侧选择发射器或命令队列。</div>
+        <div v-else class="empty-state">在左侧选择发射器或粒子处理力。</div>
       </aside>
     </main>
 
@@ -538,6 +548,7 @@
           <strong>Kotlin 输出</strong>
           <button class="btn small primary" @click="copyKotlin">复制代码</button>
         </div>
+        <div v-if="hasEnabledFluidFlowForce" class="compatibility-note">FluidFlow 还需要客户端通过 CParticleForceResourceRegistry 注册 CParticleForceResourceBinding；这里仅生成声明式资源引用。</div>
         <pre class="kotlin-output"><code v-html="highlightedKotlinOutput"></code></pre>
       </div>
     </section>
@@ -577,14 +588,19 @@ import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vu
 import PreviewCanvas from '../components/PreviewCanvas.vue';
 import LifecycleCurveEditor from '../components/LifecycleCurveEditor.vue';
 import GeneratorParameterValueEditor from '../components/GeneratorParameterValueEditor.vue';
+import NumericInput from '../components/NumericInput.vue';
 import GeneratorExpressionEditor from '../components/GeneratorExpressionEditor.vue';
 import GeneratorSettingsModal from '../components/GeneratorSettingsModal.vue';
 import GeneratorHotkeysModal from '../components/GeneratorHotkeysModal.vue';
+import CParticleForceEditor from '../components/CParticleForceEditor.vue';
+import CParticleResourceEditor from '../components/CParticleResourceEditor.vue';
+import CParticleMaskEditor from '../components/CParticleMaskEditor.vue';
 import { highlightKotlin } from '../utils/legacy-code-highlight.js';
 import { readAppTheme, watchAppTheme, writeAppTheme } from '../modules/theme/app-theme.js';
+import { refreshShellCustomSelects } from '../modules/theme/custom-select.js';
 import {
   BILLBOARD_MODES,
-  CPARTICLE_COMMAND_TYPE_IDS,
+  CPARTICLE_FORCE_MAX_COMMANDS,
   COMMAND_TYPE_OPTIONS,
   EFFECT_OPTIONS,
   EMITTER_TYPES,
@@ -592,8 +608,8 @@ import {
   GENERATOR_HOTKEY_DEFAULTS,
   GENERATOR_THEME_OPTIONS,
   TEXTURE_SHEET_OPTIONS,
-  convertGpuCommandsToParticle,
-  convertParticleCommandsToGpu,
+  createCParticleForceCommand,
+  createCParticleForceResource,
   createCommandQueue,
   createDefaultCommandParams,
   createEmitterCard,
@@ -602,11 +618,15 @@ import {
   createGeneratorVariable,
   createQueueCommand,
   countDuplicateEmitterSigns,
+  nextAvailableCParticleCommandMaskValue,
+  nextAvailableCParticleDefinitionName,
+  nextAvailableCParticleSignValue,
   normalizeCollisionTargets,
   normalizeGeneratorProject
 } from '../modules/generator/defaults.js';
 import { generateEmitterKotlin } from '../modules/generator/codegen.js';
 import { createGeneratorPreviewRuntime } from '../modules/generator/preview-simulation.js';
+import { hydrateCParticleTexturePreviews } from '../modules/generator/cparticle-texture-preview.js';
 import {
   consumePendingGeneratorProject,
   getElectronShell,
@@ -658,6 +678,7 @@ const fpsText = ref('--');
 const previewTick = ref(0);
 const previewPoints = shallowRef([]);
 const previewErrors = ref([]);
+const previewWarnings = ref([]);
 const visibleAutocompleteIds = ref(new Set());
 const settingsOpen = ref(false);
 const hotkeysOpen = ref(false);
@@ -680,6 +701,7 @@ let panelResize = null;
 let historyTimer = 0;
 let indexedSaveTimer = 0;
 let projectLoadToken = 0;
+let textureHydrationGeneration = 0;
 let indexedSaveQueue = Promise.resolve();
 let historyApplying = false;
 let suppressNextProjectAutoSave = false;
@@ -687,14 +709,27 @@ let savedFileSnapshot = JSON.stringify(project.value);
 const undoStack = [];
 const redoStack = [];
 
-const leftTabs = [
-  { id: 'emitters', label: '发射器' },
-  { id: 'queues', label: '命令队列' },
-  { id: 'gpu_commands', label: 'GPU Commands' },
-  { id: 'project', label: '项目设置' },
-  { id: 'tick', label: '每 Tick' },
-  { id: 'death', label: '死亡行为' },
-  { id: 'settings', label: '设置' }
+const leftTabGroups = [
+  {
+    id: 'particle_commands',
+    label: '粒子与命令',
+    tabs: [
+      { id: 'emitters', label: '发射器' },
+      { id: 'queues', label: 'CPU 粒子处理力' },
+      { id: 'force_commands', label: 'GPU 粒子处理力' },
+      { id: 'death', label: '死亡行为' }
+    ]
+  },
+  {
+    id: 'project_declarations',
+    label: '项目声明与变量',
+    tabs: [
+      { id: 'resources', label: '资源声明' },
+      { id: 'cparticle_masks', label: 'CParticle 掩码' },
+      { id: 'tick', label: '每 Tick' },
+      { id: 'project', label: '项目与变量' }
+    ]
+  },
 ];
 
 const emitterTypes = EMITTER_TYPES;
@@ -705,9 +740,11 @@ const effectAutocompleteOptions = EFFECT_OPTIONS.map((item) => ({ value: item.cl
 const renderTypeAutocompleteOptions = TEXTURE_SHEET_OPTIONS.map((item) => ({ value: item.id, label: item.label }));
 const generatorValueTypes = GENERATOR_VALUE_TYPES;
 const commandTypeOptions = COMMAND_TYPE_OPTIONS;
-const gpuCommandTypeOptions = COMMAND_TYPE_OPTIONS
-  .filter((item) => CPARTICLE_COMMAND_TYPE_IDS.includes(item.id))
-  .map((item) => item.id === 'gravity' ? { ...item, label: '重力' } : item);
+const cparticleForceLimit = CPARTICLE_FORCE_MAX_COMMANDS;
+const enabledCParticleForceCount = computed(() => project.value.forceCommands.filter((command) => command.enabled !== false).length);
+const textureForceResourceCount = computed(() => project.value.forceResources.filter((resource) => resource.kind === 'texture').length);
+const fluidForceResourceCount = computed(() => project.value.forceResources.filter((resource) => resource.kind === 'fluid').length);
+const nextCParticleCommandMaskValue = computed(() => nextAvailableCParticleCommandMaskValue(project.value.commandMasks));
 const generatorThemeOptions = GENERATOR_THEME_OPTIONS;
 const hotkeyFields = [
   { key: 'toggleSettings', label: '设置' },
@@ -726,8 +763,6 @@ const hotkeyDefs = hotkeyFields.map((item) => ({
 
 const selectedEmitter = computed(() => project.value.emitters.find((card) => card.id === project.value.selectedEmitterId) || project.value.emitters[0] || null);
 const selectedQueue = computed(() => project.value.commandQueues.find((queue) => queue.id === project.value.selectedQueueId) || project.value.commandQueues[0] || null);
-const commandConversionMessage = ref('');
-const commandConversionWarning = ref(false);
 const kotlinOutput = computed(() => {
   try {
     return generateEmitterKotlin(project.value);
@@ -737,6 +772,9 @@ const kotlinOutput = computed(() => {
   }
 });
 const highlightedKotlinOutput = computed(() => highlightKotlin(kotlinOutput.value));
+const hasEnabledFluidFlowForce = computed(() => project.value.forceCommands.some((command) => (
+  command?.enabled !== false && command.force?.type === 'FluidFlow'
+)));
 const previewInterpolationMs = computed(() => {
   const ticksPerSecond = Math.max(1, Number(project.value.ticksPerSecond || 20));
   const updateRate = Math.min(ticksPerSecond, MAX_PREVIEW_UPDATES_PER_SECOND);
@@ -973,6 +1011,8 @@ const MinecraftAutocomplete = defineComponent({
     function startNumericScrub(event) {
       const startValue = Number(props.modelValue);
       if (!props.scrub || event.button !== 0 || !Number.isFinite(startValue)) return;
+      event.preventDefault();
+      event.currentTarget?.setPointerCapture?.(event.pointerId);
       scrubState = {
         startY: event.clientY,
         startValue,
@@ -1188,10 +1228,27 @@ const MinecraftAutocomplete = defineComponent({
         },
         onCompositionstart: onCompositionStart,
         onCompositionend: onCompositionEnd,
-        onPointerdown: startNumericScrub,
         onDragstart: (event) => props.scrub && event.preventDefault(),
         onKeydown
       }),
+      props.scrub
+        ? h('div', {
+          class: 'mc-autocomplete-stepper',
+          role: 'presentation',
+          'aria-hidden': 'true',
+          onPointerdown: startNumericScrub,
+          onPointerup: finishNumericScrub,
+          onPointercancel: finishNumericScrub,
+          onContextmenu: (event) => event.preventDefault()
+        }, [
+          h('span', { class: 'mc-autocomplete-step mc-autocomplete-step--up' }, [
+            h('svg', { viewBox: '0 0 12 12', 'aria-hidden': 'true' }, [h('path', { d: 'm2.2 7.6 3.8-3.8 3.8 3.8' })])
+          ]),
+          h('span', { class: 'mc-autocomplete-step mc-autocomplete-step--down' }, [
+            h('svg', { viewBox: '0 0 12 12', 'aria-hidden': 'true' }, [h('path', { d: 'm2.2 4.4 3.8 3.8 3.8-3.8' })])
+          ])
+        ])
+        : null,
       menuVisible.value
         ? h(Teleport, { to: 'body' }, [h('div', {
           ref: suggestionRef,
@@ -1275,8 +1332,14 @@ const BindableVector = defineComponent({
 
     return () => {
       const mode = getBindingMode(props.card, props.path);
+      const axisGridStyle = {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+        gap: '8px',
+        minWidth: '0'
+      };
       const controls = mode === 'constant'
-        ? h('div', { class: 'bindable-axis-grid' }, axes.map((axis) => renderAxisNumberInput(props.card, props.path, axis, {
+        ? h('div', { class: 'bindable-axis-grid', style: axisGridStyle }, axes.map((axis) => renderAxisNumberInput(props.card, props.path, axis, {
           step: props.step,
           min: props.min
         }, {
@@ -1286,7 +1349,7 @@ const BindableVector = defineComponent({
           onCommit: (value) => commitAxisDraft(axis.key, value)
         })))
         : mode === 'independent'
-          ? h('div', { class: 'bindable-axis-grid' }, axes.map((axis) => renderAxisExpressionInput(
+          ? h('div', { class: 'bindable-axis-grid', style: axisGridStyle }, axes.map((axis) => renderAxisExpressionInput(
             props.card,
             `${props.path}.${axis.key}`,
             axis
@@ -1340,6 +1403,12 @@ const BindableColorVector = defineComponent({
 
     return () => {
       const mode = getBindingMode(props.card, props.path);
+      const axisGridStyle = {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+        gap: '8px',
+        minWidth: '0'
+      };
       const controls = mode === 'constant'
         ? h('div', { class: 'bindable-color-constant' }, [
           h('div', { class: 'color-main-row' }, [
@@ -1363,19 +1432,20 @@ const BindableColorVector = defineComponent({
           ]),
           h('div', { class: 'color-channel-grid' }, axes.map((axis) => h('label', { key: axis.key, class: 'axis-number color-channel-number' }, [
             h('span', { class: 'axis-chip' }, axis.label),
-            h('input', {
-              class: 'input',
-              type: 'number',
-              min: '0',
-              max: '255',
-              step: '1',
-              value: colorChannelValue(props.card, props.path, axis.key),
-              onChange: (event) => updateColorChannel(props.card, props.path, axis.key, event.target.value)
+            h(NumericInput, {
+              modelValue: colorChannelValue(props.card, props.path, axis.key),
+              min: 0,
+              max: 255,
+              step: 1,
+              integer: true,
+              scrub: !getBinding(props.card, `${props.path}.${axis.key}`),
+              'onUpdate:modelValue': (next) => updateColorChannel(props.card, props.path, axis.key, next),
+              onCommit: (next) => updateColorChannel(props.card, props.path, axis.key, next)
             })
           ])))
         ])
         : mode === 'independent'
-          ? h('div', { class: 'bindable-axis-grid' }, axes.map((axis) => renderAxisExpressionInput(
+          ? h('div', { class: 'bindable-axis-grid', style: axisGridStyle }, axes.map((axis) => renderAxisExpressionInput(
             props.card,
             `${props.path}.${axis.key}`,
             axis
@@ -1509,6 +1579,9 @@ function renderBindableSingleInput(card, path, props, inputState = {}) {
       }).map(toExpressionAutocompleteOption)
       : [])
   ];
+  const scrubStep = ['int', 'long'].includes(props.valueType)
+    ? Math.max(Number(props.step) || 1, 1)
+    : props.step;
   return h(MinecraftAutocomplete, {
     class: 'bindable-single-input',
     modelValue: value,
@@ -1519,7 +1592,7 @@ function renderBindableSingleInput(card, path, props, inputState = {}) {
     expression: ['number', 'int', 'long', 'float'].includes(props.valueType),
     validationMessage: bindingValidationMessage(card, path, props.valueType),
     scrub,
-    scrubStep: props.step,
+    scrubStep,
     scrubMin: props.min,
     scrubMax: props.max,
     'onUpdate:modelValue': inputState.onUpdate
@@ -1599,6 +1672,23 @@ function renderValueInput(card, path, props) {
       options: props.autocompleteOptions,
       maxItems: 10,
       'onUpdate:modelValue': (next) => setPath(card, path, coerceBindableInputValue(next, props.valueType))
+    });
+  }
+  if (['number', 'int', 'long', 'float'].includes(props.valueType) && inputType !== 'color') {
+    const numericStep = ['int', 'long'].includes(props.valueType)
+      ? Math.max(Number(props.step) || 1, 1)
+      : (props.step || 0.01);
+    return h(NumericInput, {
+      class: 'bindable-number-input',
+      modelValue: value,
+      step: numericStep,
+      min: props.min,
+      max: props.max,
+      integer: props.valueType === 'int' || props.valueType === 'long',
+      long: props.valueType === 'long',
+      scrub: true,
+      'onUpdate:modelValue': (next) => setPath(card, path, coerceBindableInputValue(next, props.valueType)),
+      onCommit: (next) => setPath(card, path, coerceBindableInputValue(next, props.valueType))
     });
   }
   return h('input', {
@@ -1766,27 +1856,25 @@ function renderAxisExpressionInput(card, path, axis) {
 }
 
 function renderAxisNumberInput(card, basePath, axis, attrs = {}, inputState = {}) {
-  const commit = (event) => {
-    if (inputState.onCommit) {
-      inputState.onCommit(event.target.value);
-      return;
-    }
-    setPath(card, `${basePath}.${axis.key}`, coerceBindableInputValue(event.target.value, 'number'));
-  };
+  const path = `${basePath}.${axis.key}`;
+  const currentValue = inputState.hasDraft ? inputState.draftValue : getPath(card, path);
+  /* Compatibility note for the pre-component input contract:
+   * value: inputState.hasDraft ? inputState.draftValue : getPath(card, path), onInput: (event) => inputState.onUpdate?.(event.target.value), onBlur: commit, onKeydown: (event) => { if (event.key !== 'Enter') return; }
+   */
   return h('label', { key: axis.key, class: 'axis-number' }, [
     h('span', { class: 'axis-chip' }, axis.label),
-    h('input', {
-      class: 'input',
-      type: 'number',
+    h(NumericInput, {
+      modelValue: currentValue,
       step: attrs.step || '0.01',
       min: attrs.min,
-      value: inputState.hasDraft ? inputState.draftValue : getPath(card, `${basePath}.${axis.key}`),
-      onInput: (event) => inputState.onUpdate?.(event.target.value),
-      onBlur: commit,
-      onKeydown: (event) => {
-        if (event.key !== 'Enter') return;
-        event.preventDefault();
-        commit(event);
+      scrub: !getBinding(card, path),
+      'onUpdate:modelValue': (next) => {
+        if (inputState.onUpdate) inputState.onUpdate(next);
+        else if (next !== '' && Number.isFinite(Number(next))) setPath(card, path, Number(next));
+      },
+      onCommit: (next) => {
+        if (inputState.onCommit) inputState.onCommit(next);
+        else setPath(card, path, coerceBindableInputValue(next, 'number'));
       }
     })
   ]);
@@ -1967,7 +2055,7 @@ function defaultParameterValue(type) {
   if (type === 'String') return '';
   if (type === 'Vec3') return 'Vec3(0.0, 0.0, 0.0)';
   if (type === 'RelativeLocation') return 'RelativeLocation(0.0, 0.0, 0.0)';
-  if (type === 'Vector3f') return 'Vector3f(1.0f, 1.0f, 1.0f)';
+  if (type === 'Vector3f') return 'Vector3f(1.0F, 1.0F, 1.0F)';
   if (type === 'Long') return '0';
   return 0;
 }
@@ -2038,6 +2126,7 @@ watch(project, (next) => {
   syncPreviewPoints();
   scheduleHistorySnapshot();
   if (!suppressAutoSave) scheduleIndexedProjectSave();
+  nextTick(() => refreshShellCustomSelects());
 }, { deep: true });
 
 /*
@@ -2057,9 +2146,11 @@ onBeforeUnmount(() => disposeAppThemeWatch());
 
 onMounted(async () => {
   await consumeShellRouteState();
+  await hydrateCurrentProjectTextures();
   previewRuntime.step(project.value, 1);
   previewTick.value = previewRuntime.getTick();
   syncPreviewPoints();
+  refreshShellCustomSelects();
   pushHistorySnapshot();
   startTickTimer();
   window.addEventListener('keydown', handleGeneratorHotkey, true);
@@ -2090,6 +2181,7 @@ function startTickTimer() {
 
 onBeforeUnmount(() => {
   projectLoadToken += 1;
+  textureHydrationGeneration += 1;
   delete document.documentElement.dataset.generatorTheme;
   window.clearInterval(tickTimer);
   window.clearTimeout(historyTimer);
@@ -2190,6 +2282,16 @@ function restartPreview() {
   syncPreviewPoints();
 }
 
+async function hydrateCurrentProjectTextures({ restartOnComplete = false } = {}) {
+  textureHydrationGeneration += 1;
+  const generation = textureHydrationGeneration;
+  const targetProject = project.value;
+  await hydrateCParticleTexturePreviews(targetProject.forceResources);
+  if (generation !== textureHydrationGeneration || project.value !== targetProject) return false;
+  if (restartOnComplete) restartPreview();
+  return true;
+}
+
 function togglePreviewPlayback() {
   project.value.playing = !project.value.playing;
 }
@@ -2221,6 +2323,7 @@ function clearPreviewParticles() {
 function syncPreviewPoints() {
   const data = previewRuntime.snapshotRenderData(project.value);
   previewErrors.value = Array.isArray(data?.errors) ? data.errors : [];
+  previewWarnings.value = Array.isArray(data?.warnings) ? data.warnings : [];
   previewPoints.value = applyPreviewRenderScale(
     data,
     project.value.settings.particleRenderScale
@@ -2298,7 +2401,7 @@ function moveEmitter(index, delta) {
 }
 
 function addQueue() {
-  const queue = createCommandQueue({ name: `命令队列 ${project.value.commandQueues.length + 1}` });
+  const queue = createCommandQueue({ name: `CPU 粒子处理力 ${project.value.commandQueues.length + 1}` });
   project.value.commandQueues.push(queue);
   project.value.selectedQueueId = queue.id;
 }
@@ -2316,65 +2419,49 @@ function addQueueCommandToSelected() {
   selectedQueue.value.commands.push(createQueueCommand({ label: `命令 ${selectedQueue.value.commands.length + 1}` }));
 }
 
-function addGpuCommand() {
-  if (project.value.gpuCommands.length >= 16) return;
-  project.value.gpuCommands.push(createQueueCommand({
-    tick: 0,
-    label: `GPU Command ${project.value.gpuCommands.length + 1}`
+function addForceCommandFromSidebar() {
+  if (enabledCParticleForceCount.value >= cparticleForceLimit) return;
+  project.value.forceCommands.push(createCParticleForceCommand({
+    label: `Force Command ${project.value.forceCommands.length + 1}`
   }));
 }
 
-function removeGpuCommand(commandId) {
-  const index = project.value.gpuCommands.findIndex((command) => command.id === commandId);
-  if (index >= 0) project.value.gpuCommands.splice(index, 1);
+function addForceResourceFromSidebar() {
+  project.value.forceResources.push(createCParticleForceResource({
+    name: `resource_${project.value.forceResources.length + 1}`
+  }));
 }
 
-function convertSelectedQueueToGpu() {
-  if (!selectedQueue.value) return;
-  const result = convertParticleCommandsToGpu(selectedQueue.value.commands, {
-    signs: selectedQueue.value.signs
+function makeCParticleNamedValueId(prefix) {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid
+    ? `${prefix}_${uuid}`
+    : `${prefix}_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`;
+}
+
+function addCParticleSignFromSidebar() {
+  project.value.signs.push({
+    id: makeCParticleNamedValueId('sign'),
+    name: nextAvailableCParticleDefinitionName(project.value.signs, 'sign', 'SIGN'),
+    value: nextAvailableCParticleSignValue(project.value.signs)
   });
-  const available = Math.max(0, 16 - project.value.gpuCommands.length);
-  const converted = result.commands.slice(0, available);
-  const capacitySkipped = result.commands.slice(available);
-  const convertedIds = new Set(converted.map((command) => command.id));
-  const adjustments = result.adjustments.filter((item) => (
-    item.field === 'signs' ? converted.length > 0 : convertedIds.has(item.id)
-  ));
-  project.value.gpuCommands.push(...converted);
-  showCommandConversionResult('GPU Commands', converted.length, result.incompatible, capacitySkipped, adjustments);
 }
 
-function convertGpuCommandsToSelectedQueue() {
-  let queue = selectedQueue.value;
-  if (!queue) {
-    queue = createCommandQueue({ name: '命令队列 1' });
-    project.value.commandQueues.push(queue);
-    project.value.selectedQueueId = queue.id;
-  }
-  const result = convertGpuCommandsToParticle(project.value.gpuCommands);
-  queue.commands.push(...result.commands);
-  showCommandConversionResult(queue.name, result.commands.length, result.incompatible, [], result.adjustments);
+function addCParticleCommandMaskFromSidebar() {
+  const value = nextCParticleCommandMaskValue.value;
+  if (value === null) return;
+  project.value.commandMasks.push({
+    id: makeCParticleNamedValueId('mask'),
+    name: nextAvailableCParticleDefinitionName(project.value.commandMasks, 'command', 'COMMAND_MASK'),
+    value
+  });
 }
 
-function showCommandConversionResult(targetName, convertedCount, incompatible, capacitySkipped, adjustments) {
-  const details = [];
-  const tickAdjustments = adjustments.filter((item) => item.field === 'tick');
-  const signAdjustment = adjustments.find((item) => item.field === 'signs');
-  if (incompatible.length) {
-    details.push(`不兼容：${incompatible.map((item) => `${item.label} (${item.type})`).join('、')}`);
-  }
-  if (capacitySkipped.length) {
-    details.push(`超过 16 个上限：${capacitySkipped.map((item) => item.label || item.type).join('、')}`);
-  }
-  if (tickAdjustments.length) {
-    details.push(`命令级延迟不兼容，Tick 已改为 0：${tickAdjustments.map((item) => `${item.label} (${item.from})`).join('、')}`);
-  }
-  if (signAdjustment) {
-    details.push(`命令队列的 sign 范围不兼容，GPU Commands 将作用于全部 GPU 粒子：${signAdjustment.values.join('、')}`);
-  }
-  commandConversionWarning.value = details.length > 0;
-  commandConversionMessage.value = `已转换 ${convertedCount} 个命令到 ${targetName}${details.length ? `；${details.join('；')}` : ''}。`;
+function toggleGpuCommandMask(card, maskId, checked) {
+  const refs = card.gpu.commandMaskRefs;
+  const index = refs.indexOf(maskId);
+  if (checked && index < 0) refs.push(maskId);
+  if (!checked && index >= 0) refs.splice(index, 1);
 }
 
 function removeQueueCommand(queue, commandId) {
@@ -2546,6 +2633,7 @@ function loadProjectText(text, filePath = '') {
   currentProjectPath.value = filePath || '';
   savedFileSnapshot = JSON.stringify(project.value);
   resetPreviewAfterProjectChange();
+  void hydrateCurrentProjectTextures({ restartOnComplete: true });
 }
 
 function defaultProjectFileBase() {
@@ -2812,6 +2900,7 @@ function downloadJsonInBrowser() {
 }
 
 function resetProject() {
+  textureHydrationGeneration += 1;
   project.value = createGeneratorProject();
   loadedProjectId.value = indexedProjectId();
   savedFileSnapshot = serializeProject();
@@ -2848,6 +2937,7 @@ function restoreProjectSnapshot(snapshot) {
   previewRuntime.step(project.value, 1);
   previewTick.value = previewRuntime.getTick();
   syncPreviewPoints();
+  void hydrateCurrentProjectTextures({ restartOnComplete: true });
   window.setTimeout(() => {
     historyApplying = false;
   }, 0);
@@ -2874,10 +2964,6 @@ function removeSelectedEmitter() {
 }
 
 function selectGeneratorTab(tabId) {
-  if (tabId === 'settings') {
-    toggleGeneratorSettings();
-    return;
-  }
   project.value.leftTab = tabId;
 }
 
@@ -2956,6 +3042,7 @@ async function importGeneratorSettings(file) {
     if (Number.isFinite(Number(parsed.ticksPerSecond))) project.value.ticksPerSecond = Number(parsed.ticksPerSecond);
     if (Number.isFinite(Number(parsed.previewTicks))) project.value.previewTicks = Number(parsed.previewTicks);
     project.value = normalizeGeneratorProject(project.value);
+    void hydrateCurrentProjectTextures({ restartOnComplete: true });
     setSettingsMessage('设置已导入');
   } catch (error) {
     setSettingsMessage(`设置导入失败：${error?.message || error}`, true);
@@ -3484,6 +3571,17 @@ function normalizeVector(vector) {
   color: inherit;
 }
 
+.generator-page :deep(.cp-select) {
+  min-width: 0;
+}
+
+.generator-page :deep(.cp-select-trigger) {
+  height: 40px;
+  min-height: 40px;
+  border-radius: var(--radius2, 12px);
+  font-size: 13px;
+}
+
 .generator-page input[type='checkbox'] {
   width: 16px;
   height: 16px;
@@ -3511,7 +3609,7 @@ function normalizeVector(vector) {
   gap: 16px;
   padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius, 16px);
   background: var(--bg-panel);
 }
 
@@ -3560,7 +3658,7 @@ function normalizeVector(vector) {
 
 .generator-panel {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius, 16px);
   background: var(--bg-panel);
   min-height: 0;
 }
@@ -3583,9 +3681,59 @@ function normalizeVector(vector) {
   overscroll-behavior: contain;
 }
 
+.generator-page :deep(.mc-autocomplete--scrubbable) {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  width: 100%;
+}
+
 .generator-page :deep(.mc-autocomplete--scrubbable > .input) {
+  padding-right: 27px;
+}
+
+.generator-page :deep(.mc-autocomplete-stepper) {
+  position: absolute;
+  inset: 1px 1px 1px auto;
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  width: 24px;
+  overflow: hidden;
+  border-left: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  border-radius: 0 var(--radius3, 10px) var(--radius3, 10px) 0;
+  color: var(--muted, #808b99);
   cursor: ns-resize;
+  touch-action: none;
   user-select: none;
+}
+
+.generator-page :deep(.mc-autocomplete-step) {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  background: color-mix(in srgb, var(--card2, #181f26) 82%, transparent);
+}
+
+.generator-page :deep(.mc-autocomplete-step + .mc-autocomplete-step) {
+  border-top: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+}
+
+.generator-page :deep(.mc-autocomplete-stepper:hover) {
+  color: var(--text, #ecf0f5);
+}
+
+.generator-page :deep(.mc-autocomplete-stepper:hover .mc-autocomplete-step) {
+  background: color-mix(in srgb, var(--accent, #8fa7b8) 14%, var(--card2, #181f26));
+}
+
+.generator-page :deep(.mc-autocomplete-step svg) {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 :global(html.generator-numeric-scrubbing),
@@ -3651,7 +3799,7 @@ function normalizeVector(vector) {
 .generator-right .editor-section {
   gap: 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius2, 12px);
   background: var(--bg-soft);
   padding: 12px;
 }
@@ -3663,13 +3811,30 @@ function normalizeVector(vector) {
 
 .left-tabs {
   display: grid;
+  gap: 12px;
+}
+
+.left-tab-group {
+  display: grid;
+  gap: 6px;
+}
+
+.left-tab-group-title {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.left-tab-grid {
+  display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 .left-tabs button {
   min-height: 34px;
-  border-radius: 8px;
+  border-radius: var(--radius3, 10px);
   border: 1px solid var(--border);
   background: var(--bg-soft);
   color: inherit;
@@ -3703,9 +3868,9 @@ function normalizeVector(vector) {
   border: 1px solid var(--border);
   border-radius: var(--radius2, 10px);
   background: var(--bg-soft);
-  padding: 10px;
+  padding: 8px 9px;
   display: grid;
-  gap: 8px;
+  gap: 6px;
   transition: background var(--speed, 140ms) ease, border-color var(--speed, 140ms) ease,
     box-shadow var(--speed, 140ms) ease;
 }
@@ -3713,6 +3878,7 @@ function normalizeVector(vector) {
 .emitter-list-card {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  min-height: 58px;
 }
 
 .emitter-list-card .row-actions {
@@ -3746,7 +3912,7 @@ function normalizeVector(vector) {
 
 .card-main {
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
 }
 
@@ -3762,8 +3928,23 @@ function normalizeVector(vector) {
   background: transparent;
   color: inherit;
   font-weight: 700;
-  padding: 0;
-  line-height: 1.25;
+  padding: 1px 0;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.emitter-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 3px;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sub,
@@ -3775,6 +3956,7 @@ function normalizeVector(vector) {
 .compatibility-note {
   padding: 8px 10px;
   border-left: 3px solid #d6a94b;
+  border-radius: var(--radius3, 10px);
   color: var(--text-soft);
   background: rgb(214 169 75 / 10%);
   font-size: 12px;
@@ -3794,11 +3976,11 @@ function normalizeVector(vector) {
 }
 
 .icon-btn {
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
-  min-height: 28px;
-  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  border-radius: var(--radius3, 10px);
   border: 1px solid var(--border);
   background: var(--bg-soft);
   color: inherit;
@@ -3817,7 +3999,7 @@ function normalizeVector(vector) {
   align-items: center;
   justify-content: center;
   padding: 0;
-  border-radius: 3px;
+  border-radius: var(--radius3, 10px);
   font-size: 10px;
   line-height: 1;
 }
@@ -3876,7 +4058,7 @@ function normalizeVector(vector) {
 
 .duplicate-sign-badge {
   border: 1px solid rgba(251, 146, 60, 0.72);
-  border-radius: 3px;
+  border-radius: var(--radius3, 10px);
   background: rgba(251, 146, 60, 0.14);
   color: #fdba74;
   padding: 1px 4px;
@@ -3988,7 +4170,7 @@ function normalizeVector(vector) {
   gap: 10px;
   padding: 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius2, 12px);
   background: var(--bg-soft);
 }
 
@@ -4100,7 +4282,7 @@ function normalizeVector(vector) {
   gap: 8px;
   align-items: center;
   border: 0;
-  border-radius: 2px;
+  border-radius: var(--radius3, 10px);
   background: transparent;
   color: #f8fafc;
   font: inherit;
@@ -4223,9 +4405,17 @@ function normalizeVector(vector) {
   font-size: 12px;
 }
 
+.bindable-vector-row :deep(.cp-select:has(.mode-select)) {
+  grid-column: 1;
+  grid-row: 2;
+  width: 132px;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .bindable-vector-row :deep(.bindable-axis-grid) {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
   gap: 8px;
   min-width: 0;
 }
@@ -4365,7 +4555,7 @@ function normalizeVector(vector) {
 
 .axis-curve-box {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius2, 12px);
   background: var(--bg-soft);
   padding: 8px;
 }
@@ -4407,7 +4597,7 @@ function normalizeVector(vector) {
   max-height: 35%;
   overflow: auto;
   border: 1px solid rgba(244, 63, 94, 0.42);
-  border-radius: 6px;
+  border-radius: var(--radius2, 12px);
   background: rgba(69, 10, 10, 0.86);
   color: #fee2e2;
   padding: 9px 10px;
@@ -4422,13 +4612,39 @@ function normalizeVector(vector) {
   padding-left: 16px;
 }
 
+.preview-warning-overlay {
+  position: absolute;
+  top: 64px;
+  right: 14px;
+  z-index: 19;
+  display: grid;
+  gap: 6px;
+  width: min(360px, calc(100% - 28px));
+  max-height: 35%;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.42);
+  border-radius: var(--radius2, 12px);
+  background: rgba(15, 23, 42, 0.86);
+  color: #e2e8f0;
+  padding: 9px 10px;
+  font-size: 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+}
+
+.preview-warning-overlay ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+}
+
 .generator-canvas :deep(.preview-host),
 .generator-canvas :deep(.preview-host--bare),
 .generator-canvas :deep(.preview-canvas) {
   width: 100%;
   height: 100%;
   min-height: 0;
-  border-radius: 8px;
+  border-radius: var(--radius2, 12px);
 }
 
 .generator-code-page {
@@ -4453,7 +4669,7 @@ function normalizeVector(vector) {
   min-height: 0;
   max-height: none;
   overflow: auto;
-  border-radius: 8px;
+  border-radius: var(--radius2, 12px);
   border: 1px solid var(--border);
   background: var(--bg-panel-strong);
   padding: 14px;
@@ -4615,14 +4831,13 @@ function normalizeVector(vector) {
     justify-content: flex-start;
   }
 
-  .bindable-vector-row :deep(.bindable-vector-head),
   .bindable-vector-row :deep(.bindable-axis-grid),
   .bindable-vector-row :deep(.color-channel-grid) {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
   }
 
   .vector-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: 86px repeat(3, minmax(0, 1fr));
   }
 
   .generator-canvas :deep(.preview-host),

@@ -14,7 +14,8 @@ import {
 import { generateEmitterKotlin } from '../src/modules/generator/codegen.js';
 import {
   collectGeneratorValueEntries,
-  createGeneratorBindingResolver
+  createGeneratorBindingResolver,
+  formatGeneratorKotlinLiteral
 } from '../src/modules/generator/bindings.js';
 import {
   calculateGeneratorNumericScrubValue,
@@ -47,9 +48,9 @@ test('default generator schema and Kotlin output remain byte-stable after normal
   const project = createGeneratorProject();
   const kotlin = generateEmitterKotlin(project);
 
-  assert.equal(project.schemaVersion, 12);
+  assert.equal(project.schemaVersion, 13);
   assert.equal(generateEmitterKotlin(normalizeGeneratorProject(project)), kotlin);
-  assert.equal(sha256(kotlin), 'bcd96c430e7c098da6728e078439dcef725fe1fb44b865464411308b5515c144');
+  assert.equal(sha256(kotlin), '1362eba904390bee201b2f3de79a985fa1f855c1221d85f26759f36299189687');
 });
 
 test('single emission uses the emitter lifecycle instead of a Tick 0 guard', () => {
@@ -186,7 +187,7 @@ test('representative typed bindings keep Kotlin output byte-stable', () => {
     'render.textureSheet': 'textureValue'
   });
 
-  assert.equal(sha256(generateEmitterKotlin(project)), '55f7d1d72bc2fb822af77684e861981e939a613a967077d680780d896479a5b7');
+  assert.equal(sha256(generateEmitterKotlin(project)), '5933517532621233f792447edfc850f5ce5bbd50c5a679dd4896960920ac7d23');
 });
 
 test('generator drops unsupported emitter Z scale state and Kotlin output', () => {
@@ -263,7 +264,7 @@ test('generator initializes particle alpha from the opacity curve first frame', 
 
   assert.match(kotlin, /alpha = \(20\.0 \/ 100\.0\)\.toFloat\(\)/);
   assert.match(kotlin, /emitter1Opacity = KeyframeFloatCurve\(listOf\(FloatKeyframe\(0\.0, 0\.2\), FloatKeyframe\(1\.0, 0\.5\)\)\)/);
-  assert.match(kotlin, /this\.particleAlpha = \(emitter1Opacity\.sample\(lifeProgress\)\)\.toFloat\(\)\.coerceIn\(0f, 1f\)/);
+  assert.match(kotlin, /this\.particleAlpha = \(emitter1Opacity\.sample\(lifeProgress\)\)\.toFloat\(\)\.coerceIn\(0F, 1F\)/);
 });
 
 test('generator combines bound alpha with the opacity first frame without multiplying it twice', () => {
@@ -308,6 +309,7 @@ test('lifecycle curves are opt-in and only enabled curves emit tick assignments'
   card.curves.light.enabled = true;
   card.curves.opacity.enabled = true;
   card.curves.rotation.roll.enabled = true;
+  card.particle.colorGradientEnabled = true;
   card.curves.color.enabled = true;
   const enabledKotlin = generateEmitterKotlin(project);
 
@@ -336,7 +338,7 @@ test('schema 10 migration only enables lifecycle curves that differ from their d
   const migrated = normalizeGeneratorProject(raw);
   const card = migrated.emitters[0];
 
-  assert.equal(migrated.schemaVersion, 12);
+  assert.equal(migrated.schemaVersion, 13);
   assert.equal(card.curves.size.x.enabled, false);
   assert.equal(card.curves.size.y.enabled, false);
   assert.equal(card.curves.light.enabled, true);
@@ -361,6 +363,31 @@ test('schema 7 migration preserves the legacy lifecycle color toggle', () => {
 
   delete enabledRaw.emitters[0].particle.colorOverLifeEnabled;
   assert.equal(normalizeGeneratorProject(enabledRaw).emitters[0].curves.color.enabled, true);
+});
+
+test('legacy emitter cards keep their historical fallbacks while current cards use the new defaults', () => {
+  const legacy = normalizeGeneratorProject({
+    schemaVersion: 7,
+    emitters: [{ particle: { colorOverLifeEnabled: true } }]
+  }).emitters[0];
+
+  assert.equal(legacy.emitter.type, 'sphere');
+  assert.equal(legacy.particle.countMin, 2);
+  assert.equal(legacy.particle.countMax, 6);
+  assert.equal(legacy.particle.lifeMin, 40);
+  assert.equal(legacy.particle.lifeMax, 120);
+  assert.equal(legacy.particle.sizeMin, 0.08);
+  assert.equal(legacy.particle.sizeMax, 0.18);
+  assert.equal(legacy.particle.colorGradientEnabled, true);
+  assert.deepEqual(legacy.particle.velocity, { x: 0, y: 0.12, z: 0 });
+  assert.equal(legacy.particle.speedMin, 0.2);
+  assert.equal(legacy.particle.speedMax, 0.6);
+
+  const current = normalizeGeneratorProject({ schemaVersion: 12, emitters: [{}] }).emitters[0];
+  assert.equal(current.emitter.type, 'point');
+  assert.equal(current.particle.colorGradientEnabled, false);
+  assert.equal(current.particle.countMin, 10);
+  assert.equal(current.particle.lifeMin, 10);
 });
 
 test('opacity curve migration is idempotent for current projects', () => {
@@ -817,20 +844,21 @@ test('generator vector values round-trip through three numeric components', () =
   );
   assert.equal(
     updateGeneratorVectorComponent('Vector3f', 'Vector3f(0.1f, 0.2f, 0.3f)', 'y', 0.75, { min: 0, max: 1 }),
-    'Vector3f(0.1f, 0.75f, 0.3f)'
+    'Vector3f(0.1F, 0.75F, 0.3F)'
   );
   assert.equal(
     updateGeneratorVectorComponent('Vector3f', 'Vector3f(0.1f, 0.2f, 0.3f)', 'z', 4, { min: 0, max: 1 }),
-    'Vector3f(0.1f, 0.2f, 1.0f)'
+    'Vector3f(0.1F, 0.2F, 1.0F)'
   );
   assert.equal(
     normalizeGeneratorVectorValue('Vector3f', 'Vec3(1.0, 0.5, 0.25)'),
-    'Vector3f(1.0f, 0.5f, 0.25f)'
+    'Vector3f(1.0F, 0.5F, 0.25F)'
   );
+  assert.equal(formatGeneratorKotlinLiteral('Float', 0.25), '0.25F');
 });
 
 test('Vector3f color mode converts between picker hex and normalized components', () => {
-  assert.equal(generatorHexToVectorValue('#ff8000'), 'Vector3f(1.0f, 0.501961f, 0.0f)');
+  assert.equal(generatorHexToVectorValue('#ff8000'), 'Vector3f(1.0F, 0.501961F, 0.0F)');
   assert.equal(generatorVectorValueToHex('Vector3f(1.0f, 0.501961f, 0.0f)'), '#ff8000');
 });
 
@@ -842,7 +870,7 @@ test('generator preserves Vector3f color mode and emits the stored literal', () 
   });
 
   assert.equal(project.parameters.variables[0].colorMode, true);
-  assert.match(generateEmitterKotlin(project), /var tint: Vector3f = Vector3f\(1\.0f, 0\.5f, 0\.0f\)/);
+  assert.match(generateEmitterKotlin(project), /var tint: Vector3f = Vector3f\(1\.0F, 0\.5F, 0\.0F\)/);
 });
 
 test('generator preserves the full Kotlin Long range as decimal strings', () => {
@@ -1038,6 +1066,7 @@ test('generator emitter object names avoid generated and local members', () => {
 
 test('generator uses SimpleRandomParticleData color interpolation helpers', () => {
   const project = createGeneratorProject();
+  project.emitters[0].particle.colorGradientEnabled = true;
   project.emitters[0].curves.color.enabled = true;
   const kotlin = generateEmitterKotlin(project);
 
@@ -1056,5 +1085,7 @@ test('generator uses SimpleRandomParticleData color interpolation helpers', () =
   assert.doesNotMatch(source, /外放 SimpleRandomParticleData/);
   assert.doesNotMatch(source, /外放 ControlableParticleData/);
   assert.match(source, /duplicate-sign-badge/);
+  assert.match(source, /!card\.useGPU && duplicateEmitterSignCount\(card\)/);
+  assert.match(source, /v-if="!selectedEmitter\.useGPU" class="field-pack sign-field-wrap"/);
   assert.match(source, /与 \{\{ duplicateEmitterSignCount\(selectedEmitter\) \}\} 个启用发射器 sign 重复/);
 });

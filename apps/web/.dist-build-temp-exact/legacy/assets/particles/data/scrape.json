@@ -1,0 +1,7 @@
+{
+  "name": "ControlableScrapeEffect",
+  "displayName": "Scrape",
+  "textures": [
+    "assets/particles/scrape/glow.png"
+  ]
+}

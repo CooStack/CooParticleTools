@@ -1,0 +1,32 @@
+{
+  "name": "ControlableEnchantmentEffect",
+  "displayName": "Enchantment",
+  "textures": [
+    "assets/particles/enchantment/sga_a.png",
+    "assets/particles/enchantment/sga_b.png",
+    "assets/particles/enchantment/sga_c.png",
+    "assets/particles/enchantment/sga_d.png",
+    "assets/particles/enchantment/sga_e.png",
+    "assets/particles/enchantment/sga_f.png",
+    "assets/particles/enchantment/sga_g.png",
+    "assets/particles/enchantment/sga_h.png",
+    "assets/particles/enchantment/sga_i.png",
+    "assets/particles/enchantment/sga_j.png",
+    "assets/particles/enchantment/sga_k.png",
+    "assets/particles/enchantment/sga_l.png",
+    "assets/particles/enchantment/sga_m.png",
+    "assets/particles/enchantment/sga_n.png",
+    "assets/particles/enchantment/sga_o.png",
+    "assets/particles/enchantment/sga_p.png",
+    "assets/particles/enchantment/sga_q.png",
+    "assets/particles/enchantment/sga_r.png",
+    "assets/particles/enchantment/sga_s.png",
+    "assets/particles/enchantment/sga_t.png",
+    "assets/particles/enchantment/sga_u.png",
+    "assets/particles/enchantment/sga_v.png",
+    "assets/particles/enchantment/sga_w.png",
+    "assets/particles/enchantment/sga_x.png",
+    "assets/particles/enchantment/sga_y.png",
+    "assets/particles/enchantment/sga_z.png"
+  ]
+}

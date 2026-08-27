@@ -1,0 +1,18 @@
+{
+  "name": "ControlableCherryLeavesEffect",
+  "displayName": "CherryLeaves",
+  "textures": [
+    "assets/particles/cherry_leaves/cherry_0.png",
+    "assets/particles/cherry_leaves/cherry_1.png",
+    "assets/particles/cherry_leaves/cherry_2.png",
+    "assets/particles/cherry_leaves/cherry_3.png",
+    "assets/particles/cherry_leaves/cherry_4.png",
+    "assets/particles/cherry_leaves/cherry_5.png",
+    "assets/particles/cherry_leaves/cherry_6.png",
+    "assets/particles/cherry_leaves/cherry_7.png",
+    "assets/particles/cherry_leaves/cherry_8.png",
+    "assets/particles/cherry_leaves/cherry_9.png",
+    "assets/particles/cherry_leaves/cherry_10.png",
+    "assets/particles/cherry_leaves/cherry_11.png"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "ControlableWhiteSmokeEffect",
+  "displayName": "WhiteSmoke",
+  "textures": [
+    "assets/particles/white_smoke/generic_7.png",
+    "assets/particles/white_smoke/generic_6.png",
+    "assets/particles/white_smoke/generic_5.png",
+    "assets/particles/white_smoke/generic_4.png",
+    "assets/particles/white_smoke/generic_3.png",
+    "assets/particles/white_smoke/generic_2.png",
+    "assets/particles/white_smoke/generic_1.png",
+    "assets/particles/white_smoke/generic_0.png"
+  ]
+}

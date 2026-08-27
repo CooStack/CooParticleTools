@@ -21,7 +21,7 @@
  * the Vue shell can both consume it.
  */
 
-import { installCustomSelects } from './custom-select.js?v=20260825_2';
+import { installCustomSelects } from './custom-select.js?v=20260827_2';
 
 export const GLASS_SURFACE_KEY = 'coo-particles:glass-surface';
 
@@ -49,6 +49,9 @@ const CONTROL_SELECTOR = [
     '.iconbtn', '.icon-btn', '.topbar-menu-trigger',
     '.card', '.card-item', '.node-item', '.project-item',
     '.emitter-list-card', '.queue-card', '.command-card', '.layer-card',
+    '.parameter-editor', '.axis-curve-box', '.definition-row', '.resource-card',
+    '.generator-right .editor-section', '.command-param-grid', '.selector-editor',
+    '.mask-choice-list', '.force-vector-field',
     '.node-card', '.preset-card', '.texture-card',
     '.hk-row', '.section-block', '.subgroup', '.kv-row', '.child-row',
     // The Vue shell's equivalents (WorkbenchPage.vue / PluginsPage.vue).
@@ -58,7 +61,7 @@ const CONTROL_SELECTOR = [
 ].join(',');
 
 const CONTAINER_SELECTOR = [
-    '.topbar', '.panel', '.surface', '.settings-panel',
+    '.topbar', '.generator-topbar', '.panel', '.generator-panel', '.surface', '.settings-panel',
     '.code-panel', '.modal', '.topbar-submenu', '.snap-render-popover',
     // The Vue shell's equivalents.
     '.workbench-rail', '.create-dialog', '.plugins-header', '.plugins-section'

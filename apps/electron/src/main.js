@@ -11,6 +11,7 @@ const { createPreferencesStore } = require('./preferences-store');
 const { writeProjectAutoSave } = require('./project-auto-save');
 const { writeTextFileAtomic } = require('./atomic-text-file');
 const { mapLegacyUrlToAppUrl } = require('./legacy-navigation');
+const { resolveBackendLaunch } = require('./backend-launch');
 const {
   buildMenuModel,
   isRecentProjectId,
@@ -18,7 +19,6 @@ const {
 } = require('./app-menu');
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
-const defaultWebRoot = path.join(repoRoot, 'apps', 'web');
 const appName = 'CooParticlesAPI Tools';
 const maxRecentProjects = 12;
 const hasSingleInstanceLock = app.requestSingleInstanceLock({
@@ -61,51 +61,6 @@ function appendBackendOutput(chunk) {
   if (backendOutput.length > 12000) {
     backendOutput = backendOutput.slice(-12000);
   }
-}
-
-function getPythonCommand() {
-  return process.env.COO_PARTICLES_PYTHON || (process.platform === 'win32' ? 'py' : 'python3');
-}
-
-function buildBackendArgs(port) {
-  const args = [
-    '-m',
-    'coo_particles_client',
-    '--headless',
-    '--host',
-    '127.0.0.1',
-    '--port',
-    String(port),
-  ];
-
-  const webRoot = process.env.COO_PARTICLES_WEB_ROOT || defaultWebRoot;
-  if (webRoot) {
-    args.push('--web-root', webRoot);
-  }
-
-  const nodeBinary = process.env.COO_PARTICLES_NODE;
-  if (nodeBinary) {
-    args.push('--node', nodeBinary);
-  }
-
-  if (isTruthy(process.env.COO_PARTICLES_REBUILD)) {
-    args.push('--rebuild');
-  } else if (isTruthy(process.env.COO_PARTICLES_SKIP_BUILD)) {
-    args.push('--skip-build');
-  }
-
-  return args;
-}
-
-function buildBackendEnv() {
-  const delimiter = process.platform === 'win32' ? ';' : ':';
-  const sourceRoot = path.join(repoRoot, 'src');
-  const existingPythonPath = process.env.PYTHONPATH || '';
-  return {
-    ...process.env,
-    PYTHONUNBUFFERED: '1',
-    PYTHONPATH: existingPythonPath ? `${sourceRoot}${delimiter}${existingPythonPath}` : sourceRoot,
-  };
 }
 
 function getFreePort() {
@@ -152,7 +107,7 @@ async function waitForBackend(url, child, timeoutMs = 45000) {
 
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
-      throw new Error(`Python backend exited early with code ${child.exitCode}.\n${backendOutput}`);
+      throw new Error(`Local backend exited early with code ${child.exitCode}.\n${backendOutput}`);
     }
 
     try {
@@ -163,7 +118,7 @@ async function waitForBackend(url, child, timeoutMs = 45000) {
     }
   }
 
-  throw new Error(`Timed out waiting for Python backend.\n${backendOutput}`);
+  throw new Error(`Timed out waiting for the local backend.\n${backendOutput}`);
 }
 
 async function startBackend() {
@@ -173,12 +128,20 @@ async function startBackend() {
 
   const port = Number(process.env.COO_PARTICLES_PORT || 0) || await getFreePort();
   const url = `http://127.0.0.1:${port}/`;
-  const command = getPythonCommand();
-  const args = buildBackendArgs(port);
+  const launch = resolveBackendLaunch({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    repoRoot,
+    port,
+  });
 
-  backendProcess = spawn(command, args, {
-    cwd: repoRoot,
-    env: buildBackendEnv(),
+  if (app.isPackaged && !fs.existsSync(launch.command)) {
+    throw new Error(`Packaged backend executable was not found: ${launch.command}`);
+  }
+
+  backendProcess = spawn(launch.command, launch.args, {
+    cwd: launch.cwd,
+    env: launch.env,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -208,11 +171,11 @@ async function startBackend() {
   backendInfo = {
     url,
     port,
-    command,
-    args,
-    repoRoot,
+    command: launch.command,
+    args: launch.args,
+    repoRoot: launch.cwd,
     dataDir: String(localStatus?.dataDir || ''),
-    webRoot: process.env.COO_PARTICLES_WEB_ROOT || defaultWebRoot,
+    webRoot: launch.webRoot,
   };
   return backendInfo;
 }

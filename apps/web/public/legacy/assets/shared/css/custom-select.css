@@ -70,6 +70,11 @@ select.cp-select-native {
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
+.cp-select-trigger:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
 .cp-select-value {
     flex: 1 1 auto;
     min-width: 0;
@@ -113,17 +118,40 @@ select.cp-select-native {
     box-sizing: border-box;
     padding: 5px;
     border: 1px solid var(--line2, rgba(255, 255, 255, 0.24));
-    border-radius: 11px;
+    border-radius: var(--radius2, 12px);
     background: var(--panel, #141922);
     box-shadow:
         0 1px 2px rgba(0, 0, 0, 0.3),
         0 18px 44px rgba(0, 0, 0, 0.42);
     overflow-y: auto;
     overscroll-behavior: contain;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-4px) scale(0.98);
+    transform-origin: top center;
+    transition: opacity 160ms ease, transform 160ms ease, visibility 160ms ease;
 }
 
 .cp-select-panel[hidden] {
     display: none;
+}
+
+.cp-select-panel[data-state="open"] {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0) scale(1);
+}
+
+.cp-select-panel[data-state="closed"] {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-4px) scale(0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cp-select-panel {
+        transition: none;
+    }
 }
 
 .cp-select-group {
@@ -141,7 +169,7 @@ select.cp-select-native {
 
 .cp-select-option {
     padding: 7px 9px;
-    border-radius: 7px;
+    border-radius: var(--radius3, 10px);
     color: var(--text, #e8eef7);
     font-size: 12.5px;
     line-height: 1.25;
@@ -187,39 +215,47 @@ select.cp-select-native {
  */
 [data-theme^="glass-"] .cp-select-trigger {
     border: 1px solid transparent;
-    background:
-        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)) padding-box,
-        linear-gradient(148deg, var(--glass-rim-lo) 0%, var(--glass-rim-mid) 100%) border-box;
+    background-image:
+        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)),
+        linear-gradient(148deg, var(--glass-rim-lo) 0%, var(--glass-rim-mid) 100%);
+    background-color: transparent;
+    background-origin: padding-box, border-box;
+    background-clip: padding-box, border-box;
+    background-repeat: no-repeat;
     color: var(--glass-text);
     box-shadow: inset 0 1px 2px rgba(2, 5, 12, 0.12);
 }
 
 [data-theme^="glass-"] .cp-select-trigger:hover {
-    background:
-        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)) padding-box,
+    background-image:
+        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)),
         linear-gradient(148deg,
             color-mix(in srgb, var(--accent) 46%, var(--glass-rim-mid)) 0%,
-            color-mix(in srgb, var(--accent) 24%, transparent) 100%) border-box;
+            color-mix(in srgb, var(--accent) 24%, transparent) 100%);
 }
 
 [data-theme^="glass-"] .cp-select-trigger:focus-visible {
-    background:
-        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)) padding-box,
+    background-image:
+        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)),
         linear-gradient(148deg,
             color-mix(in srgb, var(--accent) 70%, transparent) 0%,
-            color-mix(in srgb, var(--accent) 40%, transparent) 100%) border-box;
+            color-mix(in srgb, var(--accent) 40%, transparent) 100%);
 }
 
 [data-theme^="glass-"] .cp-select-panel {
     border: 1px solid transparent;
-    background:
-        linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 46%) padding-box,
-        linear-gradient(var(--glass-fill-3), var(--glass-fill-3)) padding-box,
+    background-image:
+        linear-gradient(157deg, var(--glass-sheen-2) 0%, transparent 46%),
+        linear-gradient(var(--glass-fill-3), var(--glass-fill-3)),
         linear-gradient(148deg,
             var(--glass-rim-hi) 0%,
             var(--glass-rim-lo) 26%,
             var(--glass-rim-lo) 60%,
-            var(--glass-rim-mid) 100%) border-box;
+            var(--glass-rim-mid) 100%);
+    background-color: transparent;
+    background-origin: padding-box, padding-box, border-box;
+    background-clip: padding-box, padding-box, border-box;
+    background-repeat: no-repeat;
     backdrop-filter: var(--glass-blur);
     -webkit-backdrop-filter: var(--glass-blur);
     box-shadow:
@@ -233,4 +269,80 @@ select.cp-select-native {
 
 [data-theme^="glass-"] .cp-select-option {
     color: var(--glass-text);
+}
+
+/* ---------------------------------------------------------------- numbers */
+
+.cp-number {
+    position: relative;
+    display: flex;
+    width: 100%;
+    min-width: 0;
+}
+
+.cp-number-native {
+    width: 100%;
+    min-width: 0;
+    padding-right: 27px !important;
+    appearance: textfield;
+}
+
+.cp-number-native::-webkit-inner-spin-button,
+.cp-number-native::-webkit-outer-spin-button {
+    margin: 0;
+    appearance: none;
+}
+
+.cp-number-stepper {
+    position: absolute;
+    inset: 1px 1px 1px auto;
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    width: 24px;
+    overflow: hidden;
+    border-left: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+    border-radius: 0 var(--radius3, 10px) var(--radius3, 10px) 0;
+    color: var(--muted, #808b99);
+    cursor: ns-resize;
+    touch-action: none;
+    user-select: none;
+}
+
+.cp-number-step {
+    display: grid;
+    place-items: center;
+    min-height: 0;
+    background: color-mix(in srgb, var(--card2, #181f26) 82%, transparent);
+    transition: background var(--speed, 140ms) ease, color var(--speed, 140ms) ease;
+}
+
+.cp-number-step + .cp-number-step {
+    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+}
+
+.cp-number-stepper:hover:not(.cp-number-stepper--disabled) {
+    color: var(--text, #ecf0f5);
+}
+
+.cp-number-stepper:hover:not(.cp-number-stepper--disabled) .cp-number-step {
+    background: color-mix(in srgb, var(--accent, #8fa7b8) 14%, var(--card2, #181f26));
+}
+
+.cp-number-stepper--disabled {
+    cursor: default;
+    opacity: 0.4;
+}
+
+.cp-number-step svg {
+    width: 11px;
+    height: 11px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+[data-theme^="glass-"] .cp-number-step {
+    background: color-mix(in srgb, var(--glass-fill-3, #17202b) 78%, transparent);
 }

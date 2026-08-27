@@ -1,0 +1,14 @@
+{
+  "name": "ControlableReversePortalEffect",
+  "displayName": "ReversePortal",
+  "textures": [
+    "assets/particles/reverse_portal/generic_0.png",
+    "assets/particles/reverse_portal/generic_1.png",
+    "assets/particles/reverse_portal/generic_2.png",
+    "assets/particles/reverse_portal/generic_3.png",
+    "assets/particles/reverse_portal/generic_4.png",
+    "assets/particles/reverse_portal/generic_5.png",
+    "assets/particles/reverse_portal/generic_6.png",
+    "assets/particles/reverse_portal/generic_7.png"
+  ]
+}

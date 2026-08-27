@@ -9,6 +9,7 @@ __pycache__/
 *.iml
 runtime/
 local_cache/
+build/
 dist/
 node_modules/
 apps/electron/out/

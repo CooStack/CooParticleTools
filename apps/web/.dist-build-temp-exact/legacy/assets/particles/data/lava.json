@@ -1,0 +1,7 @@
+{
+  "name": "ControlableLavaEffect",
+  "displayName": "Lava",
+  "textures": [
+    "assets/particles/lava/lava.png"
+  ]
+}

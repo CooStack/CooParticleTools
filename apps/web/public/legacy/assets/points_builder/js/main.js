@@ -2,7 +2,7 @@ import * as THREE from "three";
 import {OrbitControls} from "three/addons/controls/OrbitControls.js";
 import { createCardInputs, initCardSystem } from "./cards.js?v=20260825_6";
 import { initFilterSystem } from "./filters.js?v=20260429_7";
-import { initHotkeysSystem } from "./hotkeys.js?v=20260505_1";
+import { initHotkeysSystem } from "./hotkeys.js?v=20260826_2";
 import { createKindDefs } from "./kinds.js?v=20260825_5";
 import { ALL_THEMES, APP_THEME_KEY, normalizeTheme, watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
 import { createBuilderTools } from "./builder.js?v=20260825_5";
@@ -13,20 +13,25 @@ import {
     collectPointsBuilderIds,
     createPointsBuilderNode,
     createPointsBuilderState,
+    applyPointsBuilderInstanceOverrides,
     buildPointsBuilderVariableCompletions,
     ensureUniquePointsBuilderIds,
     normalizePointsBuilderNodeTree,
     normalizePointsBuilderState,
     normalizePointsBuilderVariables,
-    reassignPointsBuilderIds
-} from "./model.js?v=20260825_4";
+    reassignPointsBuilderIds,
+    BUILDER_REFERENCE_KIND,
+    EFFECT_RING_KIND
+} from "./model.js?v=20260826_5";
 import { toggleFullscreen } from "./viewer.js";
 import { createPickerModule } from "./main-picker.js?v=20260825_4";
-import { initGlobalShortcuts } from "./main-shortcuts.js?v=20260826_1";
+import { initGlobalShortcuts } from "./main-shortcuts.js?v=20260826_5";
 import { initTopbarAndBoot } from "./main-topbar-boot.js?v=20260505_1";
-import { createPreviewDistanceTool } from "../../src/js/shared/preview-distance-tool.js";
+import { createPreviewDistanceTool } from "../../src/js/shared/preview-distance-tool.js?v=20260826_4";
 import { getCompositionReferenceSnapshot } from "../../shared/js/composition-reference-storage.js?v=20260825_1";
-import { createAdaptiveGrid } from "../../shared/js/adaptive-grid.js?v=20260825_14";
+import { createAdaptiveGrid } from "../../shared/js/adaptive-grid.js?v=20260826_18";
+import { createReferenceGuideController } from "./reference-guides.js?v=20260827_1";
+import { createGridInspector } from "./grid-inspector.js?v=20260826_2";
 import {
     getRandomPresetGroupOptions,
     pickRandomPresetIdsForGroup
@@ -52,7 +57,7 @@ import {
     loadPresetGroups,
     savePresetGroups,
     downloadText
-} from "./io.js?v=20260824_2";
+} from "./io.js?v=20260826_3";
 
 const JSZIP_URL = new URL("../../shader_builder/js/jszip.min.js", import.meta.url).href;
 const NATIVE_SUGGESTION_SKIP_INPUT_TYPES = new Set([
@@ -99,10 +104,12 @@ function initPointsBuilderMain() {
     // DOM
     // -------------------------
     const elCardsRoot = document.getElementById("cardsRoot");
+    const elReferenceGuidesRoot = document.getElementById("referenceGuidesRoot");
     const elCompositionReferenceRoot = document.getElementById("compositionReferenceRoot");
     const elBuilderColumnTitleLabel = document.getElementById("builderColumnTitleLabel");
     const elBuilderColumnFootnote = document.getElementById("builderColumnFootnote");
     const btnBuilderColumnTab = document.getElementById("btnBuilderColumnTab");
+    const btnReferenceGuidesTab = document.getElementById("btnReferenceGuidesTab");
     const btnCompositionColumnTab = document.getElementById("btnCompositionColumnTab");
     const elKotlinOut = document.getElementById("kotlinOut");
 
@@ -256,6 +263,7 @@ function initPointsBuilderMain() {
     const themeSelect = document.getElementById("themeSelect");
     const chkSnapGrid = document.getElementById("chkSnapGrid");
     const chkSnapParticle = document.getElementById("chkSnapParticle");
+    const chkSnapReferenceEndpoints = document.getElementById("chkSnapReferenceEndpoints");
     const chkSnapGridKeyToggleMode = document.getElementById("chkSnapGridKeyToggleMode");
     const chkSnapParticleKeyToggleMode = document.getElementById("chkSnapParticleKeyToggleMode");
     const selSnapPlane = document.getElementById("selSnapPlane");
@@ -318,6 +326,8 @@ function initPointsBuilderMain() {
     let suppressPresetGroupToggleUntil = 0;
     let presetRingSlotPresetIds = [];
     let presetRingRandomPresetIds = [];
+    let activeParameterizedInstanceNodeId = "";
+    let pendingParameterizedInstancePlacement = null;
 
     // -------------------------
     // helpers
@@ -651,6 +661,27 @@ function initPointsBuilderMain() {
             makeConvert("clear_as_mask", "蒙版组"),
             makeConvert("add_with", "旋转嵌套组")
         ];
+        if (sourceNode && sourceNode.kind !== BUILDER_REFERENCE_KIND && sourceNode.kind !== EFFECT_RING_KIND) {
+            items.push({
+                label: "转换为静态实例",
+                onSelect: () => convertGroupToBuilderReference(sourceNode, "static")
+            });
+            items.push({
+                label: "转换为构造实例",
+                onSelect: () => convertGroupToBuilderReference(sourceNode, "construct")
+            });
+        }
+        if (sourceNode?.kind === BUILDER_REFERENCE_KIND) {
+            const currentMode = sourceNode.params?.instanceMode === "construct" ? "construct" : "static";
+            items.push({
+                label: currentMode === "construct" ? "转换为静态实例" : "转换为构造实例",
+                onSelect: () => setBuilderReferenceInstanceMode(sourceNode, currentMode === "construct" ? "static" : "construct")
+            });
+            items.push({
+                label: "编辑实例原型",
+                onSelect: () => beginBuilderSnapshotEdit(sourceNode)
+            });
+        }
         if (sourceNode && sourceNode.kind === "add_with") {
             items.push(makeConvert("add_builder", "旋转嵌套后的普通组", { expanded: true }));
             items.push(makeConvert("clear_as_mask", "旋转嵌套后的蒙版组", { expanded: true }));
@@ -828,7 +859,7 @@ function initPointsBuilderMain() {
 
     function convertSingleGroupNode(sourceNode, targetKind, options = {}) {
         if (!sourceNode || !sourceNode.kind) return false;
-        if (!isBuilderContainerKind(sourceNode.kind)) return false;
+        if (!isBuilderContainerKind(sourceNode.kind) && sourceNode.kind !== BUILDER_REFERENCE_KIND) return false;
         const ctx = findNodeContextById(sourceNode.id);
         if (!ctx || !ctx.node || !Array.isArray(ctx.parentList)) return false;
         const parentList = ctx.parentList;
@@ -836,8 +867,35 @@ function initPointsBuilderMain() {
         if (!Number.isInteger(at) || at < 0 || at >= parentList.length) return false;
 
         let replacement = null;
+        if (sourceNode.kind === BUILDER_REFERENCE_KIND && targetKind === "add_builder") {
+            const snapshot = ensureBuilderSnapshotState()[String(sourceNode.params?.snapshotId || "")];
+            if (!snapshot) return false;
+            replacement = makeNode("add_builder", {
+                label: sourceNode.label || snapshot.name,
+                params: {
+                    ox: Number(sourceNode.params?.ox) || 0,
+                    oy: Number(sourceNode.params?.oy) || 0,
+                    oz: Number(sourceNode.params?.oz) || 0
+                }
+            });
+            replacement.children = materializeBuilderReferenceChildren(snapshot, sourceNode);
+            if (Math.abs(Number(sourceNode.params?.rotationDeg) || 0) > 1e-9) {
+                replacement.children.push(makeNode("rotate_as_axis", {
+                    params: {
+                        deg: Number(sourceNode.params.rotationDeg) || 0,
+                        degUnit: "deg",
+                        useCustomAxis: true,
+                        ax: Number(sourceNode.params.rotationAxisX) || 0,
+                        ay: Number(sourceNode.params.rotationAxisY) || 1,
+                        az: Number(sourceNode.params.rotationAxisZ) || 0
+                    }
+                }));
+            }
+        }
         const isExpandedAddWith = sourceNode.kind === "add_with" && !!options.expanded && (targetKind === "add_builder" || targetKind === "clear_as_mask");
-        if (isExpandedAddWith) {
+        if (replacement) {
+            // 已在上面从项目快照恢复为普通组。
+        } else if (isExpandedAddWith) {
             replacement = buildExpandedAddWithGroup(sourceNode, targetKind);
         } else {
             replacement = makeNode(targetKind);
@@ -1033,6 +1091,13 @@ function initPointsBuilderMain() {
         paramEditorHost.innerHTML = "";
         setParamEditorSyncHint("");
         paramEditorSyncState = null;
+
+        const selectedGuide = referenceGuideController?.getSelectedGuide?.();
+        if (selectedGuide) {
+            paramEditorStatus.textContent = `正在编辑参考线：${selectedGuide.name || `${selectedGuide.axis} 轴参考线`}`;
+            referenceGuideController.renderSelectedEditor?.(paramEditorHost);
+            return;
+        }
 
         const ids = getParamEditorTargetIds();
         const nodes = getParamEditorNodes(ids);
@@ -1232,6 +1297,8 @@ function initPointsBuilderMain() {
     let compositionReferenceOnlyCurrent = false;
     let compositionReferenceOpacity = 0.3;
     let activeBuilderColumn = "builder";
+    let referenceGuideController = null;
+    let gridInspector = null;
     let compositionReferenceVisibility = Object.create(null);
     let compositionReferenceCollapsed = Object.create(null);
     let compositionReferenceSceneReady = false;
@@ -2168,7 +2235,7 @@ function initPointsBuilderMain() {
                 if (!id) return;
                 const group = compositionReferenceGroups().find((item) => item.id === id);
                 const hasStoredVisibility = Object.prototype.hasOwnProperty.call(compositionReferenceVisibility, id);
-                const defaultVisible = group?.isCurrentCard && group.depth === 0 ? false : true;
+                const defaultVisible = group?.isCurrentCard ? false : true;
                 const currentSelfVisible = hasStoredVisibility
                     ? compositionReferenceVisibility[id] !== false
                     : defaultVisible;
@@ -2237,28 +2304,49 @@ function initPointsBuilderMain() {
     }
 
     function setBuilderColumnPage(page) {
-        if (!isCompositionPointsBuilder) return;
-        activeBuilderColumn = page === "composition" ? "composition" : "builder";
+        const requested = String(page || "builder");
+        activeBuilderColumn = requested === "guides"
+            ? "guides"
+            : requested === "composition" && isCompositionPointsBuilder
+                ? "composition"
+                : "builder";
         const showBuilder = activeBuilderColumn === "builder";
+        const showGuides = activeBuilderColumn === "guides";
+        const showComposition = activeBuilderColumn === "composition";
         if (elCardsRoot) {
             elCardsRoot.hidden = !showBuilder;
             elCardsRoot.classList.toggle("composition-page-hidden", !showBuilder);
         }
+        if (elReferenceGuidesRoot) {
+            elReferenceGuidesRoot.hidden = !showGuides;
+            elReferenceGuidesRoot.classList.toggle("composition-page-hidden", !showGuides);
+        }
         if (elCompositionReferenceRoot) {
-            elCompositionReferenceRoot.hidden = showBuilder;
-            elCompositionReferenceRoot.classList.toggle("composition-page-hidden", showBuilder);
+            elCompositionReferenceRoot.hidden = !showComposition;
+            elCompositionReferenceRoot.classList.toggle("composition-page-hidden", !showComposition);
         }
         if (elBuilderColumnFootnote) {
             elBuilderColumnFootnote.classList.toggle("composition-page-hidden", !showBuilder);
         }
-        if (elBuilderColumnTitleLabel) elBuilderColumnTitleLabel.textContent = showBuilder ? "构建列" : "Composition 参考";
-        for (const [button, active] of [[btnBuilderColumnTab, activeBuilderColumn === "builder"], [btnCompositionColumnTab, activeBuilderColumn === "composition"]]) {
+        if (elBuilderColumnTitleLabel) {
+            elBuilderColumnTitleLabel.textContent = showBuilder
+                ? "构建列"
+                : showGuides ? "参考线" : "Composition 参考";
+        }
+        for (const [button, active] of [
+            [btnBuilderColumnTab, showBuilder],
+            [btnReferenceGuidesTab, showGuides],
+            [btnCompositionColumnTab, showComposition]
+        ]) {
             if (!button) continue;
             button.classList.toggle("active", active);
             button.setAttribute("aria-selected", active ? "true" : "false");
         }
-        renderCompositionReferencePanel();
-        rebuildCompositionReferencePreview();
+        if (showGuides) referenceGuideController?.renderPanel?.();
+        if (showComposition) {
+            renderCompositionReferencePanel();
+            rebuildCompositionReferencePreview();
+        }
     }
 
     function createCompositionReferenceGpuMaterial() {
@@ -3224,11 +3312,12 @@ function initPointsBuilderMain() {
     }
 
     loadCompositionNumericContext();
+    btnBuilderColumnTab?.addEventListener("click", () => setBuilderColumnPage("builder"));
+    btnReferenceGuidesTab?.addEventListener("click", () => setBuilderColumnPage("guides"));
     if (isCompositionPointsBuilder) {
-        btnBuilderColumnTab?.addEventListener("click", () => setBuilderColumnPage("builder"));
         btnCompositionColumnTab?.addEventListener("click", () => setBuilderColumnPage("composition"));
-        setBuilderColumnPage("builder");
     }
+    setBuilderColumnPage("builder");
     window.addEventListener("storage", (e) => {
         const key = String(e?.key || "");
         if (!key || !key.endsWith(PB_COMP_CONTEXT_KEY)) return;
@@ -3266,10 +3355,11 @@ function initPointsBuilderMain() {
         presetRingPreviewMode: "preview",
         snapGridKeyToggleMode: false,
         snapParticleKeyToggleMode: false,
-        snapPriority: ["line_division", "geometry_center", "grid", "particle"]
+        snapPriority: ["line_division", "reference_guide", "geometry_center", "grid", "particle"]
     };
     const SNAP_PRIORITY_DEFS = [
         { id: "line_division", label: "N分点" },
+        { id: "reference_guide", label: "参考线" },
         { id: "geometry_center", label: "中心" },
         { id: "grid", label: "网格" },
         { id: "particle", label: "粒子点" }
@@ -3522,6 +3612,7 @@ function initPointsBuilderMain() {
 
     function isSnapPrioritySourceEnabled(id) {
         if (id === "line_division") return lineDivisionPoints > 0;
+        if (id === "reference_guide") return !!referenceGuideController?.hasEnabledSnapGuides?.();
         if (id === "geometry_center") return !!geometryCenterPreviewEnabled;
         if (id === "grid") return !!(chkSnapGrid && chkSnapGrid.checked);
         if (id === "particle") return !!(chkSnapParticle && chkSnapParticle.checked);
@@ -3530,6 +3621,12 @@ function initPointsBuilderMain() {
 
     function getSnapPriorityStateLabel(id) {
         if (id === "line_division") return lineDivisionPoints > 0 ? `${lineDivisionPoints}点` : "关闭";
+        if (id === "reference_guide") {
+            const count = Array.isArray(state?.guides)
+                ? state.guides.filter((guide) => guide?.visible !== false && guide?.snapEnabled !== false).length
+                : 0;
+            return count > 0 ? `${count}条` : "关闭";
+        }
         if (id === "geometry_center") return geometryCenterPreviewEnabled ? "开启" : "关闭";
         if (id === "grid") return (chkSnapGrid && chkSnapGrid.checked) ? "开启" : "关闭";
         if (id === "particle") return (chkSnapParticle && chkSnapParticle.checked) ? "开启" : "关闭";
@@ -4056,7 +4153,7 @@ function initPointsBuilderMain() {
     // -------------------------
     // KIND
     // -------------------------
-    const KIND = createKindDefs({ U, num, int, relExpr, rotatePointsToPointUpright });
+    const KIND = createKindDefs({ U, num, int, relExpr, rotatePointsToPointUpright, applyPointsBuilderInstanceOverrides });
 
     // -------------------------
     // Node
@@ -4169,6 +4266,369 @@ function initPointsBuilderMain() {
         });
         if (normalized) delete normalized.presets;
         return normalized;
+    }
+
+    function ensureBuilderSnapshotState() {
+        if (!state.builderSnapshots || typeof state.builderSnapshots !== "object" || Array.isArray(state.builderSnapshots)) {
+            state.builderSnapshots = {};
+        }
+        return state.builderSnapshots;
+    }
+
+    function ensureBuilderPresetMappingState() {
+        if (!state.builderPresetMappings || typeof state.builderPresetMappings !== "object" || Array.isArray(state.builderPresetMappings)) {
+            state.builderPresetMappings = {};
+        }
+        return state.builderPresetMappings;
+    }
+
+    function normalizeBuilderInstanceId(value) {
+        const id = String(value || "").trim();
+        return /^[A-Za-z_][A-Za-z0-9_]*$/.test(id) ? id : "";
+    }
+
+    function formatBuilderInstanceId(value, options = {}) {
+        const words = String(value || "")
+            .trim()
+            .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+            .split(/[^A-Za-z0-9]+/)
+            .filter(Boolean);
+        if (!words.length) return options.fallback || "instance";
+        const first = words[0].toLowerCase();
+        const rest = words.slice(1).map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join("");
+        const combined = `${first}${rest}`;
+        const withCase = options.upperFirst
+            ? combined.charAt(0).toUpperCase() + combined.slice(1)
+            : combined;
+        return /^[A-Za-z_]/.test(withCase) ? withCase : `instance${withCase}`;
+    }
+
+    function suggestBuilderInstanceId(value, fallback = "instance") {
+        const normalized = formatBuilderInstanceId(value, { fallback });
+        return normalizeBuilderInstanceId(normalized) || fallback;
+    }
+
+    function ensureBuilderReferenceDialog() {
+        let mask = document.getElementById("builderReferenceDialogMask");
+        let modal = document.getElementById("builderReferenceDialog");
+        if (mask && modal) return { mask, modal };
+        mask = document.createElement("div");
+        mask.id = "builderReferenceDialogMask";
+        mask.className = "modal-mask hidden";
+        modal = document.createElement("div");
+        modal.id = "builderReferenceDialog";
+        modal.className = "modal hidden builder-reference-dialog";
+        modal.setAttribute("role", "dialog");
+        modal.setAttribute("aria-modal", "true");
+        modal.innerHTML = `
+            <div class="modal-head">
+                <div class="modal-title">重构实例</div>
+                <button class="btn icon" type="button" data-builder-reference-dialog-close aria-label="关闭">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+                </button>
+            </div>
+            <div class="modal-body builder-reference-dialog-body">
+                <div class="builder-reference-dialog-note" data-builder-reference-dialog-note></div>
+                <label class="builder-reference-dialog-field">
+                    <span>实例 ID</span>
+                    <input class="input" type="text" autocomplete="off" spellcheck="false" data-builder-reference-dialog-input />
+                </label>
+                <div class="builder-reference-dialog-modes" data-builder-reference-dialog-modes>
+                    <button class="builder-reference-mode-option active pb-tooltip-anchor" type="button" data-mode="registered" data-tip="注册式：目标 ID 不存在时注册当前原型，存在时引用已有原型。">
+                        <strong>注册式</strong><span>创建或引用</span>
+                    </button>
+                    <button class="builder-reference-mode-option pb-tooltip-anchor" type="button" data-mode="indexed" data-tip="索引式：复制当前原型为当前卡片独享版本，后续编辑不会同步其他卡片。">
+                        <strong>索引式</strong><span>当前卡片独享</span>
+                    </button>
+                    <button class="builder-reference-mode-option pb-tooltip-anchor" type="button" data-mode="linked" data-tip="联动式：重命名注册原型，并同步更新所有相同 ID 的实例引用。">
+                        <strong>联动式</strong><span>全局同步改名</span>
+                    </button>
+                </div>
+                <div class="builder-reference-dialog-error" data-builder-reference-dialog-error role="status"></div>
+            </div>
+            <div class="modal-foot builder-reference-dialog-foot">
+                <button class="btn" type="button" data-builder-reference-dialog-cancel>取消</button>
+                <span style="flex:1 1 auto;"></span>
+                <button class="btn primary" type="button" data-builder-reference-dialog-apply>重构</button>
+            </div>`;
+        document.body.append(mask, modal);
+        return { mask, modal };
+    }
+
+    function openBuilderReferenceDialog(options = {}) {
+        const { mask, modal } = ensureBuilderReferenceDialog();
+        const input = modal.querySelector("[data-builder-reference-dialog-input]");
+        const note = modal.querySelector("[data-builder-reference-dialog-note]");
+        const error = modal.querySelector("[data-builder-reference-dialog-error]");
+        const modes = modal.querySelector("[data-builder-reference-dialog-modes]");
+        const modeButtons = Array.from(modal.querySelectorAll("[data-builder-reference-dialog-modes] [data-mode]"));
+        const initialMode = ["registered", "indexed", "linked"].includes(options.mode) ? options.mode : "registered";
+        let selectedMode = initialMode;
+        let settled = false;
+        const close = (value) => {
+            if (settled) return;
+            settled = true;
+            mask.classList.add("hidden");
+            modal.classList.add("hidden");
+            resolve(value);
+        };
+        let resolve;
+        const promise = new Promise((res) => { resolve = res; });
+        const setError = (message = "") => {
+            if (error) error.textContent = message;
+        };
+        const setMode = (mode) => {
+            selectedMode = ["registered", "indexed", "linked"].includes(mode) ? mode : "registered";
+            modeButtons.forEach((button) => button.classList.toggle("active", button.dataset.mode === selectedMode));
+        };
+        const apply = () => {
+            const id = normalizeBuilderInstanceId(formatBuilderInstanceId(input?.value, { fallback: "" }));
+            if (!id) {
+                setError("实例 ID 必须是合法的 Kotlin 标识符，只能包含字母、数字和下划线，且不能以数字开头。");
+                input?.focus();
+                return;
+            }
+            close({ id, mode: selectedMode });
+        };
+        if (note) note.textContent = String(options.message || "输入实例 ID，并选择这次重构的绑定方式。");
+        if (input) {
+            input.value = String(options.initialValue || "").trim();
+            input.onkeydown = (event) => {
+                if (event.key === "Enter") { event.preventDefault(); apply(); }
+                else if (event.key === "Escape") { event.preventDefault(); close(null); }
+            };
+        }
+        modeButtons.forEach((button) => {
+            button.onclick = () => setMode(button.dataset.mode);
+        });
+        if (modes) modes.classList.toggle("hidden", options.showModes === false);
+        modal.querySelector("[data-builder-reference-dialog-close]").onclick = () => close(null);
+        modal.querySelector("[data-builder-reference-dialog-cancel]").onclick = () => close(null);
+        modal.querySelector("[data-builder-reference-dialog-apply]").onclick = apply;
+        mask.onclick = () => close(null);
+        setError("");
+        setMode(initialMode);
+        mask.classList.remove("hidden");
+        modal.classList.remove("hidden");
+        requestAnimationFrame(() => {
+            input?.focus();
+            input?.select?.();
+        });
+        return promise;
+    }
+
+    function promptBuilderInstanceId(message, initialValue = "") {
+        return openBuilderReferenceDialog({
+            message,
+            initialValue,
+            showModes: false
+        }).then((result) => result?.id || "");
+    }
+
+    function findBuilderSnapshotByPresetId(presetId) {
+        const id = String(presetId || "").trim();
+        if (!id) return null;
+        const snapshots = ensureBuilderSnapshotState();
+        const mappings = ensureBuilderPresetMappingState();
+        const mappedId = String(mappings[id] || "").trim();
+        if (mappedId && snapshots[mappedId]) return snapshots[mappedId];
+        const snapshot = Object.values(snapshots).find((item) => item && item.sourcePresetId === id) || null;
+        if (snapshot) mappings[id] = snapshot.id;
+        return snapshot;
+    }
+
+    function makeBuilderSnapshotFromPreset(preset, options = {}) {
+        let id = normalizeBuilderInstanceId(options.id);
+        if (!id) id = `pbs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        while (ensureBuilderSnapshotState()[id]) id += "_x";
+        const normalized = normalizePresetList([preset])[0];
+        if (!normalized) return null;
+        const variableInfo = normalizePresetVariableInfoForStorage(
+            options.variableInfo || getPresetEffectiveVariableInfo(normalized) || normalized.variables
+        );
+        if (variableInfo && options.variableValues) {
+            variableInfo.inputs = normalizePresetVariableValues(options.variableValues);
+        }
+        const snapshot = {
+            id,
+            sourcePresetId: String(normalized.id || "").trim(),
+            sourcePresetRevision: String(normalized.updatedAt || normalized.createdAt || "").trim(),
+            name: String(normalized.name || "未命名实例").trim() || "未命名实例",
+            origin: normalizePointValue(normalized.origin),
+            variables: variableInfo ? deepCloneJson(variableInfo) : null,
+            staticOverrides: variableInfo ? deepCloneJson(variableInfo.inputs || {}) : null,
+            children: deepCloneJson(normalized.children || []) || [],
+            revision: 1,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+        };
+        normalizeNodeTree(snapshot.children);
+        if (options.persist !== false) ensureBuilderSnapshotState()[id] = snapshot;
+        return snapshot;
+    }
+
+    function makeBuilderReferenceNode(snapshot, point, label = "") {
+        if (!snapshot) return null;
+        const anchor = normalizePointValue(point);
+        const origin = normalizePointValue(snapshot.origin);
+        const node = makeNode(BUILDER_REFERENCE_KIND, {
+            label: label || snapshot.name,
+            params: {
+                snapshotId: snapshot.id,
+                parameterId: "",
+                instanceMode: "static",
+                ox: anchor.x - origin.x,
+                oy: anchor.y - origin.y,
+                oz: anchor.z - origin.z,
+                scale: 1,
+                rotationDeg: 0,
+                rotationAxisX: 0,
+                rotationAxisY: 1,
+                rotationAxisZ: 0,
+                overrides: snapshot.staticOverrides
+                    ? deepCloneJson(snapshot.staticOverrides) || {}
+                    : snapshot.variables
+                    ? deepCloneJson(getPresetVariableDefaultValues(snapshot.variables)) || {}
+                    : {}
+            }
+        });
+        node.params.parameterId = `pb_instance_${node.id}`;
+        node.children = [];
+        return node;
+    }
+
+    function makeBuilderSnapshotFromNode(sourceNode, options = {}) {
+        if (!sourceNode || !Array.isArray(sourceNode.children)) return null;
+        const snapshots = ensureBuilderSnapshotState();
+        let id = normalizeBuilderInstanceId(options.id)
+            || `pbs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        while (snapshots[id]) id += "_x";
+        const snapshot = {
+            id,
+            sourcePresetId: "",
+            sourcePresetRevision: "",
+            name: String(sourceNode.label || "实例").trim() || "实例",
+            origin: { x: 0, y: 0, z: 0 },
+            variables: null,
+            staticOverrides: null,
+            children: deepCloneJson(sourceNode.children) || [],
+            revision: 1,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+        };
+        normalizeNodeTree(snapshot.children);
+        snapshots[id] = snapshot;
+        return snapshot;
+    }
+
+    async function convertGroupToBuilderReference(sourceNode, mode = "static") {
+        if (!sourceNode || !isBuilderContainerKind(sourceNode.kind) || sourceNode.kind === BUILDER_REFERENCE_KIND) return false;
+        const ctx = findNodeContextById(sourceNode.id);
+        if (!ctx || !Array.isArray(ctx.parentList)) return false;
+        const suggestedId = suggestBuilderInstanceId(sourceNode.label || sourceNode.id || "instance");
+        const instanceId = await promptBuilderInstanceId("输入实例 ID；已注册的 ID 会直接引用已有原型。", suggestedId);
+        if (!instanceId) return false;
+        const bindingMode = "registered";
+        const snapshot = ensureBuilderSnapshotState()[instanceId]
+            || makeBuilderSnapshotFromNode(sourceNode, { id: instanceId });
+        if (!snapshot) return false;
+        const replacement = makeNode(BUILDER_REFERENCE_KIND, {
+            label: sourceNode.label || snapshot.name,
+            params: {
+                snapshotId: snapshot.id,
+                parameterId: "",
+                instanceMode: mode === "construct" ? "construct" : "static",
+                instanceBindingMode: bindingMode,
+                ox: Number(sourceNode.params?.ox) || 0,
+                oy: Number(sourceNode.params?.oy) || 0,
+                oz: Number(sourceNode.params?.oz) || 0,
+                scale: 1,
+                rotationDeg: 0,
+                rotationAxisX: 0,
+                rotationAxisY: 1,
+                rotationAxisZ: 0,
+                overrides: {}
+            }
+        });
+        replacement.params.parameterId = `pb_instance_${replacement.id}`;
+        replacement.children = [];
+        historyCapture("convert_group_to_builder_reference");
+        ctx.parentList.splice(ctx.index, 1, replacement);
+        normalizeNodeTree(state.root);
+        scheduleAutoSave();
+        renderAll();
+        if (typeof setCardSelectionIds === "function") setCardSelectionIds([replacement.id], { replace: true, focus: false, syncWithParamSync: false });
+        setFocusedNode(replacement.id, false);
+        showToast(`已转换为${mode === "construct" ? "构造实例" : "静态实例"}（${bindingMode === "indexed" ? "索引式" : bindingMode === "linked" ? "联动式" : "注册式"}）`, "success");
+        return true;
+    }
+
+    async function applyPresetReferenceAtPoint(preset, point, options = {}) {
+        const normalized = normalizePresetList([preset])[0];
+        if (!normalized || !point) return false;
+        const snapshots = ensureBuilderSnapshotState();
+        const mappings = ensureBuilderPresetMappingState();
+        let snapshot = findBuilderSnapshotByPresetId(normalized.id);
+        let pendingSnapshot = null;
+        let requestedInstanceId = "";
+        if (!snapshot) {
+            requestedInstanceId = normalizeBuilderInstanceId(mappings[normalized.id] || normalized.instanceMappingId);
+            if (!requestedInstanceId) {
+                requestedInstanceId = await promptBuilderInstanceId(
+                    `首次在当前项目使用预设“${normalized.name}”，请输入实例 ID`,
+                    suggestBuilderInstanceId(normalized.name || normalized.id)
+                );
+                if (!requestedInstanceId) return false;
+            }
+            while (snapshots[requestedInstanceId]
+                && String(snapshots[requestedInstanceId].sourcePresetId || "") !== String(normalized.id || "")
+                && String(mappings[normalized.id] || "") !== requestedInstanceId) {
+                showToast(`实例 ID“${requestedInstanceId}”已被其他预设占用，请输入新的实例 ID。`, "error");
+                requestedInstanceId = await promptBuilderInstanceId(
+                    `预设“${normalized.name}”请输入新的实例 ID`,
+                    suggestBuilderInstanceId(`${normalized.name}_instance`)
+                );
+                if (!requestedInstanceId) return false;
+            }
+            if (snapshots[requestedInstanceId]) {
+                snapshot = snapshots[requestedInstanceId];
+                mappings[normalized.id] = requestedInstanceId;
+            }
+        }
+        if (!snapshot) {
+            if (!requestedInstanceId) return false;
+            const variableInfo = getPresetEffectiveVariableInfo(normalized);
+            const values = getPresetVariableEntries(variableInfo).length
+                ? await openPresetVariableApplyDialog(Object.assign({}, normalized, { variables: variableInfo }))
+                : getPresetVariableDefaultValues(variableInfo);
+            if (!values) return false;
+            pendingSnapshot = makeBuilderSnapshotFromPreset(normalized, {
+                id: requestedInstanceId,
+                persist: false,
+                variableInfo,
+                variableValues: values
+            });
+            snapshot = pendingSnapshot;
+            mappings[normalized.id] = snapshot.id;
+        }
+        refreshBuilderSnapshotVariables(snapshot, normalized);
+        const node = makeBuilderReferenceNode(snapshot, point, normalized.name);
+        if (!node) return false;
+        historyCapture("apply_preset_reference");
+        if (pendingSnapshot) ensureBuilderSnapshotState()[pendingSnapshot.id] = pendingSnapshot;
+        ensureBuilderPresetMappingState()[normalized.id] = snapshot.id;
+        state.root.children.push(node);
+        normalizeNodeTree(state.root);
+        scheduleAutoSave();
+        renderAll();
+        if (typeof setCardSelectionIds === "function") setCardSelectionIds([node.id], { replace: true, focus: true });
+        setFocusedNode(node.id, false);
+        return { ok: true, insertedIds: [node.id], snapshotId: snapshot.id };
+    }
+
+    async function resolvePresetReferenceForDrop(preset) {
+        const normalized = normalizePresetList([preset])[0];
+        return normalized || null;
     }
 
     function deepCloneJson(obj) {
@@ -4326,6 +4786,7 @@ function initPointsBuilderMain() {
             const preset = {
                 id,
                 name: String(raw.name || "未命名预设").trim() || "未命名预设",
+                instanceMappingId: normalizeBuilderInstanceId(raw.instanceMappingId),
                 group: getPresetGroupLabel(raw.group),
                 buildInfo: raw.buildInfo && typeof raw.buildInfo === "object" ? Object.assign({}, raw.buildInfo) : {},
                 origin: normalizePointValue(raw.origin),
@@ -4450,6 +4911,434 @@ function initPointsBuilderMain() {
             addVector(name, "internal", value, `${name}（内部 Vec3）`);
         }
         return { scalar, vector };
+    }
+
+    function ensureBuilderReferenceOverrides(node, snapshot) {
+        if (!node.params || typeof node.params !== "object") node.params = {};
+        const defaults = getPresetVariableDefaultValues(snapshot?.variables);
+        const raw = node.params.overrides && typeof node.params.overrides === "object"
+            ? node.params.overrides
+            : {};
+        raw.scalar = Object.assign({}, defaults.scalar || {}, raw.scalar || {});
+        raw.vector = Object.assign({}, defaults.vector || {}, raw.vector || {});
+        raw.modes = Object.assign({ scalar: {}, vector: {} }, raw.modes || {});
+        raw.modes.scalar = Object.assign({}, raw.modes.scalar || {});
+        raw.modes.vector = Object.assign({}, raw.modes.vector || {});
+        raw.refs = Object.assign({ scalar: {}, vector: {} }, raw.refs || {});
+        raw.refs.scalar = Object.assign({}, raw.refs.scalar || {});
+        raw.refs.vector = Object.assign({}, raw.refs.vector || {});
+        node.params.overrides = raw;
+        return raw;
+    }
+
+    function refreshBuilderSnapshotVariables(snapshot, preset = null) {
+        if (!snapshot) return false;
+        const sourcePreset = preset || presetList.find((item) => (
+            String(item?.id || "") === String(snapshot.sourcePresetId || "")
+        ));
+        const freshInfo = getPresetEffectiveVariableInfo(sourcePreset);
+        if (!freshInfo) return false;
+        const mergedInfo = mergePresetVariableInfo(snapshot.variables, freshInfo);
+        if (!mergedInfo) return false;
+        const defaults = getPresetVariableDefaultValues(mergedInfo);
+        const current = snapshot.staticOverrides && typeof snapshot.staticOverrides === "object"
+            ? snapshot.staticOverrides
+            : {};
+        const nextOverrides = Object.assign({}, current, {
+            scalar: Object.assign({}, defaults.scalar || {}, current.scalar || {}),
+            vector: Object.assign({}, defaults.vector || {}, current.vector || {}),
+            modes: Object.assign({ scalar: {}, vector: {} }, current.modes || {}),
+            refs: Object.assign({ scalar: {}, vector: {} }, current.refs || {})
+        });
+        const previous = JSON.stringify({ variables: snapshot.variables || null, staticOverrides: snapshot.staticOverrides || null });
+        const next = JSON.stringify({ variables: mergedInfo, staticOverrides: nextOverrides });
+        if (previous === next) return false;
+        snapshot.variables = deepCloneJson(mergedInfo);
+        snapshot.staticOverrides = deepCloneJson(nextOverrides);
+        snapshot.revision = Math.max(1, Math.trunc(Number(snapshot.revision) || 1)) + 1;
+        snapshot.updatedAt = Date.now();
+        return true;
+    }
+
+    function getBuilderReferenceOverrideValues(snapshot, node) {
+        const values = getPresetVariableDefaultValues(snapshot?.variables);
+        const overrides = ensureBuilderReferenceOverrides(node, snapshot);
+        const catalog = getVariableCatalog();
+        for (const [name, value] of Object.entries(overrides.scalar || {})) {
+            values.scalar[name] = normalizePresetScalarVariableValue(value);
+        }
+        for (const [name, value] of Object.entries(overrides.vector || {})) {
+            values.vector[name] = normalizePointValue(value);
+        }
+        for (const type of ["scalar", "vector"]) {
+            for (const [name, mode] of Object.entries(overrides.modes?.[type] || {})) {
+                if (mode !== "reference") continue;
+                const ref = normalizeContextIdentifier(overrides.refs?.[type]?.[name]);
+                const entry = ref ? getVariableEntryFromCatalog(type, ref, catalog) : null;
+                if (!entry) continue;
+                if (type === "vector") values.vector[name] = normalizePointValue(entry.value);
+                else values.scalar[name] = normalizePresetScalarVariableValue(entry.value);
+            }
+        }
+        return values;
+    }
+
+    function materializeBuilderReferenceChildren(snapshot, node) {
+        const children = deepCloneJson(snapshot?.children || []) || [];
+        if (!snapshot?.variables) return children;
+        return applyPresetVariableValuesToChildren(children, getBuilderReferenceOverrideValues(snapshot, node));
+    }
+
+    function renderBuilderReferenceVariables(body, node) {
+        const snapshot = ensureBuilderSnapshotState()[String(node?.params?.snapshotId || "")];
+        if (refreshBuilderSnapshotVariables(snapshot)) scheduleAutoSave();
+        const variableInfo = normalizePresetVariableInfoForStorage(snapshot?.variables);
+        if (!getPresetVariableEntries(variableInfo).length) return false;
+        const staticMode = node?.params?.instanceMode !== "construct";
+        if (staticMode && snapshot?.staticOverrides && typeof snapshot.staticOverrides === "object") {
+            node.params.overrides = deepCloneJson(snapshot.staticOverrides) || {};
+        }
+        const overrides = ensureBuilderReferenceOverrides(node, snapshot);
+        const variableCatalog = getVariableCatalog();
+        for (const type of ["scalar", "vector"]) {
+            const catalog = type === "vector" ? variableCatalog.vector : variableCatalog.scalar;
+            for (const [name, mode] of Object.entries(overrides.modes[type] || {})) {
+                if (mode !== "reference") continue;
+                const ref = normalizeContextIdentifier(overrides.refs[type]?.[name]);
+                if (ref && catalog.has(ref)) continue;
+                overrides.modes[type][name] = "manual";
+                delete overrides.refs[type][name];
+            }
+        }
+        const host = document.createElement("div");
+        host.className = "preset-variable-panel builder-reference-variable-panel";
+        renderPresetVariableRows(host, variableInfo, overrides, {
+            title: "实例变量",
+            allowVariableRefs: true,
+            variableCatalog,
+            applyState: overrides,
+            onChange: () => {
+                if (staticMode) syncStaticBuilderReferenceOverrides(snapshot, node);
+                scheduleAutoSave();
+                rebuildPreviewAndKotlin();
+            },
+            onPickVector: (entry, setValue) => {
+                startPointPick({
+                    label: `拾取实例变量 ${entry.name}`,
+                    onPick: (point) => {
+                        setValue(point);
+                        scheduleAutoSave();
+                        rebuildPreviewAndKotlin();
+                        scheduleParamEditorRender();
+                    }
+                });
+            }
+        });
+        body.appendChild(host);
+        return true;
+    }
+
+    function visitAllBuilderReferences(visitor) {
+        const visit = (nodes) => {
+            for (const item of Array.isArray(nodes) ? nodes : []) {
+                if (!item || typeof item !== "object") continue;
+                if (item.kind === BUILDER_REFERENCE_KIND) visitor(item);
+                visit(item.children);
+            }
+        };
+        visit(state.root?.children);
+        for (const snapshot of Object.values(ensureBuilderSnapshotState())) visit(snapshot?.children);
+    }
+
+    function collectBuilderSnapshotReferenceCounts() {
+        const counts = new Map();
+        const add = (id) => {
+            const key = String(id || "").trim();
+            if (key) counts.set(key, (counts.get(key) || 0) + 1);
+        };
+        const visit = (nodes) => {
+            for (const item of Array.isArray(nodes) ? nodes : []) {
+                if (!item || typeof item !== "object") continue;
+                if (item.kind === BUILDER_REFERENCE_KIND) add(item.params?.snapshotId);
+                if (item.kind === EFFECT_RING_KIND) {
+                    for (const id of Array.isArray(item.params?.snapshotIds) ? item.params.snapshotIds : []) add(id);
+                }
+                visit(item.children);
+            }
+        };
+        visit(state.root?.children);
+        return counts;
+    }
+
+    function cleanupUnreferencedBuilderSnapshots() {
+        const snapshots = ensureBuilderSnapshotState();
+        const mappings = ensureBuilderPresetMappingState();
+        const counts = collectBuilderSnapshotReferenceCounts();
+        let removed = 0;
+        for (const id of Object.keys(snapshots)) {
+            if (counts.has(id)) continue;
+            delete snapshots[id];
+            removed += 1;
+        }
+        for (const presetId of Object.keys(mappings)) {
+            if (!snapshots[mappings[presetId]]) delete mappings[presetId];
+        }
+        return removed;
+    }
+
+    function rewriteBuilderSnapshotReferences(fromId, toId) {
+        const from = String(fromId || "").trim();
+        const to = String(toId || "").trim();
+        if (!from || !to || from === to) return;
+        const visit = (nodes) => {
+            for (const item of Array.isArray(nodes) ? nodes : []) {
+                if (!item || typeof item !== "object") continue;
+                if (item.kind === BUILDER_REFERENCE_KIND && String(item.params?.snapshotId || "") === from) {
+                    item.params.snapshotId = to;
+                }
+                if (item.kind === EFFECT_RING_KIND && Array.isArray(item.params?.snapshotIds)) {
+                    item.params.snapshotIds = item.params.snapshotIds.map((id) => String(id || "") === from ? to : id);
+                }
+                visit(item.children);
+            }
+        };
+        visit(state.root?.children);
+    }
+
+    function syncStaticBuilderReferenceOverrides(snapshot, sourceNode) {
+        if (!snapshot || !sourceNode) return;
+        const shared = deepCloneJson(sourceNode.params?.overrides || {}) || {};
+        snapshot.staticOverrides = shared;
+        snapshot.revision = Math.max(1, Math.trunc(Number(snapshot.revision) || 1)) + 1;
+        snapshot.updatedAt = Date.now();
+        visitAllBuilderReferences((node) => {
+            if (String(node.params?.snapshotId || "") !== String(snapshot.id || "")) return;
+            if (node.params?.instanceMode === "construct") return;
+            node.params.overrides = deepCloneJson(shared) || {};
+        });
+    }
+
+    function setBuilderReferenceInstanceMode(node, mode) {
+        if (!node || node.kind !== BUILDER_REFERENCE_KIND) return;
+        const nextMode = mode === "construct" ? "construct" : "static";
+        if (node.params?.instanceMode === nextMode) return;
+        historyCapture("change_builder_reference_mode");
+        node.params.instanceMode = nextMode;
+        if (nextMode === "static") {
+            const snapshot = ensureBuilderSnapshotState()[String(node.params?.snapshotId || "")];
+            if (snapshot?.staticOverrides) node.params.overrides = deepCloneJson(snapshot.staticOverrides) || {};
+            else if (snapshot) syncStaticBuilderReferenceOverrides(snapshot, node);
+        }
+        scheduleAutoSave();
+        renderAll();
+        rebuildPreviewAndKotlin();
+    }
+
+    function changeBuilderReferenceId(node, rawId) {
+        if (!node || node.kind !== BUILDER_REFERENCE_KIND) return false;
+        const nextId = normalizeBuilderInstanceId(rawId);
+        if (!nextId) {
+            showToast("实例 ID 格式无效", "error");
+            return false;
+        }
+        const previousId = String(node.params?.snapshotId || "").trim();
+        if (nextId === previousId) return true;
+        const snapshots = ensureBuilderSnapshotState();
+        const source = snapshots[previousId];
+        if (!source) {
+            showToast("当前实例原型不存在", "error");
+            return false;
+        }
+        let target = snapshots[nextId];
+        if (!target) {
+            target = deepCloneJson(source) || {};
+            target.id = nextId;
+            target.sourcePresetId = "";
+            target.sourcePresetRevision = "";
+            target.revision = 1;
+            target.createdAt = Date.now();
+            target.updatedAt = Date.now();
+            snapshots[nextId] = target;
+        }
+        historyCapture("change_builder_reference_id");
+        node.params.snapshotId = nextId;
+        if (node.params.instanceMode === "construct") {
+            ensureBuilderReferenceOverrides(node, target);
+        } else {
+            node.params.overrides = target.staticOverrides
+                ? deepCloneJson(target.staticOverrides) || {}
+                : deepCloneJson(getPresetVariableDefaultValues(target.variables)) || {};
+            if (!target.staticOverrides) target.staticOverrides = deepCloneJson(node.params.overrides) || {};
+        }
+        scheduleAutoSave();
+        renderAll();
+        showToast(`已切换到实例：${nextId}`, "success");
+        return true;
+    }
+
+    async function reconstructBuilderReference(node, options = {}) {
+        if (!node || node.kind !== BUILDER_REFERENCE_KIND) return false;
+        const sourceId = String(node.params?.snapshotId || "").trim();
+        const source = ensureBuilderSnapshotState()[sourceId];
+        if (!source) {
+            showToast("当前实例原型不存在", "error");
+            return false;
+        }
+        const result = await openBuilderReferenceDialog({
+            message: "输入新的实例 ID，并选择重构方式。",
+            initialValue: sourceId,
+            mode: node.params?.instanceBindingMode || "registered"
+        });
+        if (!result?.id) return false;
+        const nextId = result.id;
+        const mode = result.mode || "registered";
+        const snapshots = ensureBuilderSnapshotState();
+        const mappings = ensureBuilderPresetMappingState();
+        historyCapture("reconstruct_builder_reference");
+        if (mode === "linked") {
+            if (snapshots[nextId] && nextId !== sourceId) {
+                showToast(`实例 ID“${nextId}”已存在，联动式不能覆盖已有原型。`, "error");
+                return false;
+            }
+            const renamed = deepCloneJson(source) || {};
+            delete snapshots[sourceId];
+            renamed.id = nextId;
+            renamed.updatedAt = Date.now();
+            snapshots[nextId] = renamed;
+            rewriteBuilderSnapshotReferences(sourceId, nextId);
+            Object.keys(mappings).forEach((presetId) => {
+                if (String(mappings[presetId] || "") === sourceId) mappings[presetId] = nextId;
+            });
+        } else if (mode === "indexed") {
+            const suffix = formatBuilderInstanceId(node.id || "card", { upperFirst: true, fallback: "Card" });
+            let id = snapshots[nextId] ? `${nextId}${suffix}` : nextId;
+            let index = 2;
+            while (snapshots[id]) id = `${nextId}${suffix}${index++}`;
+            const copied = deepCloneJson(source) || {};
+            copied.id = id;
+            copied.sourcePresetId = "";
+            copied.sourcePresetRevision = "";
+            copied.revision = 1;
+            copied.createdAt = Date.now();
+            copied.updatedAt = Date.now();
+            snapshots[id] = copied;
+            node.params.snapshotId = id;
+        } else {
+            let target = snapshots[nextId];
+            if (!target) {
+                target = deepCloneJson(source) || {};
+                target.id = nextId;
+                target.sourcePresetId = "";
+                target.sourcePresetRevision = "";
+                target.revision = 1;
+                target.createdAt = Date.now();
+                target.updatedAt = Date.now();
+                snapshots[nextId] = target;
+            }
+            node.params.snapshotId = nextId;
+        }
+        node.params.instanceBindingMode = mode;
+        const target = snapshots[String(node.params.snapshotId || "")];
+        if (target) {
+            if (node.params.instanceMode === "construct") {
+                ensureBuilderReferenceOverrides(node, target);
+            } else {
+                node.params.overrides = target.staticOverrides
+                    ? deepCloneJson(target.staticOverrides) || {}
+                    : deepCloneJson(getPresetVariableDefaultValues(target.variables)) || {};
+                if (!target.staticOverrides) target.staticOverrides = deepCloneJson(node.params.overrides) || {};
+            }
+        }
+        cleanupUnreferencedBuilderSnapshots();
+        scheduleAutoSave();
+        renderAll();
+        showToast(`实例已重构为${mode === "indexed" ? "索引式" : mode === "linked" ? "联动式" : "注册式"}`, "success");
+        return true;
+    }
+
+    function isBuilderSnapshotEditNode(node) {
+        return !!(node && isBuilderContainerKind(node.kind) && node.instanceEdit
+            && normalizeBuilderInstanceId(node.instanceEdit.snapshotId));
+    }
+
+    function syncBuilderSnapshotEditNode(node) {
+        if (!isBuilderSnapshotEditNode(node)) return false;
+        const snapshot = ensureBuilderSnapshotState()[node.instanceEdit.snapshotId];
+        if (!snapshot) return false;
+        const children = deepCloneJson(node.children || []) || [];
+        const previous = JSON.stringify(snapshot.children || []);
+        const next = JSON.stringify(children);
+        if (previous === next) return false;
+        snapshot.children = children;
+        snapshot.revision = Math.max(1, Math.trunc(Number(snapshot.revision) || 1)) + 1;
+        snapshot.updatedAt = Date.now();
+        return true;
+    }
+
+    function syncAllBuilderSnapshotEdits() {
+        const visit = (nodes) => {
+            for (const node of Array.isArray(nodes) ? nodes : []) {
+                if (!node || typeof node !== "object") continue;
+                syncBuilderSnapshotEditNode(node);
+                visit(node.children);
+            }
+        };
+        visit(state.root?.children);
+    }
+
+    function beginBuilderSnapshotEdit(referenceNode) {
+        if (!referenceNode || referenceNode.kind !== BUILDER_REFERENCE_KIND) return false;
+        const ctx = findNodeContextById(referenceNode.id);
+        const snapshot = ensureBuilderSnapshotState()[String(referenceNode.params?.snapshotId || "")];
+        if (!ctx || !Array.isArray(ctx.parentList) || !snapshot) return false;
+        const replacement = makeNode("add_builder", {
+            id: referenceNode.id,
+            label: `${referenceNode.label || snapshot.name || snapshot.id}（实例原型）`,
+            params: {
+                ox: Number(referenceNode.params?.ox) || 0,
+                oy: Number(referenceNode.params?.oy) || 0,
+                oz: Number(referenceNode.params?.oz) || 0
+            },
+            children: deepCloneJson(snapshot.children || []) || [],
+            instanceEdit: {
+                snapshotId: snapshot.id,
+                referenceLabel: referenceNode.label || snapshot.name || "实例",
+                referenceParams: deepCloneJson(referenceNode.params || {}) || {}
+            }
+        });
+        historyCapture("begin_builder_snapshot_edit");
+        ctx.parentList.splice(ctx.index, 1, replacement);
+        normalizeNodeTree(state.root);
+        scheduleAutoSave();
+        renderAll();
+        setFocusedNode(replacement.id, false);
+        requestAnimationFrame(() => navigateCardScope?.(replacement.id));
+        showToast(`正在编辑实例原型：${snapshot.id}`, "info");
+        return true;
+    }
+
+    function completeBuilderSnapshotEdit(editNode) {
+        if (!isBuilderSnapshotEditNode(editNode)) return false;
+        const ctx = findNodeContextById(editNode.id);
+        const snapshot = ensureBuilderSnapshotState()[editNode.instanceEdit.snapshotId];
+        if (!ctx || !Array.isArray(ctx.parentList) || !snapshot) return false;
+        syncBuilderSnapshotEditNode(editNode);
+        const replacement = makeNode(BUILDER_REFERENCE_KIND, {
+            id: editNode.id,
+            label: editNode.instanceEdit.referenceLabel || snapshot.name,
+            params: deepCloneJson(editNode.instanceEdit.referenceParams || {}) || {}
+        });
+        replacement.params.snapshotId = snapshot.id;
+        replacement.children = [];
+        historyCapture("complete_builder_snapshot_edit");
+        ctx.parentList.splice(ctx.index, 1, replacement);
+        revealCardScopeById?.(replacement.id);
+        normalizeNodeTree(state.root);
+        scheduleAutoSave();
+        renderAll();
+        setFocusedNode(replacement.id, false);
+        showToast(`已更新实例原型：${snapshot.id}`, "success");
+        return true;
     }
 
     function getVariableEntryFromCatalog(type, name, catalog) {
@@ -4637,12 +5526,57 @@ function initPointsBuilderMain() {
 
     function preparePresetChildrenForStorage(children) {
         const cloned = deepCloneJson(children || []) || [];
-        normalizeNodeTree(cloned);
-        if (cloned.length === 1 && cloned[0] && isBuilderContainerKind(cloned[0].kind)) {
-            return cloned;
+        const snapshots = ensureBuilderSnapshotState();
+        const materialize = (node) => {
+            if (!node || typeof node !== "object") return null;
+            if (node.kind === BUILDER_REFERENCE_KIND) {
+                const snapshot = snapshots[String(node.params?.snapshotId || "")];
+                if (!snapshot) return null;
+                const wrapper = makeNode("add_builder", {
+                    params: {
+                        ox: Number(node.params?.ox) || 0,
+                        oy: Number(node.params?.oy) || 0,
+                        oz: Number(node.params?.oz) || 0
+                    },
+                    label: node.label || snapshot.name
+                });
+                wrapper.children = materializeBuilderReferenceChildren(snapshot, node).map(materialize).filter(Boolean);
+                return wrapper;
+            }
+            if (node.kind === EFFECT_RING_KIND) {
+                const p = node.params || {};
+                const ids = Array.isArray(p.snapshotIds) ? p.snapshotIds : [];
+                const group = makeNode("add_builder", { label: node.label || "环形放置" });
+                const count = Math.max(1, Math.trunc(Number(p.count) || 12));
+                const radius = Number(p.radius) || 3;
+                const start = (Number(p.startDeg) || 0) * Math.PI / 180;
+                ids.forEach((id, index) => {
+                    const snapshot = snapshots[String(id || "")];
+                    if (!snapshot) return;
+                    const slot = makeNode("add_builder", {
+                        label: snapshot.name,
+                        params: {
+                            ox: (Number(p.originX) || 0) + Math.cos(start + Math.PI * 2 * index / count) * radius + (Number(p.offsetX) || 0),
+                            oy: (Number(p.originY) || 0) + (Number(p.offsetY) || 0),
+                            oz: (Number(p.originZ) || 0) + Math.sin(start + Math.PI * 2 * index / count) * radius + (Number(p.offsetZ) || 0)
+                        }
+                    });
+                    slot.children = (deepCloneJson(snapshot.children || []) || []).map(materialize).filter(Boolean);
+                    group.children.push(slot);
+                });
+                return group;
+            }
+            const next = deepCloneJson(node);
+            if (Array.isArray(next.children)) next.children = next.children.map(materialize).filter(Boolean);
+            return next;
+        };
+        const preparedSource = cloned.map(materialize).filter(Boolean);
+        normalizeNodeTree(preparedSource);
+        if (preparedSource.length === 1 && preparedSource[0] && isBuilderContainerKind(preparedSource[0].kind)) {
+            return preparedSource;
         }
         const wrapper = makeNode("add_builder", { params: { ox: 0, oy: 0, oz: 0 } });
-        wrapper.children = cloned;
+        wrapper.children = preparedSource;
         return [wrapper];
     }
 
@@ -4850,6 +5784,68 @@ function initPointsBuilderMain() {
         if (xEl) xEl.value = String(p.x);
         if (yEl) yEl.value = String(p.y);
         if (zEl) zEl.value = String(p.z);
+    }
+
+    function getActiveParameterizedInstanceNode() {
+        if (!activeParameterizedInstanceNodeId) return null;
+        const ctx = findNodeContextById(activeParameterizedInstanceNodeId);
+        return ctx?.node?.kind === EFFECT_RING_KIND ? ctx.node : null;
+    }
+
+    function findPresetIdForSnapshot(snapshotId) {
+        const snapshot = ensureBuilderSnapshotState()[String(snapshotId || "")];
+        return String(snapshot?.sourcePresetId || "").trim();
+    }
+
+    function loadPresetRingEditorFromNode(node) {
+        if (!node || node.kind !== EFFECT_RING_KIND) return false;
+        const p = node.params || {};
+        if (presetRingCount) presetRingCount.value = String(Math.max(1, Math.trunc(Number(p.count) || 12)));
+        if (presetRingRadius) presetRingRadius.value = String(Number.isFinite(Number(p.radius)) ? Number(p.radius) : 3);
+        if (presetRingStartDeg) presetRingStartDeg.value = String(Number(p.startDeg) || 0);
+        if (presetRingGroupLabel) presetRingGroupLabel.value = String(node.label || "环形阵列实例");
+        setPresetRingPoint(presetRingOriginX, presetRingOriginY, presetRingOriginZ, {
+            x: p.originX, y: p.originY, z: p.originZ
+        });
+        setPresetRingPoint(presetRingAxisX, presetRingAxisY, presetRingAxisZ, {
+            x: p.axisX, y: p.axisY, z: p.axisZ
+        });
+        setPresetRingPoint(presetRingOffsetX, presetRingOffsetY, presetRingOffsetZ, {
+            x: p.offsetX, y: p.offsetY, z: p.offsetZ
+        });
+        if (presetRingFaceCenter) presetRingFaceCenter.checked = p.faceCenter !== false;
+        if (presetRingReverse) presetRingReverse.checked = p.reverse === true;
+        if (presetRingRandomEnabled) presetRingRandomEnabled.checked = false;
+        presetRingRandomPresetIds = [];
+        presetRingSlotPresetIds = (Array.isArray(p.snapshotIds) ? p.snapshotIds : [])
+            .map((id) => findPresetIdForSnapshot(id));
+        return true;
+    }
+
+    function writePresetRingEditorToNode(node, snapshotIds) {
+        if (!node || node.kind !== EFFECT_RING_KIND) return false;
+        const origin = readPresetRingPoint(presetRingOriginX, presetRingOriginY, presetRingOriginZ);
+        const axis = readPresetRingPoint(presetRingAxisX, presetRingAxisY, presetRingAxisZ);
+        const offset = readPresetRingPoint(presetRingOffsetX, presetRingOffsetY, presetRingOffsetZ);
+        node.label = String(presetRingGroupLabel?.value || "").trim() || "环形阵列实例";
+        node.params = Object.assign({}, node.params || {}, {
+            snapshotIds: Array.isArray(snapshotIds) ? snapshotIds.slice() : [],
+            count: getPresetRingCount(),
+            radius: numFromInput(presetRingRadius, 3),
+            startDeg: numFromInput(presetRingStartDeg, 0),
+            originX: origin.x,
+            originY: origin.y,
+            originZ: origin.z,
+            axisX: axis.x,
+            axisY: axis.y,
+            axisZ: axis.z,
+            offsetX: offset.x,
+            offsetY: offset.y,
+            offsetZ: offset.z,
+            faceCenter: !!presetRingFaceCenter?.checked,
+            reverse: !!presetRingReverse?.checked
+        });
+        return true;
     }
 
     function getPresetRingCount() {
@@ -5151,6 +6147,7 @@ function initPointsBuilderMain() {
         const count = getPresetRingCount();
         const presetIds = getPresetRingSelectedIds();
         const presetsById = new Map(getPresetList().map((preset) => [preset.id, preset]));
+        const sharedGroups = getPresetRingVariableGroups().filter((sharedGroup) => isPresetRingSharedVariableEnabled(sharedGroup.key));
         const groups = new Map();
         for (let i = 0; i < count; i++) {
             const preset = presetsById.get(presetIds[i]);
@@ -5374,8 +6371,16 @@ function initPointsBuilderMain() {
         }
     }
 
-    function openPresetRingTool() {
-        if (!presetRingTool) return false;
+    function openParameterizedInstanceEditor(nodeOrId = null) {
+        const node = typeof nodeOrId === "string"
+            ? findNodeContextById(nodeOrId)?.node
+            : nodeOrId;
+        const target = node?.kind === EFFECT_RING_KIND
+            ? node
+            : findNodeContextById(focusedNodeId)?.node;
+        if (!presetRingTool || target?.kind !== EFFECT_RING_KIND) return false;
+        activeParameterizedInstanceNodeId = target.id;
+        loadPresetRingEditorFromNode(target);
         setRightPanelPage("presets");
         presetRingTool.classList.remove("hidden");
         updatePresetRingRandomGroupOptions();
@@ -5388,13 +6393,81 @@ function initPointsBuilderMain() {
         return true;
     }
 
+    function openPresetRingTool() {
+        return openParameterizedInstanceEditor();
+    }
+
     function closePresetRingTool() {
         presetRingTool?.classList.add("hidden");
+        activeParameterizedInstanceNodeId = "";
         clearPresetPreview();
         presetRingSharedVariableState.enabled = {};
         presetRingSharedVariableState.values = {};
         presetRingSharedVariableState.touched = {};
         presetRingSharedVariableState.excluded = {};
+    }
+
+    function confirmParameterizedInstancePlacement(point) {
+        const pending = pendingParameterizedInstancePlacement;
+        if (!pending) return false;
+        const node = findNodeContextById(pending.nodeId)?.node;
+        pendingParameterizedInstancePlacement = null;
+        if (!node || node.kind !== EFFECT_RING_KIND) return false;
+        const origin = normalizePointValue(point);
+        node.params.originX = origin.x;
+        node.params.originY = origin.y;
+        node.params.originZ = origin.z;
+        setPresetRingPoint(presetRingOriginX, presetRingOriginY, presetRingOriginZ, origin);
+        scheduleAutoSave();
+        renderAll();
+        openParameterizedInstanceEditor(node);
+        showToast("已设置环形阵列圆心", "success");
+        return true;
+    }
+
+    function beginParameterizedInstancePlacement(node, context = {}) {
+        if (!node || node.kind !== EFFECT_RING_KIND) return false;
+        pendingParameterizedInstancePlacement = {
+            nodeId: node.id,
+            list: Array.isArray(context.list) ? context.list : null
+        };
+        return startPointPick({
+            label: "环形阵列圆心（Enter 使用原点，Esc 取消）",
+            onPick: (point) => confirmParameterizedInstancePlacement(point)
+        });
+    }
+
+    function cancelPointPick() {
+        const pending = pendingParameterizedInstancePlacement;
+        pendingParameterizedInstancePlacement = null;
+        stopPointPick();
+        if (!pending) return true;
+        const ctx = findNodeContextById(pending.nodeId);
+        if (ctx && Array.isArray(ctx.parentList)) ctx.parentList.splice(ctx.index, 1);
+        if (activeParameterizedInstanceNodeId === pending.nodeId) closePresetRingTool();
+        if (focusedNodeId === pending.nodeId) setFocusedNode(null, false);
+        scheduleAutoSave();
+        renderAll();
+        showToast("已取消创建环形阵列实例", "info");
+        return true;
+    }
+
+    function confirmPointPickDefault() {
+        if (!pendingParameterizedInstancePlacement || !pointPickMode) return false;
+        stopPointPick();
+        return confirmParameterizedInstancePlacement({ x: 0, y: 0, z: 0 });
+    }
+
+    function handleCreatedNodeFromPicker(node, context = {}) {
+        if (!node || node.kind !== EFFECT_RING_KIND) return false;
+        node.label = node.label || "环形阵列实例";
+        activeParameterizedInstanceNodeId = node.id;
+        if (typeof setCardSelectionIds === "function") {
+            setCardSelectionIds([node.id], { replace: true, focus: false, syncWithParamSync: false });
+        }
+        setFocusedNode(node.id, false);
+        openParameterizedInstanceEditor(node);
+        return beginParameterizedInstancePlacement(node, context);
     }
 
     function makePresetChildrenForResolvedApply(preset) {
@@ -5498,29 +6571,40 @@ function initPointsBuilderMain() {
 
     async function applyPresetRingTool() {
         if (!presetRingTool) return false;
-        const scopeCtx = typeof getCurrentCardScopeContext === "function"
-            ? getCurrentCardScopeContext()
-            : null;
-        const targetList = scopeCtx && Array.isArray(scopeCtx.list)
-            ? scopeCtx.list
-            : state.root.children;
+        const activeNode = getActiveParameterizedInstanceNode();
         const count = getPresetRingCount();
         const presetIds = getPresetRingSelectedIds();
         const presetsById = new Map(getPresetList().map((preset) => [preset.id, preset]));
-        let missingIndex = -1;
-        for (let index = 0; index < count; index++) {
-            if (!presetIds[index] || !presetsById.has(presetIds[index])) {
-                missingIndex = index;
-                break;
-            }
-        }
-        if (missingIndex >= 0) {
+        const missingIndex = Array.from({ length: count }, (_, index) => index)
+            .find((index) => !presetIds[index] || !presetsById.has(presetIds[index]));
+        if (missingIndex !== undefined) {
             const message = isPresetRingRandomEnabled()
-                ? `环形放置失败：随机组“${presetRingRandomGroup.value}”中没有可用预设`
-                : `环形放置失败：第 ${missingIndex + 1} 个槽位未选择预设`;
+                ? `环形阵列保存失败：随机组“${presetRingRandomGroup.value}”中没有可用预设`
+                : `环形阵列保存失败：第 ${missingIndex + 1} 个槽位未选择预设`;
             showToast(message, "error");
             return false;
         }
+
+        if (activeNode) {
+            const snapshotIds = [];
+            for (let index = 0; index < count; index += 1) {
+                const preset = normalizePresetList([presetsById.get(presetIds[index])])[0];
+                if (!preset) continue;
+                const resolved = resolvePresetForRingSlotPreview(preset, index, sharedGroups) || preset;
+                const snapshot = findBuilderSnapshotByPresetId(preset.id) || makeBuilderSnapshotFromPreset(resolved);
+                if (snapshot) snapshotIds.push(snapshot.id);
+            }
+            historyCapture("update_effect_ring");
+            writePresetRingEditorToNode(activeNode, snapshotIds);
+            normalizeNodeTree(state.root);
+            scheduleAutoSave();
+            renderAll();
+            showToast("已保存环形阵列实例", "success");
+            return true;
+        }
+
+        const scopeCtx = typeof getCurrentCardScopeContext === "function" ? getCurrentCardScopeContext() : null;
+        const targetList = scopeCtx && Array.isArray(scopeCtx.list) ? scopeCtx.list : state.root.children;
         const options = {
             count,
             radius: numFromInput(presetRingRadius, 3),
@@ -5531,13 +6615,6 @@ function initPointsBuilderMain() {
             faceCenter: !!presetRingFaceCenter?.checked,
             reverse: !!presetRingReverse?.checked
         };
-        options.usedIds = collectNodeIds(state.root);
-        const group = makeNode("add_builder", {
-            label: String(presetRingGroupLabel?.value || "").trim() || "环形预设组",
-            params: { ox: 0, oy: 0, oz: 0 }
-        });
-        if (options.usedIds instanceof Set) reassignNodeIdsDeep(group, options.usedIds);
-        const sharedGroups = getPresetRingVariableGroups().filter((sharedGroup) => isPresetRingSharedVariableEnabled(sharedGroup.key));
         const sharedValuesByKey = new Map();
         const sharedKeysBySlot = new Map();
         for (const sharedGroup of sharedGroups) {
@@ -5548,28 +6625,28 @@ function initPointsBuilderMain() {
                 sharedKeysBySlot.get(item.index).add(sharedGroup.key);
             }
         }
-        for (let i = 0; i < count; i++) {
-            const normalized = normalizePresetList([presetsById.get(presetIds[i])])[0];
+
+        const snapshotIds = [];
+        for (let index = 0; index < count; index += 1) {
+            const normalized = normalizePresetList([presetsById.get(presetIds[index])])[0];
+            if (!normalized) continue;
             let resolved = normalized;
             const variableInfo = getPresetEffectiveVariableInfo(normalized);
             const entries = getPresetVariableEntries(variableInfo);
             if (entries.length) {
-                const sharedKeys = sharedKeysBySlot.get(i) || new Set();
+                const sharedKeys = sharedKeysBySlot.get(index) || new Set();
                 const values = getPresetVariableDefaultValues(variableInfo);
                 for (const sharedGroup of sharedGroups) {
-                    if (!sharedKeys.has(sharedGroup.key)) continue;
-                    setPresetRingSharedVariableValue(values, sharedGroup, sharedValuesByKey.get(sharedGroup.key));
+                    if (sharedKeys.has(sharedGroup.key)) setPresetRingSharedVariableValue(values, sharedGroup, sharedValuesByKey.get(sharedGroup.key));
                 }
                 const remainingInfo = makePresetVariableInfoWithoutShared(variableInfo, sharedKeys);
-                const remainingEntries = getPresetVariableEntries(remainingInfo);
-                if (remainingEntries.length) {
-                    const withRemainingVars = Object.assign({}, normalized, {
-                        name: `${normalized.name || "未命名预设"} #${i + 1}`,
+                if (getPresetVariableEntries(remainingInfo).length) {
+                    const slotValues = await openPresetVariableApplyDialog(Object.assign({}, normalized, {
+                        name: `${normalized.name || "未命名预设"} #${index + 1}`,
                         variables: Object.assign({}, remainingInfo, { inputs: values })
-                    });
-                    const slotValues = await openPresetVariableApplyDialog(withRemainingVars);
+                    }));
                     if (!slotValues) {
-                        showToast("环形放置已取消", "info");
+                        showToast("环形阵列创建已取消", "info");
                         return false;
                     }
                     Object.assign(values.scalar, slotValues.scalar || {});
@@ -5577,35 +6654,49 @@ function initPointsBuilderMain() {
                 }
                 resolved = clonePresetWithVariableValues(Object.assign({}, normalized, { variables: variableInfo }), values);
             }
-            if (!resolved) {
-                showToast("环形放置已取消", "info");
-                return false;
-            }
-            const slot = makePresetRingSlotNode(resolved, i, options);
-            if (slot) group.children.push(slot);
+            const snapshot = resolved?.__pbVariablesResolved
+                ? makeBuilderSnapshotFromPreset(resolved)
+                : (findBuilderSnapshotByPresetId(normalized.id) || makeBuilderSnapshotFromPreset(resolved));
+            if (snapshot) snapshotIds.push(snapshot.id);
         }
-        if (!group.children.length) {
-            showToast("环形放置失败：没有可生成的预设", "error");
+        if (!snapshotIds.length) {
+            showToast("环形阵列创建失败：没有可用的实例原型", "error");
             return false;
         }
-        historyCapture("apply_preset_ring");
-        normalizeNodeTree(group);
-        targetList.push(group);
+
+        const node = makeNode(EFFECT_RING_KIND, {
+            label: String(presetRingGroupLabel?.value || "").trim() || "环形阵列实例",
+            params: {
+                snapshotIds,
+                count: options.count,
+                radius: options.radius,
+                startDeg: options.startDeg,
+                originX: options.origin.x,
+                originY: options.origin.y,
+                originZ: options.origin.z,
+                axisX: options.axis.x,
+                axisY: options.axis.y,
+                axisZ: options.axis.z,
+                offsetX: options.offset.x,
+                offsetY: options.offset.y,
+                offsetZ: options.offset.z,
+                faceCenter: options.faceCenter,
+                reverse: options.reverse
+            }
+        });
+        historyCapture("create_effect_ring");
+        targetList.push(node);
         normalizeNodeTree(state.root);
         ensureAxisEverywhere();
         resetCollapseScopes();
         collapseAllNodes(state.root.children);
         renderAll();
-        if (typeof setCardSelectionIds === "function") setCardSelectionIds([group.id], { replace: true, focus: true });
-        setFocusedNode(group.id, false);
-        requestAnimationFrame(() => {
-            const el = elCardsRoot?.querySelector?.(`.card[data-id="${group.id}"]`);
-            if (el) {
-                try { el.scrollIntoView({ block: "nearest" }); } catch {}
-                try { el.focus(); } catch {}
-            }
-        });
-        showToast(`已生成环形预设组：${group.children.length} 个实例`, "success");
+        activeParameterizedInstanceNodeId = node.id;
+        if (typeof setCardSelectionIds === "function") setCardSelectionIds([node.id], { replace: true, focus: true });
+        setFocusedNode(node.id, false);
+        openParameterizedInstanceEditor(node);
+        beginParameterizedInstancePlacement(node, { list: targetList });
+        showToast("已创建环形阵列实例，请拾取圆心", "success");
         return true;
     }
 
@@ -6284,6 +7375,9 @@ function initPointsBuilderMain() {
         if (!entries.length) return;
 
         const allowVariableRefs = !!options.allowVariableRefs;
+        const notifyChange = () => {
+            if (typeof options.onChange === "function") options.onChange();
+        };
         const variableCatalog = options.variableCatalog || (typeof getVariableCatalog === "function" ? getVariableCatalog() : { scalar: new Map(), vector: new Map() });
         const applyState = options.applyState || null;
         if (applyState) {
@@ -6378,12 +7472,14 @@ function initPointsBuilderMain() {
             let scalarInput = null;
             let vectorInputs = null;
             let pickBtn = null;
+            let modeRow = null;
             let modeSelect = null;
             let refRow = null;
             let refSelect = null;
             const syncManualScalar = () => {
                 if (!scalarInput) return;
                 updatePresetVariableValue(values, entry, scalarInput.value);
+                notifyChange();
             };
             const syncManualVector = () => {
                 if (!vectorInputs || vectorInputs.length < 3) return;
@@ -6393,11 +7489,13 @@ function initPointsBuilderMain() {
                     z: vectorInputs[2]?.value
                 });
                 updatePresetVariableValue(values, entry, next);
+                notifyChange();
             };
             const applyReferenceValue = (refName) => {
                 const resolved = resolveCatalogValue(entry.type, refName);
                 if (resolved === null || resolved === undefined) return false;
                 updatePresetVariableValue(values, entry, resolved);
+                notifyChange();
                 return true;
             };
 
@@ -6442,6 +7540,7 @@ function initPointsBuilderMain() {
                         options.onPickVector(entry, (point) => {
                             const p = normalizePointValue(point);
                             updatePresetVariableValue(values, entry, p);
+                            notifyChange();
                             if (vectorInputs && vectorInputs.length >= 3) {
                                 vectorInputs[0].value = String(p.x);
                                 vectorInputs[1].value = String(p.y);
@@ -6460,6 +7559,7 @@ function initPointsBuilderMain() {
                         manualRow.hidden = false;
                     }
                     updatePresetVariableValue(values, entry, nextValue);
+                    notifyChange();
                 };
                 if (typeof inputNum === "function") {
                     scalarInput = inputNum(current, onScalarInput, {
@@ -6481,7 +7581,7 @@ function initPointsBuilderMain() {
             }
 
             if (allowVariableRefs) {
-                const modeRow = document.createElement("div");
+                modeRow = document.createElement("div");
                 modeRow.className = "preset-variable-source-row";
                 const modeLabel = document.createElement("span");
                 modeLabel.className = "preset-variable-meta";
@@ -6517,7 +7617,6 @@ function initPointsBuilderMain() {
                     }
                 });
                 modeRow.append(modeLabel, modeSelect);
-                valueStack.appendChild(modeRow);
 
                 refRow = document.createElement("div");
                 refRow.className = "preset-variable-ref-row";
@@ -6552,7 +7651,6 @@ function initPointsBuilderMain() {
                 });
                 refRow.append(refLabel, refSelect);
                 refRow.hidden = modeSelect.value !== "reference";
-                valueStack.appendChild(refRow);
             }
 
             if (entry.type === "vector") {
@@ -6575,6 +7673,8 @@ function initPointsBuilderMain() {
             }
 
             valueStack.appendChild(manualRow);
+            if (refRow) valueStack.appendChild(refRow);
+            if (modeRow) valueStack.appendChild(modeRow);
             list.appendChild(row);
         }
     }
@@ -7260,7 +8360,7 @@ function initPointsBuilderMain() {
             clearPresetDragLockPlane();
             return;
         }
-        const resolvedPreset = await resolvePresetForApply(preset);
+        const resolvedPreset = await resolvePresetReferenceForDrop(preset);
         if (!resolvedPreset) {
             clearPresetPreview();
             hidePresetDragPointMarker();
@@ -7268,7 +8368,7 @@ function initPointsBuilderMain() {
             clearPresetDragLockPlane();
             return;
         }
-        const result = applyPresetAtPoint(resolvedPreset, point, { startRotate: false });
+        const result = await applyPresetReferenceAtPoint(resolvedPreset, point, { startRotate: false });
         const ok = !!(result && result.ok !== false);
         clearPresetPreview();
         hidePresetDragPointMarker();
@@ -7325,11 +8425,9 @@ function initPointsBuilderMain() {
         }
         const preset = state.preset;
         cleanupPresetPointerDrag();
-        const resolvedPreset = await resolvePresetForApply(preset);
-        if (!resolvedPreset) return;
-        const result = applyPresetAtPoint(resolvedPreset, point, { startRotate: false });
+        const result = await applyPresetReferenceAtPoint(preset, point, { startRotate: false });
         const ok = !!(result && result.ok !== false);
-        showToast(ok ? `已放置预设：${resolvedPreset.name}` : "放置预设失败", ok ? "success" : "error");
+        showToast(ok ? `已放置实例：${preset.name}` : "放置实例失败", ok ? "success" : "error");
     }
 
     function bindPresetPointerApplyDrag(el, preset, options = {}) {
@@ -7854,7 +8952,7 @@ function initPointsBuilderMain() {
         btnPresetRingApply?.addEventListener("click", () => {
             applyPresetRingTool().catch((e) => {
                 console.error("applyPresetRingTool failed:", e);
-                showToast(`环形放置失败：${e.message || e}`, "error");
+                showToast(`环形阵列保存失败：${e.message || e}`, "error");
             });
         });
         const handlePresetRingCountChange = () => {
@@ -7894,13 +8992,21 @@ function initPointsBuilderMain() {
             if (!presetRingTool) return;
             presetRingTool.classList.add("hidden");
             startPointPick({
-                label: "拾取环形圆心",
+                label: "拾取环形阵列圆心",
                 onPick: (point) => {
                     setPresetRingPoint(presetRingOriginX, presetRingOriginY, presetRingOriginZ, point);
+                    const node = getActiveParameterizedInstanceNode();
+                    if (node) {
+                        node.params.originX = point.x;
+                        node.params.originY = point.y;
+                        node.params.originZ = point.z;
+                        scheduleAutoSave();
+                        renderAll();
+                    }
                     presetRingTool.classList.remove("hidden");
                     updatePresetRingStatus();
                     renderPresetRingPreview();
-                    showToast("已拾取环形圆心", "success");
+                    showToast("已拾取环形阵列圆心", "success");
                 }
             });
         });
@@ -8044,6 +9150,7 @@ function initPointsBuilderMain() {
         KIND,
         U,
         rotatePointsToPointUpright,
+        applyPointsBuilderInstanceOverrides,
         getState: () => state,
         getKotlinEndMode: () => kotlinEndMode
     });
@@ -8175,7 +9282,8 @@ function initPointsBuilderMain() {
     }
 
     function isBuilderContainerKind(kind) {
-        return kind === "add_builder" || kind === "with_builder" || kind === "add_with" || kind === "clear_as_mask";
+        return kind === "add_builder" || kind === "with_builder" || kind === "add_with" || kind === "clear_as_mask"
+            || kind === "apply_bezier_distribution";
     }
 
     function forEachNode(list, fn) {
@@ -8803,19 +9911,19 @@ function initPointsBuilderMain() {
             const { inserted, sourceToClone } = duplicateRows(selectedRows, (row) => {
                 const node = row?.ctx?.node;
                 if (!node) return null;
-                return mirrorCopyNode(node, mirrorPlane);
+                return mirrorCopyNode(node, { plane: mirrorPlane, offset: mirrorPlaneOffset });
             });
             if (!inserted.length) return false;
             ensureAxisEverywhere();
             postDuplicateApply(inserted, sourceToClone);
-            showToast(`已镜像粘贴 ${inserted.length} 张卡片（${getMirrorPlaneInfo().label}）`, "success");
+            showToast(`已镜像粘贴 ${inserted.length} 张卡片（${getMirrorPlaneDisplayLabel()}）`, "success");
             return true;
         }
 
         if (!focusedNodeId) return false;
         const ctx = findNodeContextById(focusedNodeId);
         if (!ctx || !Array.isArray(ctx.parentList)) return false;
-        const cloned = mirrorCopyNode(ctx.node, mirrorPlane);
+        const cloned = mirrorCopyNode(ctx.node, { plane: mirrorPlane, offset: mirrorPlaneOffset });
         if (!cloned) return false;
         historyCapture("mirror_copy");
         ctx.parentList.splice(ctx.index + 1, 0, cloned);
@@ -8828,8 +9936,37 @@ function initPointsBuilderMain() {
                 setFocusedNode(cloned.id, false);
             }
         });
-        showToast(`已镜像粘贴 1 张卡片（${getMirrorPlaneInfo().label}）`, "success");
+        showToast(`已镜像粘贴 1 张卡片（${getMirrorPlaneDisplayLabel()}）`, "success");
         return true;
+    }
+
+    function copySelectedReferenceGuide() {
+        const guideId = referenceGuideController?.getSelectedGuideId?.() || "";
+        if (!guideId) return false;
+        const guide = referenceGuideController?.copyGuide?.(guideId);
+        if (!guide) return false;
+        showToast(`已复制参考线：${guide.name}`, "success");
+        return true;
+    }
+
+    function mirrorCopySelectedReferenceGuide() {
+        const guideId = referenceGuideController?.getSelectedGuideId?.() || "";
+        if (!guideId) return false;
+        const guide = referenceGuideController?.mirrorCopyGuide?.(guideId, {
+            plane: mirrorPlane,
+            offset: mirrorPlaneOffset
+        });
+        if (!guide) return false;
+        showToast(`已镜像复制参考线：${guide.name}（${getMirrorPlaneDisplayLabel()}）`, "success");
+        return true;
+    }
+
+    function deleteSelectedReferenceGuide() {
+        const guide = referenceGuideController?.getSelectedGuide?.();
+        if (!guide) return false;
+        const deleted = referenceGuideController?.deleteSelectedGuide?.() === true;
+        if (deleted) showToast(`已删除参考线：${guide.name}`, "success");
+        return deleted;
     }
 
     function nodeContainsId(node, id) {
@@ -9036,6 +10173,7 @@ function initPointsBuilderMain() {
     };
     let snapPlane = "XZ";
     let mirrorPlane = "XZ";
+    let mirrorPlaneOffset = 0;
     let hoverMarker = null;   // ✅ 实时跟随的红点
     let lastPoints = [];      // ✅ 当前预览点，用于“吸附到最近点”
     let lastCompositionReferencePoints = [];
@@ -9117,8 +10255,10 @@ function initPointsBuilderMain() {
     let pointPickMenuAnchorY = NaN;
     let activeVecTarget = null;
     let offsetMode = false;
+    let offsetTargetType = "node";
     let offsetTargetId = null;
     let offsetTargetIds = [];
+    let offsetGuideId = null;
     let offsetRefPoint = null;
     let offsetHoverPoint = null;
     let offsetConstraintAxis = null;
@@ -9515,6 +10655,14 @@ function initPointsBuilderMain() {
         return SNAP_PLANES[mirrorPlane] || SNAP_PLANES.XZ;
     }
 
+    function getMirrorPlaneDisplayLabel() {
+        const axis = mirrorPlane === "XY" ? "Z" : (mirrorPlane === "ZY" ? "X" : "Y");
+        const offset = Math.abs(mirrorPlaneOffset) < 1e-9
+            ? "0"
+            : Number(mirrorPlaneOffset.toFixed(6)).toString();
+        return `${getMirrorPlaneInfo().label} · ${axis}=${offset}`;
+    }
+
     function getGridHelperMaterials(helper) {
         if (!helper || !helper.material) return [];
         return Array.isArray(helper.material) ? helper.material : [helper.material];
@@ -9582,7 +10730,7 @@ function initPointsBuilderMain() {
             color,
             visible: false,
             plane: mirrorPlane,
-            offset: MIRROR_HINT_GRID_OFFSET,
+            offset: mirrorPlaneOffset + MIRROR_HINT_GRID_OFFSET,
         });
         mirrorHintGrid = mirrorHintAdaptiveGrid?.mesh || null;
         if (!mirrorHintGrid) return null;
@@ -9590,16 +10738,17 @@ function initPointsBuilderMain() {
         mirrorHintGrid.renderOrder = 18;
         mirrorHintAdaptiveGrid.material.depthTest = false;
         mirrorHintAdaptiveGrid.material.needsUpdate = true;
-        mirrorHintAdaptiveGrid.setPlane(mirrorPlane, MIRROR_HINT_GRID_OFFSET);
+        mirrorHintAdaptiveGrid.setPlane(mirrorPlane, mirrorPlaneOffset + MIRROR_HINT_GRID_OFFSET);
         setMirrorHintGridOpacity(0);
         return mirrorHintGrid;
     }
 
-    function triggerMirrorPlaneHint(planeKey) {
+    function triggerMirrorPlaneHint(planeKey, planeOffset = mirrorPlaneOffset) {
         const helper = ensureMirrorPlaneHintGrid();
         if (!helper) return;
-        if (mirrorHintAdaptiveGrid) mirrorHintAdaptiveGrid.setPlane(planeKey, MIRROR_HINT_GRID_OFFSET);
-        else applyGridTransformForPlane(helper, planeKey, MIRROR_HINT_GRID_OFFSET);
+        const displayOffset = num(planeOffset) + MIRROR_HINT_GRID_OFFSET;
+        if (mirrorHintAdaptiveGrid) mirrorHintAdaptiveGrid.setPlane(planeKey, displayOffset);
+        else applyGridTransformForPlane(helper, planeKey, displayOffset);
         updateMirrorPlaneHintTheme();
         mirrorHintGridExpireAt = performance.now() + MIRROR_HINT_GRID_DURATION_MS;
         helper.visible = true;
@@ -10028,6 +11177,14 @@ function initPointsBuilderMain() {
                 if (cand && cand.point) return cand.point;
                 continue;
             }
+            if (source === "reference_guide") {
+                const candidate = referenceGuideController?.findSnapCandidate?.(raw, plane, snapRange, {
+                    excludeIds: offsetTargetType === "guide" && offsetGuideId ? [offsetGuideId] : [],
+                    includeEndpoints: !chkSnapReferenceEndpoints || chkSnapReferenceEndpoints.checked
+                });
+                if (candidate?.point) return candidate.point;
+                continue;
+            }
             if (source === "geometry_center") {
                 if (!geometryCenterPreviewEnabled) continue;
                 if (particleContext.point && particleContext.source === "geometry_center") return particleContext.point;
@@ -10156,7 +11313,7 @@ function initPointsBuilderMain() {
     }
 
     function updateMirrorButtons() {
-        const label = getMirrorPlaneInfo().label;
+        const label = getMirrorPlaneDisplayLabel();
         document.querySelectorAll("[data-mirror-btn]").forEach((el) => {
             el.title = `镜像复制（${label}）`;
         });
@@ -10172,12 +11329,30 @@ function initPointsBuilderMain() {
         applyPickPlane();
     }
 
-    function setMirrorPlane(next) {
+    function setMirrorPlane(next, options = {}) {
         const key = SNAP_PLANES[next] ? next : "XZ";
         mirrorPlane = key;
+        const requestedOffset = Number(options.offset);
+        mirrorPlaneOffset = Number.isFinite(requestedOffset) ? requestedOffset : 0;
         if (selMirrorPlane && selMirrorPlane.value !== key) selMirrorPlane.value = key;
         updateMirrorButtons();
-        triggerMirrorPlaneHint(key);
+        triggerMirrorPlaneHint(key, mirrorPlaneOffset);
+    }
+
+    function applyMeasuredMirrorPlane(result) {
+        const axis = String(result?.axis || "").toUpperCase();
+        const plane = axis === "X" ? "ZY" : (axis === "Y" ? "XZ" : (axis === "Z" ? "XY" : ""));
+        const key = axis.toLowerCase();
+        if (!plane || !key || !result?.pointA || !result?.pointB) return;
+        const offset = (num(result.pointA[key]) + num(result.pointB[key])) * 0.5;
+        setMirrorPlane(plane, { offset });
+    }
+
+    function commitMeasuredReferenceGuide(result) {
+        const guide = referenceGuideController?.addGuideFromMeasurement?.(result);
+        if (!guide) return false;
+        applyMeasuredMirrorPlane(result);
+        return true;
     }
 
     function applyPickPlane() {
@@ -10258,6 +11433,66 @@ function initPointsBuilderMain() {
         raycaster = new THREE.Raycaster();
         mouse = new THREE.Vector2();
         pickPlane = new THREE.Plane(getPlaneInfo().normal.clone(), 0);
+        const isReferenceGuideInteractionBlocked = () => !!(
+            linePickMode
+            || pointPickMode
+            || offsetMode
+            || rotateMode
+            || bezierCreateState
+            || bezierHandleDrag
+            || bezierNodeMoveDrag
+            || viewBoxSelecting
+            || previewDistanceTool?.isActive?.()
+        );
+        referenceGuideController = createReferenceGuideController({
+            scene,
+            camera,
+            controls,
+            renderer,
+            root: elReferenceGuidesRoot,
+            getGuides: () => {
+                if (!Array.isArray(state.guides)) state.guides = [];
+                return state.guides;
+            },
+            createId: uid,
+            captureHistory: historyCapture,
+            onChange: (options = {}) => {
+                if (offsetMode
+                    && offsetTargetType === "guide"
+                    && options.guideId === offsetGuideId) {
+                    stopOffsetMode();
+                }
+                scheduleAutoSave();
+                renderSnapPriorityList();
+                if (rightPanelPage === "params" && options.renderEditor !== false) {
+                    scheduleParamEditorRender();
+                }
+            },
+            onSelect: (guideId, options = {}) => {
+                if (!guideId) {
+                    if (rightPanelPage === "params") scheduleParamEditorRender();
+                    return;
+                }
+                if (options.source === "canvas" && options.event) armCanvasClickSuppress(options.event);
+                setFocusedNode(null, false);
+                if (typeof clearCardSelectionIds === "function") clearCardSelectionIds();
+                setBuilderColumnPage("guides");
+                setRightPanelPage("params");
+            },
+            isInteractionBlocked: isReferenceGuideInteractionBlocked
+        });
+        gridInspector = createGridInspector({
+            scene,
+            camera,
+            controls,
+            renderer,
+            host: threeHost,
+            adaptiveGrid,
+            getPlane: () => snapPlane,
+            isVisible: () => !!(chkGrid && chkGrid.checked),
+            isAxesVisible: () => !!(chkAxes && chkAxes.checked),
+            isInteractionBlocked: isReferenceGuideInteractionBlocked
+        });
         updatePickLineButtons();
         updateGridForPlane();
         updateMirrorButtons();
@@ -10378,7 +11613,10 @@ function initPointsBuilderMain() {
             resolvePointFromEvent: resolveMeasurePointFromEvent,
             projectPointToClient: (point) => projectPointToClient(point),
             attachContextMenu: false,
-            isBlocked: () => !!(linePickMode || pointPickMode || offsetMode || rotateMode || bezierCreateState || bezierHandleDrag)
+            isBlocked: () => !!(linePickMode || pointPickMode || offsetMode || rotateMode || bezierCreateState || bezierHandleDrag),
+            getAllowedAxes: () => Array.from(getPlaneInfo().axis),
+            onMeasureConfirmed: commitMeasuredReferenceGuide,
+            completeOnConfirm: true
         });
 
         animate();
@@ -12053,6 +13291,7 @@ function initPointsBuilderMain() {
 
     function hideOffsetPreview() {
         if (offsetPreviewObj) offsetPreviewObj.visible = false;
+        referenceGuideController?.clearOffsetPreview?.();
     }
 
     function ensureLinePickPreviewObj() {
@@ -12372,8 +13611,7 @@ function initPointsBuilderMain() {
             return true;
         }
         if (pointPickMode) {
-            stopPointPick();
-            return true;
+            return cancelPointPick();
         }
         if (offsetMode) {
             stopOffsetMode();
@@ -12395,6 +13633,12 @@ function initPointsBuilderMain() {
 
     function refreshOffsetStatus() {
         if (!offsetMode) return;
+        if (offsetTargetType === "guide") {
+            const guide = referenceGuideController?.getSelectedGuide?.();
+            const name = String(guide?.name || "参考线");
+            setLinePickStatus(`${getPlaneInfo().label} 偏移模式（${name}）：约束 ${offsetConstraintLabel()}；左键确定位置，X/Y/Z 轴约束，Esc / V / 右键双击退出`);
+            return;
+        }
         const targetIds = getActiveOffsetTargetIds();
         const groupTip = targetIds.length > 1 ? `（${targetIds.length}项）` : "";
         setLinePickStatus(`${getPlaneInfo().label} 偏移模式${groupTip}：约束 ${offsetConstraintLabel()}；左键确定位置，X/Y/Z 轴约束，双击切换局部轴，Esc / V / 右键双击退出`);
@@ -12431,6 +13675,24 @@ function initPointsBuilderMain() {
             hideOffsetPreview();
             return;
         }
+        const constrainedDelta = constrainOffsetDelta({
+            x: targetPoint.x - offsetRefPoint.x,
+            y: targetPoint.y - offsetRefPoint.y,
+            z: targetPoint.z - offsetRefPoint.z
+        });
+        const dx = constrainedDelta.x;
+        const dy = constrainedDelta.y;
+        const dz = constrainedDelta.z;
+        if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz)
+            || Math.abs(dx) + Math.abs(dy) + Math.abs(dz) < 1e-9) {
+            hideOffsetPreview();
+            return;
+        }
+        if (offsetTargetType === "guide") {
+            if (offsetPreviewObj) offsetPreviewObj.visible = false;
+            referenceGuideController?.setOffsetPreview?.(offsetGuideId, { x: dx, y: dy, z: dz });
+            return;
+        }
         const targetIds = getActiveOffsetTargetIds();
         if (!targetIds.length) {
             hideOffsetPreview();
@@ -12456,23 +13718,6 @@ function initPointsBuilderMain() {
             hideOffsetPreview();
             return;
         }
-        const constrainedDelta = constrainOffsetDelta({
-            x: targetPoint.x - offsetRefPoint.x,
-            y: targetPoint.y - offsetRefPoint.y,
-            z: targetPoint.z - offsetRefPoint.z
-        });
-        const dx = constrainedDelta.x;
-        const dy = constrainedDelta.y;
-        const dz = constrainedDelta.z;
-        if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz)) {
-            hideOffsetPreview();
-            return;
-        }
-        if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) < 1e-9) {
-            hideOffsetPreview();
-            return;
-        }
-
         ensureOffsetPreviewObj();
         if (!offsetPreviewObj) return;
 
@@ -12753,6 +13998,7 @@ function initPointsBuilderMain() {
 
     function setFocusedNode(id, recordHistory = true) {
         const next = id || null;
+        if (next) referenceGuideController?.selectGuide?.("", { source: "card" });
         if (focusedNodeId === next) return;
         const prev = focusedNodeId;
         if (recordHistory && !isRestoringHistory && !suppressFocusHistory && !isRenderingCards) {
@@ -12764,6 +14010,11 @@ function initPointsBuilderMain() {
         updateFocusCardUI();
         scheduleParamEditorRender();
         handleCollapseAllFocusChange(prev, focusedNodeId);
+        const focusedNode = focusedNodeId ? findNodeContextById(focusedNodeId)?.node : null;
+        if (focusedNode?.kind === EFFECT_RING_KIND
+            && (activeParameterizedInstanceNodeId !== focusedNode.id || presetRingTool?.classList.contains("hidden"))) {
+            openParameterizedInstanceEditor(focusedNode);
+        }
     }
 
     function clearFocusedNodeIf(id, recordHistory = true) {
@@ -14383,6 +15634,16 @@ function readRotateBindingDeg(binding) {
 
 function resolveBuiltinRotateBindingForRow(row) {
     if (!row || !row.ctx || !row.ctx.node) return null;
+    if (row.ctx.node.kind === BUILDER_REFERENCE_KIND) {
+        const p = row.ctx.node.params || {};
+        return Object.assign(makeRotateParamBinding(row.id, {
+            valueKey: "rotationDeg",
+            unitKey: "rotationDegUnit",
+            sourceIds: [row.id]
+        }), {
+            axis: normalizeAxisForRotate(U.v(num(p.rotationAxisX), num(p.rotationAxisY, 1), num(p.rotationAxisZ)))
+        });
+    }
     const cfg = BUILTIN_ROTATE_PARAM_BINDINGS[row.ctx.node.kind];
     if (!cfg) return null;
     const axis = normalizeAxisForRotate(resolveAxisForNodeId(row.id));
@@ -14550,6 +15811,24 @@ function addRotateForTargetIds(ids) {
     }
     const usable = usableRows.map((r) => r.id);
 
+    if (usableRows.every((row) => row.ctx.node.kind === BUILDER_REFERENCE_KIND)) {
+        const bindings = usableRows.map(resolveBuiltinRotateBindingForRow).filter(Boolean);
+        const centerSeed = averageSegmentCenterForNodeIds(usable);
+        const axisSeed = normalizeAxisForRotate(bindings[0]?.axis || U.v(0, 1, 0));
+        if (typeof setCardSelectionIds === "function") {
+            setCardSelectionIds(usable, { replace: true, focus: false, syncWithParamSync: false });
+        }
+        focusCardById(usable[0], false, false, true);
+        startRotateMode([], {
+            bindings,
+            sourceIds: usable,
+            center: centerSeed,
+            axis: axisSeed,
+            initialDeg: readRotateBindingDeg(bindings[0])
+        });
+        return;
+    }
+
     const reusable = resolveReusableTailRotateForRows(usableRows);
     if (reusable && reusable.rotateId) {
         const sourceIds = Array.isArray(reusable.sourceIds) && reusable.sourceIds.length ? reusable.sourceIds : usable;
@@ -14598,8 +15877,8 @@ function addRotateForTargetIds(ids) {
 
     const row = usableRows[0];
     const centerSeed = averageSegmentCenterForNodeIds([row.id]);
-    const axisSeed = normalizeAxisForRotate(resolveAxisForNodeId(row.id));
     const builtinBinding = resolveBuiltinRotateBindingForRow(row);
+    const axisSeed = normalizeAxisForRotate(builtinBinding?.axis || resolveAxisForNodeId(row.id));
 
     if (typeof setCardSelectionIds === "function") {
         setCardSelectionIds([row.id], { replace: true, focus: false, syncWithParamSync: false });
@@ -14991,8 +16270,16 @@ function openActionMenuForBlankNoSelection(ev) {
     if (ids.length === 1) {
         singleCtxNode = findNodeContextById(ids[0]);
     }
-    const isSingleGroup = !!(singleCtxNode && singleCtxNode.node && isBuilderContainerKind(singleCtxNode.node.kind));
-    const groupEntry = buildGroupActionMenuEntry(ids, {
+    const isInstanceEdit = isBuilderSnapshotEditNode(singleCtxNode?.node);
+    if (isInstanceEdit) {
+        items.push({
+            label: "完成实例原型编辑",
+            onSelect: () => completeBuilderSnapshotEdit(singleCtxNode.node)
+        });
+    }
+    const isSingleGroup = !!(singleCtxNode && singleCtxNode.node
+        && (isBuilderContainerKind(singleCtxNode.node.kind) || singleCtxNode.node.kind === BUILDER_REFERENCE_KIND));
+    const groupEntry = isInstanceEdit ? null : buildGroupActionMenuEntry(ids, {
         mode: isSingleGroup ? "convert" : "create",
         sourceNode: isSingleGroup ? singleCtxNode.node : null,
         sourceKind: isSingleGroup ? singleCtxNode.node.kind : null
@@ -15198,6 +16485,8 @@ function onCanvasDblClick(ev) {
         updateAxisLabelScale();
         controls.update();
         if (adaptiveGrid) adaptiveGrid.update();
+        referenceGuideController?.update?.();
+        gridInspector?.update?.();
         if ((lockPlaneActive && lockPlaneBasePoint)
             || (offsetMode && offsetConstraintVector && offsetRefPoint)
             || (transformConstraintOperation && transformConstraintVector && transformConstraintOrigin)) {
@@ -16148,6 +17437,7 @@ function collectSyntheticVecTargetsForNode(node) {
     };
 
     const NATIVE_OFFSET_TARGET_KINDS = new Set([
+        BUILDER_REFERENCE_KIND,
         "add_circle",
         "add_discrete_circle_xz",
         "add_half_circle",
@@ -16262,25 +17552,36 @@ function collectSyntheticVecTargetsForNode(node) {
         hideActionMenu();
         hideQuickSyncPanel();
         if (bezierHandleDrag || bezierNodeMoveDrag || bezierCreateState) return;
-        const srcIds = Array.isArray(options.ids) && options.ids.length
-            ? options.ids
-            : (nodeId ? [nodeId] : []);
-        const targetIds = normalizeOffsetTargetIds(srcIds);
-        if (!targetIds.length) return;
-
+        const requestedGuideId = String(options.guideId || "");
+        const nextTargetType = requestedGuideId ? "guide" : "node";
         const usableIds = [];
         let sx = 0, sy = 0, sz = 0;
-        for (const id of targetIds) {
-            const center = getNodeSegmentCenter(id);
-            if (!center) continue;
-            usableIds.push(id);
-            sx += center.x;
-            sy += center.y;
-            sz += center.z;
-        }
-        if (!usableIds.length) {
-            showToast("无法进入偏移模式：该图形没有点", "error");
-            return;
+        let guideOrigin = null;
+        if (nextTargetType === "guide") {
+            if (referenceGuideController?.isGuideLocked?.(requestedGuideId)) {
+                showToast("参考线已锁定，无法移动", "info");
+                return;
+            }
+            guideOrigin = referenceGuideController?.getGuideOrigin?.(requestedGuideId) || null;
+            if (!guideOrigin) return;
+        } else {
+            const srcIds = Array.isArray(options.ids) && options.ids.length
+                ? options.ids
+                : (nodeId ? [nodeId] : []);
+            const targetIds = normalizeOffsetTargetIds(srcIds);
+            if (!targetIds.length) return;
+            for (const id of targetIds) {
+                const center = getNodeSegmentCenter(id);
+                if (!center) continue;
+                usableIds.push(id);
+                sx += center.x;
+                sy += center.y;
+                sz += center.z;
+            }
+            if (!usableIds.length) {
+                showToast("无法进入偏移模式：该图形没有点", "error");
+                return;
+            }
         }
 
         if (linePickMode) stopLinePick();
@@ -16290,14 +17591,16 @@ function collectSyntheticVecTargetsForNode(node) {
         lastPickBasePoint = null;
         lastPickMappedPoint = null;
         offsetMode = true;
+        offsetTargetType = nextTargetType;
         offsetTargetIds = usableIds;
         offsetTargetId = usableIds[0] || null;
+        offsetGuideId = nextTargetType === "guide" ? requestedGuideId : null;
         offsetConstraintAxis = null;
         offsetConstraintSpace = "world";
         offsetConstraintVector = null;
         offsetConstraintLastKey = "";
         offsetConstraintLastAt = 0;
-        offsetRefPoint = {
+        offsetRefPoint = guideOrigin || {
             x: sx / usableIds.length,
             y: sy / usableIds.length,
             z: sz / usableIds.length
@@ -16317,8 +17620,10 @@ function collectSyntheticVecTargetsForNode(node) {
         if (!offsetMode) return;
         setLockPlaneActive(false);
         offsetMode = false;
+        offsetTargetType = "node";
         offsetTargetId = null;
         offsetTargetIds = [];
+        offsetGuideId = null;
         offsetRefPoint = null;
         offsetHoverPoint = null;
         offsetConstraintAxis = null;
@@ -16387,11 +17692,6 @@ function collectSyntheticVecTargetsForNode(node) {
 
     function applyOffsetAtPoint(target) {
         if (!offsetMode || !offsetRefPoint || !target) return;
-        const targetIds = getActiveOffsetTargetIds();
-        if (!targetIds.length) {
-            stopOffsetMode();
-            return;
-        }
         const constrainedDelta = constrainOffsetDelta({
             x: target.x - offsetRefPoint.x,
             y: target.y - offsetRefPoint.y,
@@ -16407,6 +17707,27 @@ function collectSyntheticVecTargetsForNode(node) {
         }
 
         const worldDelta = { x: dx, y: dy, z: dz };
+        if (offsetTargetType === "guide") {
+            if (!referenceGuideController?.getGuideOrigin?.(offsetGuideId)) {
+                stopOffsetMode();
+                return;
+            }
+            if (referenceGuideController?.isGuideLocked?.(offsetGuideId)) {
+                showToast("参考线已锁定，无法移动", "info");
+                stopOffsetMode();
+                return;
+            }
+            historyCapture("move_reference_guide");
+            const changed = referenceGuideController?.moveGuideBy?.(offsetGuideId, worldDelta) === true;
+            if (!changed) showToast("参考线无法移动，请检查锁定状态", "info");
+            stopOffsetMode();
+            return;
+        }
+        const targetIds = getActiveOffsetTargetIds();
+        if (!targetIds.length) {
+            stopOffsetMode();
+            return;
+        }
         historyCapture("offset_move");
         let changed = false;
         for (const id of targetIds) {
@@ -16440,6 +17761,26 @@ function collectSyntheticVecTargetsForNode(node) {
         } else {
             showToast("无法重置：目标包含不可直接移动的表达式", "error");
         }
+        return changed;
+    }
+
+    function resetOffsetForGuideId(guideId) {
+        const id = String(guideId || "");
+        if (!id) return false;
+        if (referenceGuideController?.isGuideLocked?.(id)) {
+            showToast("参考线已锁定，无法重置", "info");
+            return false;
+        }
+        const origin = referenceGuideController?.getGuideOrigin?.(id);
+        if (!origin) return false;
+        const worldDelta = { x: -origin.x, y: -origin.y, z: -origin.z };
+        if (Math.abs(worldDelta.x) + Math.abs(worldDelta.y) + Math.abs(worldDelta.z) < 1e-9) {
+            showToast("参考线已在原点", "info");
+            return true;
+        }
+        historyCapture("reset_reference_guide_origin");
+        const changed = referenceGuideController?.moveGuideBy?.(id, worldDelta) === true;
+        if (changed) showToast("已将参考线原点重置到原点", "success");
         return changed;
     }
 
@@ -17078,8 +18419,15 @@ function collectSyntheticVecTargetsForNode(node) {
             return;
         }
 
-        // 偏移模式下左键由 click 事件统一处理（可保留原有吸附与历史逻辑）
-        if (offsetMode) return;
+        if (offsetMode) {
+            if (ev.button !== 0 || ev.ctrlKey) return;
+            const mapped = getMappedPointFromEvent(ev);
+            if (!mapped) return;
+            ev.preventDefault();
+            armCanvasClickSuppress(ev);
+            applyOffsetAtPoint(mapped);
+            return;
+        }
 
         // ✅ 只允许纯左键选点（排除 ctrlKey）
         if (ev.button !== 0 || ev.ctrlKey) return;
@@ -17214,6 +18562,7 @@ function collectSyntheticVecTargetsForNode(node) {
     function rebuildPreviewAndKotlin() {
         if (rebuildTimer) cancelAnimationFrame(rebuildTimer);
         rebuildTimer = requestAnimationFrame(() => {
+            syncAllBuilderSnapshotEdits();
             const scopeCtx = (typeof getCurrentCardScopeContext === "function") ? getCurrentCardScopeContext() : null;
             const previewNodes = (scopeCtx && Array.isArray(scopeCtx.list)) ? scopeCtx.list : state.root.children;
             const res = evalBuilderWithMeta(previewNodes, U.v(0, 1, 0));
@@ -17230,6 +18579,8 @@ function collectSyntheticVecTargetsForNode(node) {
 
     function renderAll() {
         ensureUniqueNodeIds(state.root);
+        referenceGuideController?.sync?.();
+        if (activeBuilderColumn === "guides") referenceGuideController?.renderPanel?.();
         // 保持选中卡片：用于高亮 & 插入规则（addBuilder 内新增等）
         applyCollapseAllStates();
         renderCards();
@@ -17290,6 +18641,7 @@ function collectSyntheticVecTargetsForNode(node) {
         findNodeContextById,
         renderAll,
         focusCardById,
+        onNodeCreated: handleCreatedNodeFromPicker,
         isBuilderContainerKind,
         getFocusedNodeId: () => focusedNodeId,
         getCardSelectionIds: () => (typeof getCardSelectionIds === "function" ? getCardSelectionIds() : null),
@@ -17361,7 +18713,7 @@ function collectSyntheticVecTargetsForNode(node) {
         setIsRenderingCards: (v) => { isRenderingCards = v; },
         getSuppressCardFocusOutClear: () => suppressCardFocusOutClear,
         getMirrorPlaneInfo,
-        getMirrorPlane: () => mirrorPlane,
+        getMirrorPlane: () => ({ plane: mirrorPlane, offset: mirrorPlaneOffset }),
         getVisibleEntries: () => getVisibleEntries,
         getCleanupFilterMenus: () => cleanupFilterMenus,
         getIsFilterActive: () => isFilterActive,
@@ -17379,7 +18731,12 @@ function collectSyntheticVecTargetsForNode(node) {
         findNodePathById,
           getLinePickMode: () => linePickMode,
           getPointPickMode: () => pointPickMode,
-          getAutoSelectCompleteGroups: () => autoSelectCompleteGroups,
+        getAutoSelectCompleteGroups: () => autoSelectCompleteGroups,
+        getBuilderSnapshot: (id) => ensureBuilderSnapshotState()[String(id || "")] || null,
+          openParameterizedInstanceEditor,
+          renderBuilderReferenceVariables,
+          changeBuilderReferenceId,
+          setBuilderReferenceInstanceMode,
           setDraggingState: (v) => { isDraggingCard = !!v; },
           onCardSelectionChange: () => {
               updateFocusColors();
@@ -17511,6 +18868,8 @@ function collectSyntheticVecTargetsForNode(node) {
         stopLinePick,
         getPointPickMode: () => pointPickMode,
         stopPointPick,
+        cancelPointPick,
+        confirmPointPickDefault,
         startLinePick,
         startDottedLinePick,
         startTrianglePick,
@@ -17531,6 +18890,9 @@ function collectSyntheticVecTargetsForNode(node) {
         setMirrorPlane,
         copyFocusedCard,
         mirrorCopyFocusedCard,
+        copySelectedReferenceGuide,
+        mirrorCopySelectedReferenceGuide,
+        deleteSelectedReferenceGuide,
         getFocusedNodeId: () => focusedNodeId,
         getCardSelectionIds: () => (typeof getCardSelectionIds === "function" ? getCardSelectionIds() : null),
         focusCardById,
@@ -17541,7 +18903,9 @@ function collectSyntheticVecTargetsForNode(node) {
         getTransformConstraintOperation: () => transformConstraintOperation,
         cancelActiveTransformOperation,
         resetOffsetForTargetIds,
+        resetOffsetForGuideId,
         startOffsetMode,
+        getSelectedReferenceGuideId: () => referenceGuideController?.getSelectedGuideId?.() || "",
         addKindInContext,
         hideActionMenu,
         onWindowBlurCleanup: () => {

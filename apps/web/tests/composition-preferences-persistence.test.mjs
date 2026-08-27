@@ -110,6 +110,26 @@ test('Composition preference loading repairs structurally invalid and partial re
   assert.equal(merged.hotkeys.actions.toggleSettings, 'Mod+KeyH');
 });
 
+test('Composition loading persists repaired card identities', () => {
+  const storage = new MemoryStorage({
+    [COMPOSITION_STORAGE_KEY]: JSON.stringify({
+      projectName: 'DuplicateCards',
+      cards: [
+        { id: 'same-card', name: '卡片 1' },
+        { id: 'same-card', name: '卡片 2' },
+        { id: '', name: '卡片 3' }
+      ]
+    })
+  });
+
+  const restored = loadCompositionStateFromStorage(storage);
+  const ids = restored.cards.map((card) => card.id);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.ok(ids.every(Boolean));
+  const persisted = JSON.parse(storage.getItem(COMPOSITION_STORAGE_KEY));
+  assert.deepEqual(persisted.cards.map((card) => card.id), ids);
+});
+
 test('Composition preferences persist when the larger project draft exceeds storage quota', () => {
   const entries = new Map();
   const storage = {

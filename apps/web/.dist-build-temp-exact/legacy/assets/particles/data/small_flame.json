@@ -1,0 +1,7 @@
+{
+  "name": "ControlableSmallFlameEffect",
+  "displayName": "SmallFlame",
+  "textures": [
+    "assets/particles/small_flame/flame.png"
+  ]
+}

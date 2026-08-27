@@ -1,0 +1,7 @@
+{
+  "name": "ControlableFallingObsidianTearEffect",
+  "displayName": "FallingObsidianTear",
+  "textures": [
+    "assets/particles/falling_obsidian_tear/drip_fall.png"
+  ]
+}

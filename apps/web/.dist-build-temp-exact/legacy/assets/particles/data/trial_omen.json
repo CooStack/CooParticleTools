@@ -1,0 +1,7 @@
+{
+  "name": "ControlableTrialOmenEffect",
+  "displayName": "TrialOmen",
+  "textures": [
+    "assets/particles/trial_omen/trial_omen.png"
+  ]
+}

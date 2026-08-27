@@ -1,0 +1,14 @@
+{
+  "name": "ControlableDustPlumeEffect",
+  "displayName": "DustPlume",
+  "textures": [
+    "assets/particles/dust_plume/generic_7.png",
+    "assets/particles/dust_plume/generic_6.png",
+    "assets/particles/dust_plume/generic_5.png",
+    "assets/particles/dust_plume/generic_4.png",
+    "assets/particles/dust_plume/generic_3.png",
+    "assets/particles/dust_plume/generic_2.png",
+    "assets/particles/dust_plume/generic_1.png",
+    "assets/particles/dust_plume/generic_0.png"
+  ]
+}

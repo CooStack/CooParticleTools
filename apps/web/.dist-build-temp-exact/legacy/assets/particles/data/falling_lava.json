@@ -1,0 +1,7 @@
+{
+  "name": "ControlableFallingLavaEffect",
+  "displayName": "FallingLava",
+  "textures": [
+    "assets/particles/falling_lava/drip_fall.png"
+  ]
+}

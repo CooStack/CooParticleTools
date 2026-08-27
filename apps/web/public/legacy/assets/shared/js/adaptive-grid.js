@@ -1,8 +1,9 @@
 import * as THREE from "three";
 
 const TARGET_PIXEL_SPACING = 48;
-const MIN_STEP = 0.01;
-const MAX_STEP = 100000;
+const MIN_STEP_EXPONENT = -7;
+const MAX_STEP_EXPONENT = 17;
+const MIN_STEP = 2 ** MIN_STEP_EXPONENT;
 const PLANE_SIZE = 1000000;
 
 const vertexShader = `
@@ -16,9 +17,6 @@ void main() {
 
 const fragmentShader = `
 uniform float uFineStep;
-uniform float uCoarseStep;
-uniform float uNextStep;
-uniform float uFarStep;
 uniform float uLodBlend;
 uniform vec3 uCenter;
 uniform mat4 uInvProjection;
@@ -45,18 +43,12 @@ vec2 planeCoordinate(vec3 worldPosition) {
   return worldPosition.xz;
 }
 
-float gridLine(vec2 coordinate) {
+float gridLine(vec2 coordinate, vec2 derivative) {
   vec2 distanceToLine = abs(fract(coordinate - 0.5) - 0.5);
-  vec2 derivative = fwidth(coordinate);
   vec2 antiAlias = clamp(derivative * 1.5, vec2(0.0001), vec2(0.22));
   vec2 line = 1.0 - smoothstep(vec2(0.0), antiAlias, distanceToLine);
   float pixelCoverage = min(1.0, 0.5 / max(max(derivative.x, derivative.y), 0.0001));
   return max(line.x, line.y) * pixelCoverage;
-}
-
-float gridDensity(vec2 coordinate, float step) {
-  vec2 derivative = fwidth(coordinate / max(step, 0.0001));
-  return max(derivative.x, derivative.y);
 }
 
 void main() {
@@ -69,30 +61,35 @@ void main() {
   if (rayDistance < 0.0) discard;
   vec3 vWorldPosition = rayStart + rayDirection * rayDistance;
   vec2 coordinate = planeCoordinate(vWorldPosition);
-  float fineDensity = gridDensity(coordinate, uFineStep);
-  float coarseDensity = gridDensity(coordinate, uCoarseStep);
-  float nextDensity = gridDensity(coordinate, uNextStep);
-  float fineToCoarse = max(smoothstep(0.45, 0.9, fineDensity), uLodBlend);
-  float coarseToNext = smoothstep(0.45, 0.9, coarseDensity);
-  float nextToFar = smoothstep(0.45, 0.9, nextDensity);
-  float fineLine = gridLine(coordinate / max(uFineStep, 0.0001));
-  float coarseLine = gridLine(coordinate / max(uCoarseStep, 0.0001));
-  float nextLine = gridLine(coordinate / max(uNextStep, 0.0001));
-  float farLine = gridLine(coordinate / max(uFarStep, 0.0001));
+  vec2 coordinateDerivative = fwidth(coordinate);
+  float baseDensity = max(coordinateDerivative.x, coordinateDerivative.y) / max(uFineStep, 0.0001);
+  float densityLevel = clamp(floor(log2(max(baseDensity / 0.45, 1.0))), 0.0, 20.0);
+  float densityScale = exp2(densityLevel);
+  float localFineStep = uFineStep * densityScale;
+  float localCoarseStep = localFineStep * 2.0;
+  float localDensity = baseDensity / densityScale;
+  float cameraBlend = densityLevel < 0.5 ? uLodBlend : 0.0;
+  float fineToCoarse = max(smoothstep(0.45, 0.9, localDensity), cameraBlend);
+  float fineLine = gridLine(
+    coordinate / max(localFineStep, 0.0001),
+    coordinateDerivative / max(localFineStep, 0.0001)
+  );
+  float coarseLine = gridLine(
+    coordinate / max(localCoarseStep, 0.0001),
+    coordinateDerivative / max(localCoarseStep, 0.0001)
+  );
   float planeDistance = distance(vWorldPosition, uCenter);
   float distanceFade = 1.0 - smoothstep(uFadeStart, uFadeEnd, planeDistance);
-  float fineAlpha = fineLine * (1.0 - fineToCoarse) * 0.58;
-  float coarseAlpha = coarseLine * fineToCoarse * (1.0 - coarseToNext) * 0.98;
-  float nextAlpha = nextLine * coarseToNext * (1.0 - nextToFar) * 0.9;
-  float farAlpha = farLine * nextToFar * 0.82;
-  float alpha = max(max(fineAlpha, coarseAlpha), max(nextAlpha, farAlpha)) * distanceFade * uOpacity;
+  float fineAlpha = fineLine * (1.0 - fineToCoarse) * 0.98;
+  float coarseAlpha = coarseLine * 0.98;
+  float alpha = max(fineAlpha, coarseAlpha) * distanceFade * uOpacity;
   if (alpha <= 0.01) discard;
   gl_FragColor = vec4(uGridColor, alpha);
 }
 `;
 
-function clampStep(value) {
-  return Math.max(MIN_STEP, Math.min(MAX_STEP, value));
+function clampStepExponent(value, maximum = MAX_STEP_EXPONENT) {
+  return Math.max(MIN_STEP_EXPONENT, Math.min(maximum, value));
 }
 
 function rawStep(distance, fov, viewportHeight) {
@@ -106,20 +103,9 @@ function rawStep(distance, fov, viewportHeight) {
 
 function resolveLod(distance, fov, viewportHeight) {
   const raw = Math.max(MIN_STEP, rawStep(distance, fov, viewportHeight));
-  const exponent = Math.floor(Math.log10(raw));
-  const magnitude = 10 ** exponent;
-  const normalized = raw / magnitude;
-  let fineMultiplier = 1;
-  let coarseMultiplier = 2;
-  if (normalized >= Math.sqrt(2) && normalized < Math.sqrt(10)) {
-    fineMultiplier = 2;
-    coarseMultiplier = 5;
-  } else if (normalized >= Math.sqrt(10)) {
-    fineMultiplier = 5;
-    coarseMultiplier = 10;
-  }
-  const fineStep = clampStep(fineMultiplier * magnitude);
-  const coarseStep = clampStep(coarseMultiplier * magnitude);
+  const exponent = clampStepExponent(Math.floor(Math.log2(raw)), MAX_STEP_EXPONENT - 1);
+  const fineStep = 2 ** exponent;
+  const coarseStep = fineStep * 2;
   const normalizedFine = raw / fineStep;
   const blendStart = 1.05;
   const blendEnd = Math.max(blendStart + 0.1, (coarseStep / fineStep) * 0.85);
@@ -162,9 +148,6 @@ export function createAdaptiveGrid({
     extensions: { derivatives: true },
     uniforms: {
       uFineStep: { value: 1 },
-      uCoarseStep: { value: 2 },
-      uNextStep: { value: 10 },
-      uFarStep: { value: 50 },
       uLodBlend: { value: 0 },
       uCenter: { value: new THREE.Vector3() },
       uInvProjection: { value: new THREE.Matrix4() },
@@ -189,6 +172,16 @@ export function createAdaptiveGrid({
   let planeKey = "XZ";
   let planeOffset = Number.isFinite(Number(offset)) ? Number(offset) : -0.01;
   let lastFineStep = 1;
+  let lastMetrics = {
+    fineStep: 1,
+    coarseStep: 2,
+    nextStep: 4,
+    farStep: 8,
+    blend: 0,
+    fadeStart: 12,
+    fadeEnd: 64,
+    plane: planeKey,
+  };
 
   function applyPlane(nextPlane = "XZ", nextOffset = planeOffset) {
     planeKey = ["XZ", "XY", "ZY"].includes(String(nextPlane).toUpperCase())
@@ -216,9 +209,6 @@ export function createAdaptiveGrid({
     const lod = resolveLod(cameraDistance, camera.fov, viewportHeight);
     if (Math.abs(lod.fineStep - lastFineStep) > Math.max(1e-6, lod.fineStep * 1e-6)) {
       material.uniforms.uFineStep.value = lod.fineStep;
-      material.uniforms.uCoarseStep.value = lod.coarseStep;
-      material.uniforms.uNextStep.value = clampStep(lod.coarseStep * 5);
-      material.uniforms.uFarStep.value = clampStep(lod.coarseStep * 125);
       lastFineStep = lod.fineStep;
     }
     material.uniforms.uLodBlend.value = lod.blend;
@@ -230,6 +220,16 @@ export function createAdaptiveGrid({
     );
     material.uniforms.uFadeStart.value = fadeEnd * 0.42;
     material.uniforms.uFadeEnd.value = fadeEnd;
+    lastMetrics = {
+      fineStep: lod.fineStep,
+      coarseStep: lod.coarseStep,
+      nextStep: lod.coarseStep * 2,
+      farStep: lod.coarseStep * 4,
+      blend: lod.blend,
+      fadeStart: material.uniforms.uFadeStart.value,
+      fadeEnd,
+      plane: planeKey,
+    };
   }
 
   function setVisible(nextVisible) {
@@ -254,5 +254,15 @@ export function createAdaptiveGrid({
   applyPlane(plane, planeOffset);
   setColor(color);
   setVisible(visible);
-  return { mesh, material, update, setVisible, setColor, setOpacity, setPlane: applyPlane, dispose };
+  return {
+    mesh,
+    material,
+    update,
+    setVisible,
+    setColor,
+    setOpacity,
+    setPlane: applyPlane,
+    getMetrics: () => ({ ...lastMetrics }),
+    dispose,
+  };
 }

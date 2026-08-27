@@ -1245,7 +1245,7 @@ function emitLiteral(node) {
   if (node.value === null) return 'null';
   if (node.type === TYPES.Int) return String(Math.trunc(node.value));
   if (node.type === TYPES.Long) return `${String(node.raw || node.value).replace(/[lL]$/, '')}L`;
-  if (node.type === TYPES.Float) return `${formatKotlinNumber(node.value)}f`;
+  if (node.type === TYPES.Float) return `${formatKotlinNumber(node.value)}F`;
   return formatKotlinNumber(node.value);
 }
 
@@ -1280,7 +1280,7 @@ function emitKotlinCall(node) {
     if (callee.property === 'normal' && VECTOR_TYPES.has(callee.object.type)) {
       const receiver = ['identifier', 'member', 'call'].includes(callee.object.kind) ? object : `(${object})`;
       return callee.object.type === TYPES.Vector3f
-        ? `Vector3f(${receiver}).apply { if (lengthSquared() <= 1.0e-12f) zero() else normalize() }`
+        ? `Vector3f(${receiver}).apply { if (lengthSquared() <= 1.0e-12F) zero() else normalize() }`
         : `${receiver}.normalize()`;
     }
     if (callee.property === 'toVector3f' && callee.object.type === TYPES.Vector3f) return object;

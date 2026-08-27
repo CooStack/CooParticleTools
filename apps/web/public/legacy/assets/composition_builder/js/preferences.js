@@ -97,7 +97,31 @@ export function loadCompositionStateFromStorage(storage = globalThis.localStorag
         }
     }
 
-    return isCompositionPreferences(preferences) ? applyCompositionPreferences(state, preferences) : state;
+    const resolved = isCompositionPreferences(preferences) ? applyCompositionPreferences(state, preferences) : state;
+    // Persist repaired card identities immediately. Otherwise a legacy project
+    // with duplicate/empty ids is normalized only in memory and can reintroduce
+    // Builder cross-card writes after the next reload.
+    if (draft && compositionCardIdentityNeedsRepair(draft, resolved)) {
+        try {
+            saveCompositionStateToStorage(storage, resolved);
+        } catch {
+        }
+    }
+    return resolved;
+}
+
+function compositionCardIdentityNeedsRepair(draft, normalized) {
+    const rawCards = Array.isArray(draft?.cards) ? draft.cards : [];
+    const normalizedCards = Array.isArray(normalized?.cards) ? normalized.cards : [];
+    if (rawCards.length !== normalizedCards.length) return true;
+    const seen = new Set();
+    for (let index = 0; index < normalizedCards.length; index += 1) {
+        const rawId = String(rawCards[index]?.id || "").trim();
+        const normalizedId = String(normalizedCards[index]?.id || "").trim();
+        if (!rawId || rawId !== normalizedId || seen.has(normalizedId)) return true;
+        seen.add(normalizedId);
+    }
+    return false;
 }
 
 export function saveCompositionPreferencesToStorage(storage, stateLike) {

@@ -1,0 +1,14 @@
+{
+  "name": "ControlableInstantEffectParticleEffect",
+  "displayName": "InstantEffect",
+  "textures": [
+    "assets/particles/instant_effect/spell_7.png",
+    "assets/particles/instant_effect/spell_6.png",
+    "assets/particles/instant_effect/spell_5.png",
+    "assets/particles/instant_effect/spell_4.png",
+    "assets/particles/instant_effect/spell_3.png",
+    "assets/particles/instant_effect/spell_2.png",
+    "assets/particles/instant_effect/spell_1.png",
+    "assets/particles/instant_effect/spell_0.png"
+  ]
+}

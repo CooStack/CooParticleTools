@@ -1,0 +1,7 @@
+{
+  "name": "ControlableEnchantedHitEffect",
+  "displayName": "EnchantedHit",
+  "textures": [
+    "assets/particles/enchanted_hit/enchanted_hit.png"
+  ]
+}

@@ -2,8 +2,55 @@ import * as THREE from "three";
 import { sampleAdaptiveBezierNodes, sampleAdaptiveCubic } from "./bezier-sampling.js?v=20260826_1";
 
 export function createKindDefs(ctx) {
-    const { U, num, int, relExpr, rotatePointsToPointUpright } = ctx || {};
+    const { U, num, int, relExpr, rotatePointsToPointUpright, applyPointsBuilderInstanceOverrides } = ctx || {};
     const bezierSegmentCache = new Map();
+
+    function snapshotVariableEntries(snapshot) {
+        const variables = snapshot?.variables || {};
+        const result = [];
+        const seen = new Set();
+        const add = (type, rawName) => {
+            const name = String(rawName || "").trim();
+            const normalizedType = type === "vector" ? "vector" : "scalar";
+            const key = `${normalizedType}:${name}`;
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || seen.has(key)) return;
+            seen.add(key);
+            result.push({ type: normalizedType, name });
+        };
+        for (const entry of Array.isArray(variables.entries) ? variables.entries : []) add(entry?.type, entry?.name);
+        for (const name of Array.isArray(variables.refs?.vector) ? variables.refs.vector : []) add("vector", name);
+        for (const name of Array.isArray(variables.refs?.scalar) ? variables.refs.scalar : []) add("scalar", name);
+        for (const name of Object.keys(variables.inputs?.vector || {})) add("vector", name);
+        for (const name of Object.keys(variables.inputs?.scalar || {})) add("scalar", name);
+        return result;
+    }
+
+    function renderDouble(value) {
+        const number = Number(value);
+        if (Number.isFinite(number)) {
+            const literal = U.fmt(number);
+            return /[.eE]/.test(String(literal)) ? String(literal) : `${literal}.0`;
+        }
+        return String(value ?? "0").trim() || "0.0";
+    }
+
+    function constructInstanceArguments(snapshot, node) {
+        const defaults = snapshot?.variables?.inputs || {};
+        const raw = node?.params?.overrides || {};
+        const scalar = { ...(defaults.scalar || {}), ...(raw.scalar || {}) };
+        const vector = { ...(defaults.vector || {}), ...(raw.vector || {}) };
+        return snapshotVariableEntries(snapshot).flatMap((entry) => {
+            const mode = raw.modes?.[entry.type]?.[entry.name];
+            const ref = String(raw.refs?.[entry.type]?.[entry.name] || "").trim();
+            if (entry.type === "vector") {
+                if (mode === "reference" && ref) return [`${ref}.x`, `${ref}.y`, `${ref}.z`];
+                const value = vector[entry.name] || {};
+                return [renderDouble(value.x), renderDouble(value.y), renderDouble(value.z)];
+            }
+            if (mode === "reference" && ref) return [ref];
+            return [renderDouble(scalar[entry.name])];
+        });
+    }
 
     function cubicBezierPoint(t, p0, p1, p2, p3) {
         const u = 1 - t;
@@ -1370,6 +1417,146 @@ export function createKindDefs(ctx) {
                     return `.pointsOnEach { it.add(${varName}) }`;
                 }
                 return `.pointsOnEach { it.add(${dx}, ${dy}, ${dz}) }`;
+            }
+        },
+
+        builder_reference: {
+            title: "实例",
+            desc: "引用项目内的 PointsBuilder 实例原型，内部 Builder 只读",
+            hiddenInPicker: true,
+            supportsChildren: false,
+            defaultParams: {
+                snapshotId: "",
+                parameterId: "",
+                instanceMode: "static",
+                ox: 0, oy: 0, oz: 0,
+                scale: 1,
+                rotationDeg: 0,
+                rotationAxisX: 0, rotationAxisY: 1, rotationAxisZ: 0,
+                overrides: {}
+            },
+            apply() {},
+            kotlin(node, emitCtx, indent, emitNodesKotlinLines) {
+                const id = String(node.params?.snapshotId || "").trim();
+                const snapshot = emitCtx?.snapshots?.[id];
+                if (!snapshot) return [];
+                const p = node.params || {};
+                const mode = p.instanceMode === "construct" ? "construct" : "static";
+                const referenceKey = `${mode}:${id}`;
+                const safe = id.replace(/[^A-Za-z0-9_]/g, "_");
+                const name = `builderInstance_${safe}`;
+                if (!emitCtx.referenceNames) emitCtx.referenceNames = new Set();
+                if (!emitCtx.referenceNames.has(referenceKey)) {
+                    emitCtx.referenceNames.add(referenceKey);
+                    const entries = snapshotVariableEntries(snapshot);
+                    const synthetic = {
+                        params: {
+                            instanceMode: "construct",
+                            overrides: {
+                                scalar: Object.fromEntries(entries.filter((entry) => entry.type === "scalar").map((entry) => [entry.name, entry.name])),
+                                vector: Object.fromEntries(entries.filter((entry) => entry.type === "vector").map((entry) => [entry.name, {
+                                    x: `${entry.name}X`, y: `${entry.name}Y`, z: `${entry.name}Z`
+                                }]))
+                            }
+                        }
+                    };
+                    const children = typeof applyPointsBuilderInstanceOverrides === "function"
+                        ? applyPointsBuilderInstanceOverrides(snapshot.children || [], snapshot, mode === "construct" ? synthetic : node)
+                        : (snapshot.children || []);
+                    const parameters = entries.flatMap((entry) => entry.type === "vector"
+                        ? [`${entry.name}X: Double`, `${entry.name}Y: Double`, `${entry.name}Z: Double`]
+                        : [`${entry.name}: Double`]).join(", ");
+                    const childCtx = Object.assign({}, emitCtx, { decls: [] });
+                    const childLines = emitNodesKotlinLines(children, "    ", childCtx);
+                    const lines = [];
+                    if (mode === "construct") {
+                        lines.push(`private fun ${name}(${parameters}): PointsBuilder {`);
+                        childCtx.decls.forEach((local) => lines.push(`  ${String(local).replace(/\n/g, "\n  ")}`));
+                        lines.push("  return PointsBuilder()", ...childLines, "}");
+                    } else {
+                        childCtx.decls.forEach((local) => lines.push(String(local)
+                            .replace(/^val /, "private val ")
+                            .replace(/^var /, "private var ")));
+                        lines.push(`private val ${name}: PointsBuilder = PointsBuilder()`, ...childLines);
+                    }
+                    if (Array.isArray(emitCtx.referenceDecls)) emitCtx.referenceDecls.push(lines.join("\n"));
+                    else emitCtx.decls.push(lines.join("\n"));
+                }
+                const base = mode === "construct"
+                    ? `${name}(${constructInstanceArguments(snapshot, node).join(", ")})`
+                    : name;
+                const scale = num(p.scale, 1);
+                const hasScale = scale > 0 && Math.abs(scale - 1) > 1e-9;
+                const angle = num(p.rotationDeg);
+                const hasRotation = Math.abs(angle) > 1e-9;
+                const hasOffset = Math.abs(num(p.ox)) > 1e-9 || Math.abs(num(p.oy)) > 1e-9 || Math.abs(num(p.oz)) > 1e-9;
+                if (!hasScale && !hasRotation) return [`${indent}.addBuilder(${relExpr(p.ox, p.oy, p.oz)}, ${base})`];
+                const radian = `${U.fmt(angle)} * PI / 180.0`;
+                const defaultAxis = Math.abs(num(p.rotationAxisX)) <= 1e-9
+                    && Math.abs(num(p.rotationAxisY, 1) - 1) <= 1e-9
+                    && Math.abs(num(p.rotationAxisZ)) <= 1e-9;
+                const axis = relExpr(p.rotationAxisX, p.rotationAxisY, p.rotationAxisZ);
+                if (!hasScale && !hasOffset) {
+                    const args = defaultAxis ? radian : `${radian}, ${axis}`;
+                    return [`${indent}.addPoints(${base}.createWithRotation(${args}))`];
+                }
+                const offset = relExpr(p.ox, p.oy, p.oz);
+                if (!hasScale) {
+                    const args = defaultAxis ? `${radian}, ${offset}` : `${radian}, ${axis}, ${offset}`;
+                    return [`${indent}.addPoints(${base}.createWithTransform(${args}))`];
+                }
+                const factor = renderDouble(scale);
+                const args = defaultAxis ? `${factor}, ${radian}, ${offset}` : `${factor}, ${radian}, ${axis}, ${offset}`;
+                return [`${indent}.addPoints(${base}.createWithTransform(${args}))`];
+            }
+        },
+
+        effect_ring: {
+            title: "环形阵列实例",
+            group: "参数化实例",
+            desc: "沿圆环重复放置项目内的实例原型",
+            supportsChildren: false,
+            defaultParams: {
+                snapshotIds: [], count: 12, radius: 3, startDeg: 0,
+                originX: 0, originY: 0, originZ: 0,
+                axisX: 0, axisY: 0, axisZ: 1,
+                offsetX: 0, offsetY: 0, offsetZ: 0,
+                faceCenter: true, reverse: false
+            },
+            apply() {},
+            kotlin(node, emitCtx, indent, emitNodesKotlinLines) {
+                const ids = Array.isArray(node.params?.snapshotIds) ? node.params.snapshotIds : [];
+                const names = ids.map((id) => {
+                    const snapshot = emitCtx?.snapshots?.[id];
+                    if (!snapshot) return "";
+                    const safe = String(id).replace(/[^A-Za-z0-9_]/g, "_");
+                    const name = `builderSnapshot_${safe}`;
+                    if (!emitCtx.referenceNames) emitCtx.referenceNames = new Set();
+                    if (!emitCtx.referenceNames.has(id)) {
+                        emitCtx.referenceNames.add(id);
+                        const lines = [`private val ${name}: PointsBuilder = PointsBuilder()`];
+                        lines.push(...emitNodesKotlinLines(snapshot.children || [], "    ", emitCtx));
+                        if (Array.isArray(emitCtx.referenceDecls)) emitCtx.referenceDecls.push(lines.join("\n"));
+                        else emitCtx.decls.push(lines.join("\n"));
+                    }
+                    return name;
+                }).filter(Boolean);
+                if (!names.length) return [];
+                const p = node.params || {};
+                const lines = [
+                    `${indent}.addBuilder(${relExpr(p.offsetX, p.offsetY, p.offsetZ)}, PointsBuilder()`,
+                    `${indent}  .addWith {`,
+                    `${indent}  val res = arrayListOf<RelativeLocation>()`,
+                    `${indent}  getPolygonInCircleVertices(${Math.max(1, int(p.count))}, ${U.fmt(num(p.radius))})`,
+                    `${indent}    .forEachIndexed { index, it ->`,
+                    `${indent}      val source = when (index % ${names.length}) {`
+                ];
+                names.forEach((name, index) => lines.push(`${indent}        ${index} -> ${name}.cloneBuilder()`));
+                lines.push(`${indent}        else -> ${names[0]}.cloneBuilder()`, `${indent}      }`);
+                if (p.faceCenter) lines.push(`${indent}      source.rotateTo(${p.reverse ? "it" : "-it"})`);
+                lines.push(`${indent}      res.addAll(source.pointsOnEach { rel -> rel.add(it).add(${U.fmt(num(p.originX))}, ${U.fmt(num(p.originY))}, ${U.fmt(num(p.originZ))}) }.createWithoutClone())`);
+                lines.push(`${indent}    }`, `${indent}  res`, `${indent}  })`);
+                return lines;
             }
         },
 

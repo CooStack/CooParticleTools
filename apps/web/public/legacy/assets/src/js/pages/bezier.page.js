@@ -1,3 +1,7 @@
+import { installGlassSurface } from "../../../shared/js/glass-surface.js?v=20260825_1";
+
+installGlassSurface();
+
 (function () {
         var canvas = document.getElementById("c");
         var ctx = canvas.getContext("2d", { alpha: false });

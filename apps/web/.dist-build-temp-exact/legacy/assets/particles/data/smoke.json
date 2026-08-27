@@ -1,0 +1,14 @@
+{
+  "name": "ControlableSmokeEffect",
+  "displayName": "Smoke",
+  "textures": [
+    "assets/particles/smoke/generic_7.png",
+    "assets/particles/smoke/generic_6.png",
+    "assets/particles/smoke/generic_5.png",
+    "assets/particles/smoke/generic_4.png",
+    "assets/particles/smoke/generic_3.png",
+    "assets/particles/smoke/generic_2.png",
+    "assets/particles/smoke/generic_1.png",
+    "assets/particles/smoke/generic_0.png"
+  ]
+}

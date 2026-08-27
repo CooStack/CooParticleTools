@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { createAdaptiveGrid } from "../../shared/js/adaptive-grid.js?v=20260825_14";
+import { createAdaptiveGrid } from "../../shared/js/adaptive-grid.js?v=20260826_18";
 import { clamp, lerp, rand, randInt } from "./utils.js";
 import { normalizeEmitterBehavior } from "./emitter_behavior.js";
 import { normalizeBuilderState, evaluateBuilderState } from "./points_builder_bridge.js?v=20260820_2";
@@ -1266,12 +1266,12 @@ export function initPreview(ctx = {}) {
         const num = (v, def = 0, min = null, max = null) => evalNumberFast(v, def, 0, 0, 0, 0, tick, vars, false, min, max);
         const intNum = (v, def = 0, min = null, max = null) => evalNumberFast(v, def, 0, 0, 0, 0, tick, vars, true, min, max);
 
-        const lifeMin = Math.max(1, intNum(pp.lifeMin, 40, 1));
-        const lifeMax = Math.max(lifeMin, intNum(pp.lifeMax, 120, 1));
+        const lifeMin = Math.max(1, intNum(pp.lifeMin, 10, 1));
+        const lifeMax = Math.max(lifeMin, intNum(pp.lifeMax, 20, 1));
         const life = randInt(lifeMin, lifeMax);
 
-        const sizeMin = Math.max(0.001, num(pp.sizeMin, 0.08, 0.001));
-        const sizeMax = Math.max(sizeMin, num(pp.sizeMax, 0.18, 0.001));
+        const sizeMin = Math.max(0.001, num(pp.sizeMin, 0.1, 0.001));
+        const sizeMax = Math.max(sizeMin, num(pp.sizeMax, 0.2, 0.001));
         const size = rand(sizeMin, sizeMax);
 
         const velMode = String(pp.velMode || "fixed");
@@ -1286,8 +1286,8 @@ export function initPreview(ctx = {}) {
         if (vdir.lengthSq() < 1e-10) {
             vdir.set(0, 0, 0);
         } else {
-            const minSpeed = Math.max(0, num(pp.velSpeedMin, 0, 0));
-            const maxSpeed = Math.max(minSpeed, num(pp.velSpeedMax, minSpeed, 0));
+            const minSpeed = Math.max(0, num(pp.velSpeedMin, 0.1, 0));
+            const maxSpeed = Math.max(minSpeed, num(pp.velSpeedMax, 0.3, 0));
             const speed = rand(minSpeed, maxSpeed);
             vdir.normalize().multiplyScalar(speed);
         }

@@ -1,4 +1,4 @@
-import { emitKotlin } from './builder-tools.js';
+import { emitKotlin, emitKotlinParts } from './builder-tools.js';
 import { POINTS_NODE_KINDS } from './kinds.js';
 import { normalizePointsBuilderProject } from './normalizer.js';
 
@@ -13,7 +13,17 @@ const INTEGER_PARAMETER_KEYS = new Set([
 export function generatePointsBuilderKotlin(project, options = {}) {
   const normalized = normalizePointsBuilderProject(project, project?.tool || 'pointsbuilder');
   coerceExternalDoubleExpressions(normalized.state.root.children, options.coerceDoubleExpression);
-  return emitKotlin(normalized);
+  return emitKotlin(normalized, {
+    coerceNodes: (nodes) => coerceExternalDoubleExpressions(nodes, options.coerceDoubleExpression),
+    resolveStaticReference: options.resolveStaticReference
+  });
+}
+
+export function generatePointsBuilderKotlinParts(project, options = {}) {
+  const normalized = normalizePointsBuilderProject(project, project?.tool || 'pointsbuilder');
+  const coerceNodes = (nodes) => coerceExternalDoubleExpressions(nodes, options.coerceDoubleExpression);
+  coerceNodes(normalized.state.root.children);
+  return emitKotlinParts(normalized, { coerceNodes, resolveStaticReference: options.resolveStaticReference });
 }
 
 function coerceExternalDoubleExpressions(nodes, coerceDoubleExpression) {

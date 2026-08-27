@@ -678,6 +678,7 @@ export function createCardInputs(ctx) {
         if (options.valueType) i.dataset.pbExplicitValueType = "1";
         i.inputMode = (suggestMode || modalNavigation) ? "text" : "decimal";
         const step = (typeof getParamStep === "function") ? getParamStep() : null;
+        if (Number.isFinite(Number(step)) && Number(step) > 0) i.dataset.cpNumberStep = String(step);
         const initialValue = (value === null || value === undefined || (typeof value === "string" && value.trim() === ""))
             ? 0
             : value;
@@ -727,6 +728,7 @@ export function createCardInputs(ctx) {
             if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
             const liveStep = (typeof getParamStep === "function") ? getParamStep() : null;
             if (!Number.isFinite(liveStep) || liveStep <= 0) return;
+            i.dataset.cpNumberStep = String(liveStep);
             e.preventDefault();
             const curStr = i.value;
             const cur = typeof parseExprNumber === "function" ? parseExprNumber(curStr) : (num ? num(curStr) : Number(curStr));
@@ -740,6 +742,10 @@ export function createCardInputs(ctx) {
         i.addEventListener("input", () => {
             onInput(String(i.value ?? ""));
             if (suggestMode) openExprSuggestion(i, false);
+        });
+        i.addEventListener("focus", () => {
+            const liveStep = (typeof getParamStep === "function") ? getParamStep() : null;
+            if (Number.isFinite(liveStep) && liveStep > 0) i.dataset.cpNumberStep = String(liveStep);
         });
         if (suggestMode) {
             i.addEventListener("focus", () => openExprSuggestion(i, false));
@@ -905,7 +911,7 @@ function select(options, value, onChange) {
         }
 
         const manualRow = document.createElement("div");
-        manualRow.className = "mini";
+        manualRow.className = "mini pb-vector-input-row";
         manualRow.style.display = "grid";
         manualRow.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr)) auto";
         manualRow.style.width = "100%";
@@ -1187,8 +1193,15 @@ export function initCardSystem(ctx = {}) {
     const getLinePickMode = ctx.getLinePickMode || (() => false);
     const getPointPickMode = ctx.getPointPickMode || (() => false);
     const getAutoSelectCompleteGroups = ctx.getAutoSelectCompleteGroups || (() => false);
+    const getBuilderSnapshot = ctx.getBuilderSnapshot || (() => null);
+    const openParameterizedInstanceEditor = ctx.openParameterizedInstanceEditor || (() => false);
+    const renderBuilderReferenceVariables = ctx.renderBuilderReferenceVariables || (() => false);
     const makeUid = ctx.uid || (() => (Math.random().toString(16).slice(2) + Date.now().toString(16)).slice(0, 16));
     const renderCardParamsInline = ctx.renderCardParamsInline !== false;
+
+    const canContainChildren = (node) => !!(node
+        && isBuilderContainerKind(node.kind)
+        && KIND?.[node.kind]?.supportsChildren !== false);
 
     const INPUT_TIP_DELAY = 650;
     const inputTipState = { timer: 0, el: null, target: null };
@@ -1641,7 +1654,9 @@ export function initCardSystem(ctx = {}) {
         if (document.__pbFloatingToolTipsBound) return;
         document.__pbFloatingToolTipsBound = true;
         let activeAnchor = null;
-        const getAnchor = (target) => target && target.closest ? target.closest(".panel-tool-icon[data-tip]") : null;
+        const getAnchor = (target) => target && target.closest
+            ? target.closest(".panel-tool-icon[data-tip], .pb-tooltip-anchor[data-tip]")
+            : null;
         document.addEventListener("pointerover", (ev) => {
             const anchor = getAnchor(ev.target);
             if (!anchor) return;
@@ -2908,7 +2923,7 @@ export function initCardSystem(ctx = {}) {
         summary.className = "card-tree-summary";
 
         const label = document.createElement("span");
-        if (isBuilderContainerKind(node.kind)) {
+        if (canContainChildren(node)) {
             const count = Array.isArray(node.children) ? node.children.length : 0;
             label.innerHTML = `<strong>文件夹</strong> ${count} 张子卡片`;
         } else {
@@ -2926,6 +2941,8 @@ export function initCardSystem(ctx = {}) {
         const def = KIND[node.kind];
         const card = document.createElement("div");
         card.className = "card";
+        if (node.kind === "builder_reference") card.classList.add("snapshot-reference-card");
+        if (node.kind === "effect_ring") card.classList.add("parameterized-instance-card");
         if (!renderCardParamsInline) card.classList.add("compact-card");
         card.dataset.id = node.id;
         const scopeId = ownerNode ? ownerNode.id : null;
@@ -2998,9 +3015,11 @@ export function initCardSystem(ctx = {}) {
 
         const badge = document.createElement("div");
         badge.className = "badge2";
-        badge.textContent = node.kind;
+        badge.textContent = node.kind === "builder_reference"
+            ? (node.params?.instanceMode === "construct" ? "构造实例" : "静态实例")
+            : (node.kind === "effect_ring" ? "参数化实例" : node.kind);
 
-        if (!renderCardParamsInline && isBuilderContainerKind(node.kind)) {
+        if (!renderCardParamsInline && canContainChildren(node)) {
             const treeCollapsed = node.treeCollapsed === true;
             const treeToggleBtn = iconBtn("", (e) => {
                 e.stopPropagation();
@@ -3068,7 +3087,7 @@ export function initCardSystem(ctx = {}) {
             actions.appendChild(collapseBtn);
 
             const addBtn = iconBtn("＋", () => {
-                if (isBuilderContainerKind(node.kind)) {
+                if (canContainChildren(node)) {
                     const options = node.kind === "apply_bezier_distribution"
                         ? { allowedKinds: ["add_builder", "add_with", "clear_as_mask", "apply_bezier_distribution"] }
                         : undefined;
@@ -3291,7 +3310,7 @@ export function initCardSystem(ctx = {}) {
             if (e.target && e.target.isContentEditable) return;
             if (e.target && e.target.closest && e.target.closest(".card-actions")) return;
             setFocusedNode(node.id);
-            if (isBuilderContainerKind(node.kind)) {
+            if (canContainChildren(node)) {
                 historyCapture("toggle_tree_collapse");
                 node.treeCollapsed = node.treeCollapsed !== true;
                 renderAll();
@@ -3369,7 +3388,7 @@ export function initCardSystem(ctx = {}) {
         wrap.className = `pb-tree-node depth-${Math.min(6, Math.max(0, depth | 0))}`;
         wrap.appendChild(renderNodeCard(node, siblings, idx, ownerLabel, ownerNode));
 
-        if (node && isBuilderContainerKind(node.kind)) {
+        if (canContainChildren(node)) {
             if (!Array.isArray(node.children)) node.children = [];
             const childrenVisible = renderCardParamsInline ? !node.collapsed : node.treeCollapsed !== true;
             const children = document.createElement("div");
@@ -3514,6 +3533,76 @@ export function initCardSystem(ctx = {}) {
         const opts = options || {};
         if (typeof setTipKind === "function") setTipKind(node.kind);
         switch (node.kind) {
+            case "builder_reference":
+                const instanceIdInput = document.createElement("input");
+                instanceIdInput.type = "text";
+                instanceIdInput.className = "input builder-reference-id-input";
+                instanceIdInput.value = String(p.snapshotId || "");
+                instanceIdInput.readOnly = true;
+                instanceIdInput.spellcheck = false;
+                instanceIdInput.autocomplete = "off";
+                instanceIdInput.setAttribute("data-tip", "实例 ID 通过下方“重构”修改。");
+                const instanceIdRow = row("实例 ID", instanceIdInput);
+                instanceIdRow.classList.add("builder-reference-id-row");
+                body.appendChild(instanceIdRow);
+
+                const bindingLabels = {
+                    registered: "注册式",
+                    indexed: "索引式",
+                    linked: "联动式"
+                };
+                const bindingTips = {
+                    registered: "注册式：目标 ID 不存在时注册当前原型，存在时引用已有原型。",
+                    indexed: "索引式：当前卡片使用独立原型，编辑不会同步其他卡片。",
+                    linked: "联动式：原型改名会同步所有相同 ID 的实例引用。"
+                };
+                const bindingMode = ["registered", "indexed", "linked"].includes(p.instanceBindingMode)
+                    ? p.instanceBindingMode
+                    : "registered";
+                const toolbar = document.createElement("div");
+                toolbar.className = "builder-reference-toolbar";
+                const status = document.createElement("span");
+                status.className = "builder-reference-status pb-tooltip-anchor";
+                status.textContent = `${p.instanceMode === "construct" ? "构造实例" : "静态实例"} · ${bindingLabels[bindingMode]}`;
+                status.setAttribute("data-tip", `${bindingTips[bindingMode]} 实例类型可通过右键菜单转换。`);
+                const reconstruct = document.createElement("button");
+                reconstruct.type = "button";
+                reconstruct.className = "btn small builder-reference-reconstruct-btn";
+                reconstruct.textContent = "重构";
+                reconstruct.addEventListener("click", () => {
+                    if (typeof ctx.reconstructBuilderReference === "function") ctx.reconstructBuilderReference(node);
+                });
+                toolbar.append(status, reconstruct);
+                body.appendChild(toolbar);
+
+                const offsetRow = row("Offset", makeVec3Editor(p, "o", rebuildPreviewAndKotlin, "offset"));
+                offsetRow.classList.add("builder-reference-transform-row", "builder-reference-offset-row");
+                body.appendChild(offsetRow);
+                const scaleRow = row("Scale", inputNum(p.scale ?? 1, value => {
+                    p.scale = value;
+                    rebuildPreviewAndKotlin();
+                }));
+                scaleRow.classList.add("builder-reference-transform-row", "builder-reference-scale-row");
+                body.appendChild(scaleRow);
+                const rotationRow = row("Rotation", angleInput(p, "rotationDeg", rebuildPreviewAndKotlin));
+                rotationRow.classList.add("builder-reference-transform-row", "builder-reference-rotation-row");
+                body.appendChild(rotationRow);
+                const axisDraft = {
+                    x: p.rotationAxisX,
+                    y: p.rotationAxisY,
+                    z: p.rotationAxisZ
+                };
+                const axisRow = row("Rotation Axis", makeVec3Editor(axisDraft, "", () => {
+                    p.rotationAxisX = axisDraft.x;
+                    p.rotationAxisY = axisDraft.y;
+                    p.rotationAxisZ = axisDraft.z;
+                    rebuildPreviewAndKotlin();
+                }, "axis"));
+                axisRow.classList.add("builder-reference-transform-row", "builder-reference-axis-row");
+                body.appendChild(axisRow);
+                renderBuilderReferenceVariables(body, node);
+                break;
+
             case "axis":
                 body.appendChild(row("axis", makeVec3Editor(p, "", rebuildPreviewAndKotlin, "axis")));
                 break;

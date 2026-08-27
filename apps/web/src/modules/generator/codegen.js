@@ -1,9 +1,13 @@
 import { curveToKotlin, sampleLifecycleCurve } from './curves.js';
 import {
-  CPARTICLE_COMMAND_TYPE_IDS,
   TEXTURE_SHEET_OPTIONS,
   normalizeGeneratorProject
 } from './defaults.js';
+import {
+  collectCParticleForceErrors,
+  kotlinConstantName,
+  parseMinecraftResourceLocation
+} from './cparticle-forces.js';
 import {
   collectGeneratorValueEntries,
   createGeneratorBindingResolver,
@@ -15,9 +19,7 @@ import {
   analyzeGeneratorExpression,
   generatorExpressionToKotlin
 } from './expression-runtime.js';
-import { generatePointsBuilderKotlin } from '../pointsbuilder/codegen.js';
-
-const CPARTICLE_MAX_FORCES = 16;
+import { generatePointsBuilderKotlin, generatePointsBuilderKotlinParts } from '../pointsbuilder/codegen.js';
 
 function safeIdent(raw, fallback = 'GeneratedEmitter') {
   const text = String(raw || '').trim().replace(/[^A-Za-z0-9_]/g, '_');
@@ -46,7 +48,11 @@ function fmtD(value, fallback = 0) {
 }
 
 function fmtF(value, fallback = 0) {
-  return `${fmtD(value, fallback)}f`;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return `${fmtD(fallback)}F`;
+  if (numeric === 0) return '0F';
+  if (Math.trunc(numeric) === numeric) return `${numeric}F`;
+  return `${Number(numeric.toFixed(6)).toString()}F`;
 }
 
 function fmtI(value, fallback = 0) {
@@ -243,7 +249,7 @@ function vector3fExprFromHex(hex) {
 function colorVectorBindingExpr(binding) {
   if (binding.value?.type === 'Vector3f') {
     const source = binding.expression ? `(${binding.name})` : binding.name;
-    return `Vector3f(${source}.x.coerceIn(0f, 1f), ${source}.y.coerceIn(0f, 1f), ${source}.z.coerceIn(0f, 1f))`;
+    return `Vector3f(${source}.x.coerceIn(0F, 1F), ${source}.y.coerceIn(0F, 1F), ${source}.z.coerceIn(0F, 1F))`;
   }
   return '';
 }
@@ -281,12 +287,28 @@ function colorCurveEnabled(card) {
   return colorGradientEnabled(card) && curveEnabled(card?.curves?.color);
 }
 
+function colorLifecycleEnabled(card) {
+  return colorGradientEnabled(card);
+}
+
+function colorProgressCurve(card) {
+  if (colorCurveEnabled(card)) return card.curves.color;
+  return {
+    mode: 'linear',
+    defaultValue: 0,
+    keyframes: [
+      { time: 0, value: 0 },
+      { time: 100, value: 1 }
+    ]
+  };
+}
+
 function usesDataColorCurve(card) {
   return card?.useGPU === true
     && card?.externalData === true
     && card?.externalTemplate === true
     && card?.gpu?.useDataColorCurve === true
-    && colorCurveEnabled(card);
+    && colorLifecycleEnabled(card);
 }
 
 function clampUnit(value) {
@@ -361,7 +383,7 @@ function prepareCParticleColorFrames(curve) {
 }
 
 function cparticleColorCurveExpr(bindingResolver, card, dataVar = '') {
-  const curve = card.curves.color;
+  const curve = colorProgressCurve(card);
   const frames = prepareCParticleColorFrames(curve);
   if (curve?.mode === 'bezier') {
     const keys = frames.map((frame) => {
@@ -391,7 +413,62 @@ function cparticleColorCurveExpr(bindingResolver, card, dataVar = '') {
   return `CParticleColorCurve.of(${keys.join(', ')})`;
 }
 
-function emitEmitterPointBuilder(bindingResolver, card, dataVar) {
+function emitPointsBuilderExpressionParts(parts) {
+  const expression = parts?.expression || 'PointsBuilder()';
+  const localDeclarations = Array.isArray(parts?.localDeclarations) ? parts.localDeclarations : [];
+  if (!localDeclarations.length) return expression;
+  return [
+    'run {',
+    ...localDeclarations.map((line) => indent(line, 4)),
+    indent(expression, 4),
+    '}'
+  ].join('\n');
+}
+
+function createPointsBuilderCoercer(bindingResolver) {
+  const externalValues = collectGeneratorValueEntries(bindingResolver.parameters).map(({ value }) => value);
+  const externalIntNames = new Set(externalValues
+    .filter((value) => value.type === 'Int')
+    .map((value) => value.name));
+  return (value) => {
+    const source = String(value ?? '').trim();
+    const identifiers = source.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+    if (!identifiers.some((name) => externalIntNames.has(name))) return value;
+    const analysis = analyzeGeneratorExpression(source, externalValues, { expectedTypes: 'Double' });
+    if (!analysis.valid) return value;
+    return analysis.type === 'Int'
+      ? `(${analysis.kotlin}).toDouble()`
+      : analysis.kotlin;
+  };
+}
+
+function parseStaticVectorValue(value) {
+  if (value && typeof value === 'object') {
+    const x = Number(value.x);
+    const y = Number(value.y);
+    const z = Number(value.z);
+    if ([x, y, z].every(Number.isFinite)) return { x, y, z };
+  }
+  const match = String(value || '').trim().match(/^[A-Za-z0-9_]+\s*\(([^)]+)\)$/);
+  if (!match) return undefined;
+  const parts = match[1].split(',').slice(0, 3).map((part) => Number(part.trim().replace(/[fFdDlL]$/g, '')));
+  return parts.length === 3 && parts.every(Number.isFinite)
+    ? { x: parts[0], y: parts[1], z: parts[2] }
+    : undefined;
+}
+
+function createPointsBuilderStaticReferenceResolver(parameters) {
+  const values = new Map(collectGeneratorValueEntries(parameters).map(({ value }) => [value.name, value]));
+  return (type, name) => {
+    const value = values.get(String(name || '').trim());
+    if (!value) return undefined;
+    if (type === 'vector') return parseStaticVectorValue(value.value);
+    const numeric = Number(String(value.value ?? '').replace(/[fFdDlL]$/g, ''));
+    return Number.isFinite(numeric) ? numeric : undefined;
+  };
+}
+
+function emitEmitterPointBuilder(bindingResolver, card, dataVar, preparedParts = null) {
   const type = card.emitter.type;
   const offset = card.emitter.offset;
   const offsetComponent = (component) => relativeComponentExpr(
@@ -408,25 +485,13 @@ function emitEmitterPointBuilder(bindingResolver, card, dataVar) {
     return lines.join('\n');
   }
   if (type === 'points_builder') {
-    const externalValues = collectGeneratorValueEntries(bindingResolver.parameters).map(({ value }) => value);
-    const externalIntNames = new Set(externalValues
-      .filter((value) => value.type === 'Int')
-      .map((value) => value.name));
-    const builderExpr = generatePointsBuilderKotlin({
+    const parts = preparedParts || generatePointsBuilderKotlinParts({
       ...(card.emitter.builderState || {}),
       kotlinEndMode: 'builder'
     }, {
-      coerceDoubleExpression(value) {
-        const source = String(value ?? '').trim();
-        const identifiers = source.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
-        if (!identifiers.some((name) => externalIntNames.has(name))) return value;
-        const analysis = analyzeGeneratorExpression(source, externalValues, { expectedTypes: 'Double' });
-        if (!analysis.valid) return value;
-        return analysis.type === 'Int'
-          ? `(${analysis.kotlin}).toDouble()`
-          : analysis.kotlin;
-      }
-    })
+      coerceDoubleExpression: createPointsBuilderCoercer(bindingResolver)
+    });
+    const builderExpr = emitPointsBuilderExpressionParts(parts)
       .split('\n')
       .map((line) => line.trimEnd())
       .filter((line) => line.trim());
@@ -572,8 +637,8 @@ function emitCurveDeclarations(bindingResolver, card, index) {
   if (card.render.billboardMode === 'none' && !card.curves.rotation.syncAxes && curveEnabled(card.curves.rotation.pitch)) {
     lines.push(`private val ${prefix}Pitch = ${curveToKotlin(card.curves.rotation.pitch, 0)}`);
   }
-  if (colorCurveEnabled(card)) {
-    lines.push(`private val ${prefix}ColorProgress = ${curveToKotlin(card.curves.color, 0)}`);
+  if (colorLifecycleEnabled(card)) {
+    lines.push(`private val ${prefix}ColorProgress = ${curveToKotlin(colorProgressCurve(card), 0)}`);
   }
   return lines.join('\n');
 }
@@ -713,65 +778,162 @@ function resolveGlobalGravity(project) {
   return null;
 }
 
-function enabledGpuCommands(project) {
-  return (Array.isArray(project?.gpuCommands) ? project.gpuCommands : [])
+function enabledForceCommands(project) {
+  return (Array.isArray(project?.forceCommands) ? project.forceCommands : [])
     .filter((command) => command?.enabled !== false);
 }
 
-function cparticleForceToKotlin(command, vec3Type = 'Vec3') {
-  const params = command.params || {};
-  const p = (key, fallback = 0) => params[key] ?? fallback;
-  const lambdaVec3 = (prefix) => `{ ${vec3Params(params, prefix, vec3Type)} }`;
-
-  if (command.type === 'drag') {
-    return `CParticleForce.ExpDrag(damping = ${fmtD(p('damping', 0.15))}, minSpeed = ${fmtD(p('minSpeed'))}, linear = ${fmtD(p('linear'))})`;
+function cparticleConstantMaps(project) {
+  const signRefs = new Set();
+  const commandMaskRefs = new Set();
+  for (const card of project.emitters || []) {
+    if (card?.enabled === false || !card?.useGPU) continue;
+    if (card.gpu?.signRef) signRefs.add(card.gpu.signRef);
+    for (const ref of card.gpu?.commandMaskRefs || []) commandMaskRefs.add(ref);
   }
-  if (command.type === 'gravity') {
-    return `CParticleForce.Gravity(${fmtD(p('gravity', 0.04))})`;
+  for (const command of enabledForceCommands(project)) {
+    const selector = command.selector || {};
+    if ((selector.type === 'SignEquals' || selector.type === 'SignMask') && selector.signRef) {
+      signRefs.add(selector.signRef);
+    }
+    if (selector.type === 'CommandMask') {
+      for (const ref of selector.commandMaskRefs || []) commandMaskRefs.add(ref);
+    }
   }
-  if (command.type === 'attraction') {
-    return `CParticleForce.Attraction(target = ${lambdaVec3('target')}, strength = ${fmtD(p('strength', 0.8))}, range = ${fmtD(p('range', 8))}, falloffPower = ${fmtD(p('falloffPower', 2))}, minDistance = ${fmtD(p('minDistance', 0.25))})`;
-  }
-  if (command.type === 'noise') {
-    return `CParticleForce.Noise(strength = ${fmtD(p('strength', 0.03))}, frequency = ${fmtD(p('frequency', 0.15))}, speed = ${fmtD(p('speed', 0.12))}, clampSpeed = ${fmtD(p('clampSpeed', 0.8))}, affectY = ${fmtD(p('affectY', 1))}, useLifeCurve = ${fmtBool(params.useLifeCurve !== false)})`;
-  }
-  if (command.type === 'flow_field') {
-    return `CParticleForce.FlowField(amplitude = ${fmtD(p('amplitude', 0.15))}, frequency = ${fmtD(p('frequency', 0.25))}, timeScale = ${fmtD(p('timeScale', 0.06))}, phaseOffset = ${fmtD(p('phaseOffset'))}, worldOffset = ${vec3Params(params, 'worldOffset', vec3Type)})`;
-  }
-  if (command.type === 'vortex') {
-    return `CParticleForce.Vortex(center = ${lambdaVec3('center')}, axis = ${vec3Params(params, 'axis', vec3Type)}, swirlStrength = ${fmtD(p('swirlStrength', 0.8))}, radialPull = ${fmtD(p('radialPull', 0.35))}, axialLift = ${fmtD(p('axialLift'))}, range = ${fmtD(p('range', 10))}, falloffPower = ${fmtD(p('falloffPower', 2))}, minDistance = ${fmtD(p('minDistance', 0.2))})`;
-  }
-  if (command.type === 'rotation_force') {
-    return `CParticleForce.RotationForce(center = ${lambdaVec3('center')}, axis = ${vec3Params(params, 'axis', vec3Type)}, strength = ${fmtD(p('strength', 0.35))}, range = ${fmtD(p('range', 8))}, falloffPower = ${fmtD(p('falloffPower', 2))})`;
-  }
-  if (command.type === 'velocity_add') {
-    return `CParticleForce.Gravity(${vec3Params(params, 'delta', vec3Type)})`;
-  }
-  return '';
+  return {
+    signs: new Map((project.signs || []).filter((item) => signRefs.has(item.id)).map((item) => [
+      item.id,
+      { ...item, constant: kotlinConstantName('SIGN', item.name) }
+    ])),
+    commandMasks: new Map((project.commandMasks || []).filter((item) => commandMaskRefs.has(item.id)).map((item) => [
+      item.id,
+      { ...item, constant: kotlinConstantName('COMMAND_MASK', item.name) }
+    ]))
+  };
 }
 
-function emitCParticleForces(project, vec3Type) {
-  const forces = enabledGpuCommands(project)
-    .map((command) => cparticleForceToKotlin(command, vec3Type))
-    .filter(Boolean);
-  if (!forces.length) return 'override fun cparticleForces(): List<CParticleForce> = emptyList()';
+function commandMaskLiteral(value) {
+  const signed = Math.trunc(Number(value));
+  const unsigned = BigInt.asUintN(32, BigInt(signed));
+  if (unsigned > 0n && (unsigned & (unsigned - 1n)) === 0n) {
+    let bit = 0;
+    let cursor = unsigned;
+    while (cursor > 1n) {
+      cursor >>= 1n;
+      bit += 1;
+    }
+    return `1 shl ${bit}`;
+  }
+  return String(signed);
+}
+
+function emitCParticleConstants(project, constantMaps, extraConstants = []) {
+  const lines = [];
+  for (const item of constantMaps.signs.values()) {
+    lines.push(`private const val ${item.constant} = ${fmtI(item.value)}`);
+  }
+  for (const item of constantMaps.commandMasks.values()) {
+    lines.push(`private const val ${item.constant} = ${commandMaskLiteral(item.value)}`);
+  }
+  lines.push(...extraConstants);
+  if (!lines.length) return '';
   return [
-    'override fun cparticleForces(): List<CParticleForce> = listOf(',
-    ...forces.map((force, index) => `    ${force}${index === forces.length - 1 ? '' : ','}`),
-    ')'
+    'private companion object {',
+    ...lines.map((line) => `    ${line}`),
+    '}'
   ].join('\n');
 }
 
-export function collectCParticleCompatibilityErrors(rawProject) {
-  const project = normalizeGeneratorProject(rawProject);
-  const commands = enabledGpuCommands(project);
-  const errors = commands
-    .filter((command) => !CPARTICLE_COMMAND_TYPE_IDS.includes(command.type))
-    .map((command) => `GPU Commands 不支持命令“${command.type}”。`);
-  if (commands.length > CPARTICLE_MAX_FORCES) {
-    errors.unshift(`GPU Commands 最多支持 ${CPARTICLE_MAX_FORCES} 个命令，当前为 ${commands.length} 个。`);
+function forceVec3(params, prefix, vec3Type) {
+  return `${vec3Type}(${fmtD(params[`${prefix}X`])}, ${fmtD(params[`${prefix}Y`])}, ${fmtD(params[`${prefix}Z`])})`;
+}
+
+function dynamicForceVec3(params, prefix, vec3Type) {
+  const expression = String(params[`${prefix}Expression`] || '').trim();
+  return expression || forceVec3(params, prefix, vec3Type);
+}
+
+function cparticleFalloffToKotlin(params, vec3Type, includeAxis = true) {
+  const maxDistance = params.maxDistance === null || params.maxDistance === ''
+    ? 'Double.POSITIVE_INFINITY'
+    : fmtD(params.maxDistance);
+  const axis = includeAxis ? `, axis = ${forceVec3(params, 'falloffAxis', vec3Type)}` : '';
+  return `CParticleFalloff(minDistance = ${fmtD(params.minDistance)}, maxDistance = ${maxDistance}, power = ${fmtD(params.power, 2)}, shape = CParticleFalloffShape.${params.shape}, zDirection = CParticleZDirection.${params.zDirection}${axis})`;
+}
+
+function forceResourceToKotlin(project, resourceRef, kind, target) {
+  const resource = (project.forceResources || []).find((item) => item.id === resourceRef);
+  const parsed = parseMinecraftResourceLocation(resource?.location);
+  if (!parsed) return '';
+  const location = target.resourceLocationFactory(parsed.namespace, parsed.path);
+  return kind === 'fluid'
+    ? `CParticleFluidResource(${location})`
+    : `CParticleTextureResource(${location})`;
+}
+
+function cparticleForceToKotlin(project, command, target) {
+  const type = command.force?.type;
+  const params = command.force?.parameters || {};
+  const p = (key, fallback = 0) => params[key] ?? fallback;
+  const falloff = (includeAxis = true) => cparticleFalloffToKotlin(params, target.vec3Type, includeAxis);
+  const vec = (prefix) => forceVec3(params, prefix, target.vec3Type);
+  const dynamic = (prefix) => dynamicForceVec3(params, prefix, target.vec3Type);
+
+  if (type === 'Gravity') return `CParticleForce.Gravity(accel = ${vec('accel')})`;
+  if (type === 'EnvDrag') return `CParticleForce.EnvDrag(airDensity = ${fmtD(p('airDensity', 1.225))})`;
+  if (type === 'ExpDrag') return `CParticleForce.ExpDrag(damping = ${fmtD(p('damping', 0.15))}, minSpeed = ${fmtD(p('minSpeed'))}, linear = ${fmtD(p('linear'))})`;
+  if (type === 'Wind') return `CParticleForce.Wind(wind = { ${dynamic('wind')} }, airDensity = ${fmtD(p('airDensity', 1.225))}, rangeMode = ${fmtI(p('rangeMode'))}, rangeCenter = { ${dynamic('rangeCenter')} }, rangeSize = ${vec('rangeSize')})`;
+  if (type === 'Vortex') return `CParticleForce.Vortex(center = { ${dynamic('center')} }, axis = ${vec('axis')}, swirlStrength = ${fmtD(p('swirlStrength', 0.8))}, radialPull = ${fmtD(p('radialPull', 0.35))}, axialLift = ${fmtD(p('axialLift'))}, range = ${fmtD(p('range', 10))}, falloffPower = ${fmtD(p('falloffPower', 2))}, minDistance = ${fmtD(p('minDistance', 0.2))})`;
+  if (type === 'Attraction') return `CParticleForce.Attraction(target = { ${dynamic('target')} }, strength = ${fmtD(p('strength', 0.8))}, range = ${fmtD(p('range', 8))}, falloffPower = ${fmtD(p('falloffPower', 2))}, minDistance = ${fmtD(p('minDistance', 0.25))})`;
+  if (type === 'RotationForce') return `CParticleForce.RotationForce(center = { ${dynamic('center')} }, axis = ${vec('axis')}, strength = ${fmtD(p('strength', 0.35))}, range = ${fmtD(p('range', 8))}, falloffPower = ${fmtD(p('falloffPower', 2))})`;
+  if (type === 'Noise') return `CParticleForce.Noise(strength = ${fmtD(p('strength', 0.1))}, frequency = ${fmtD(p('frequency', 0.35))}, speed = ${fmtD(p('speed', 0.02))}, clampSpeed = ${fmtD(p('clampSpeed', 2))}, affectY = ${fmtD(p('affectY', 1))}, useLifeCurve = ${fmtBool(params.useLifeCurve === true)}, seedOffset = ${fmtI(p('seedOffset'))})`;
+  if (type === 'FlowField') return `CParticleForce.FlowField(amplitude = ${fmtD(p('amplitude', 0.15))}, frequency = ${fmtD(p('frequency', 0.25))}, timeScale = ${fmtD(p('timeScale', 0.06))}, phaseOffset = ${fmtD(p('phaseOffset'))}, worldOffset = ${vec('worldOffset')})`;
+  if (type === 'Radial') return `CParticleForce.Radial(center = ${vec('center')}, strength = ${fmtD(p('strength', 1))}, falloff = ${falloff()}, inverseSquare = ${fmtBool(params.inverseSquare === true)})`;
+  if (type === 'DirectionalWind') return `CParticleForce.DirectionalWind(axis = ${vec('axis')}, strength = ${fmtD(p('strength', 1))}, falloff = ${falloff(false)}, center = ${vec('center')})`;
+  if (type === 'BlenderVortex') return `CParticleForce.BlenderVortex(center = ${vec('center')}, axis = ${vec('axis')}, tangentialStrength = ${fmtD(p('tangentialStrength', 1))}, radialStrength = ${fmtD(p('radialStrength'))}, velocityCompensation = ${fmtD(p('velocityCompensation'))}, falloff = ${falloff(false)})`;
+  if (type === 'Magnetic') return `CParticleForce.Magnetic(center = ${vec('center')}, axis = ${vec('axis')}, strength = ${fmtD(p('strength', 1))}, fieldMode = CParticleMagneticFieldMode.${p('fieldMode', 'LINE')}, falloff = ${falloff(false)})`;
+  if (type === 'Harmonic') return `CParticleForce.Harmonic(center = ${vec('center')}, stiffness = ${fmtD(p('stiffness', 1))}, damping = ${fmtD(p('damping'))}, restLength = ${fmtD(p('restLength'))}, falloff = ${falloff()})`;
+  if (type === 'VelocityDrag') return `CParticleForce.VelocityDrag(strength = ${fmtD(p('strength'))}, damping = ${fmtD(p('damping'))}, exact = ${fmtBool(params.exact !== false)}, falloff = ${falloff()})`;
+  if (type === 'Charge') return `CParticleForce.Charge(center = ${vec('center')}, strength = ${fmtD(p('strength', 1))}, defaultCharge = ${fmtD(p('defaultCharge'))}, falloff = ${falloff()})`;
+  if (type === 'LennardJones') return `CParticleForce.LennardJones(center = ${vec('center')}, strength = ${fmtD(p('strength', 1))}, sourceRadius = ${fmtD(p('sourceRadius'))}, falloff = ${falloff()})`;
+  if (type === 'Turbulence') return `CParticleForce.Turbulence(strength = ${fmtD(p('strength', 0.1))}, size = ${fmtD(p('size', 1))}, seed = ${fmtI(p('seed'))}, timeScale = ${fmtD(p('timeScale'))}, falloff = ${falloff()})`;
+  if (type === 'Texture') return `CParticleForce.Texture(resource = ${forceResourceToKotlin(project, params.resourceRef, 'texture', target)}, strength = ${fmtD(p('strength', 1))}, mode = CParticleTextureForceMode.${params.mode}, nabla = ${fmtD(p('nabla', 0.01))}, falloff = ${falloff()})`;
+  if (type === 'FluidFlow') return `CParticleForce.FluidFlow(resource = ${forceResourceToKotlin(project, params.resourceRef, 'fluid', target)}, strength = ${fmtD(p('strength', 1))}, useDensity = ${fmtBool(params.useDensity === true)}, flowDrag = ${fmtD(p('flowDrag'))}, falloff = ${falloff()})`;
+  return '';
+}
+
+function commandMaskExpression(refs, constantMaps) {
+  return (refs || [])
+    .map((ref) => constantMaps.commandMasks.get(ref)?.constant)
+    .filter(Boolean)
+    .join(' or ') || '0';
+}
+
+function cparticleSelectorToKotlin(selector, constantMaps) {
+  if (!selector || selector.type === 'All') return '';
+  if (selector.type === 'SourceEquals') return `CParticleSelector.SourceEquals(${fmtI(selector.sourceId)})`;
+  if (selector.type === 'SourceMask') return `CParticleSelector.SourceMask(${fmtI(selector.sourceId)}, ${fmtI(selector.sourceMask, -1)})`;
+  if (selector.type === 'SignEquals') return `CParticleSelector.SignEquals(${constantMaps.signs.get(selector.signRef)?.constant || '0'})`;
+  if (selector.type === 'SignMask') return `CParticleSelector.SignMask(${constantMaps.signs.get(selector.signRef)?.constant || '0'}, ${fmtI(selector.signMask, -1)})`;
+  if (selector.type === 'CommandMask') return `CParticleSelector.CommandMask(${commandMaskExpression(selector.commandMaskRefs, constantMaps)})`;
+  return '';
+}
+
+function emitCParticleForceCommands(project, target, constantMaps) {
+  const commands = enabledForceCommands(project);
+  if (!commands.length) return '';
+  const lines = ['override fun submitCParticleForces(sink: CParticleForceSink) {'];
+  for (const command of commands) {
+    const force = cparticleForceToKotlin(project, command, target);
+    const selector = cparticleSelectorToKotlin(command.selector, constantMaps);
+    lines.push(`    sink.submit(${force}${selector ? `, ${selector}` : ''})`);
   }
-  return errors;
+  lines.push('}');
+  return lines.join('\n');
+}
+
+export function collectCParticleCompatibilityErrors(rawProject) {
+  return collectCParticleForceErrors(normalizeGeneratorProject(rawProject));
 }
 
 function emitExpressionHelpers(project) {
@@ -1110,13 +1272,13 @@ function emitterDataAssignments(bindingResolver, card) {
   return lines;
 }
 
-function emitterTemplateAssignments(bindingResolver, card, dataVar, target, curvePrefix) {
+function emitterTemplateAssignments(bindingResolver, card, dataVar, target, curvePrefix, constantMaps) {
   const lines = [];
   const initialOpacity = curveEnabled(card.curves.opacity)
     ? sampleLifecycleCurve(card.curves.opacity, 0)
     : 100;
-  const initialColorProgress = colorCurveEnabled(card)
-    ? clampUnit(sampleLifecycleCurve(card.curves.color, 0))
+  const initialColorProgress = colorLifecycleEnabled(card)
+    ? clampUnit(sampleLifecycleCurve(colorProgressCurve(card), 0))
     : 0;
   const hasAlphaBinding = Boolean(resolveBindingRef(bindingResolver, card, 'render.alpha', 'Double'));
   lines.push(`velocity = ${vectorExpr(bindingResolver, card, 'particle.velocity', card.particle.velocity, target.vec3Type)}`);
@@ -1127,8 +1289,8 @@ function emitterTemplateAssignments(bindingResolver, card, dataVar, target, curv
     : floatExpr(bindingResolver, card, 'render.baseScale.x', card.render.baseScale.x)}`);
   lines.push(`visibleRange = ${floatExpr(bindingResolver, card, 'particle.visibleRange', card.particle.visibleRange)}`);
   lines.push(card.useGPU
-    ? colorCurveEnabled(card)
-      ? 'color = Vector3f(1f)'
+    ? colorLifecycleEnabled(card)
+      ? 'color = Vector3f(1F)'
       : `color = ${colorExpr(bindingResolver, card, 'particle.colorStart', card.particle.colorStart)}`
     : `color = ${dataVar}.getInterpolatedColor(${fmtD(initialColorProgress)})`);
   if (card.useGPU) {
@@ -1150,7 +1312,16 @@ function emitterTemplateAssignments(bindingResolver, card, dataVar, target, curv
     lines.push(`pitch = (${numberExpr(bindingResolver, card, 'render.pitch', card.render.pitch)} * PI / 180.0).toFloat()`);
   }
   lines.push(`speedLimit = ${numberExpr(bindingResolver, card, 'render.speedLimit', card.render.speedLimit)}`);
-  lines.push(`sign = ${intExpr(bindingResolver, card, 'render.sign', card.render.sign)}`);
+  if (card.useGPU) {
+    const signConstant = constantMaps.signs.get(card.gpu.signRef)?.constant;
+    if (signConstant) lines.push(`sign = ${signConstant}`);
+    lines.push(`commandMask = ${commandMaskExpression(card.gpu.commandMaskRefs, constantMaps)}`);
+    lines.push(`metadataFlags = ${fmtI(card.gpu.metadataFlags)}`);
+    lines.push(`charge = ${card.gpu.charge === null ? 'Float.NaN' : fmtF(card.gpu.charge)}`);
+    lines.push(`radius = ${fmtF(card.gpu.radius)}`);
+  } else {
+    lines.push(`sign = ${intExpr(bindingResolver, card, 'render.sign', card.render.sign)}`);
+  }
   lines.push(`effect = ${safeKotlinReference(card.render.effectClass, 'ControlableEndRodEffect')}(uuid)`);
   if (card.useGPU) {
     lines.push(`updateMode = CParticleUpdateMode.${card.gpu.updateMode === 'dynamic' ? 'DYNAMIC' : 'STATIC'}`);
@@ -1170,7 +1341,7 @@ function emitterTemplateAssignments(bindingResolver, card, dataVar, target, curv
         lines.push(`scaleYCurve = CParticleCurve.fromFloatCurve(${curvePrefix}SizeY)`);
       }
     }
-    if (colorCurveEnabled(card) && !usesDataColorCurve(card)) {
+    if (colorLifecycleEnabled(card) && !usesDataColorCurve(card)) {
       lines.push(`colorCurve = ${cparticleColorCurveExpr(bindingResolver, card)}`);
     }
     if (card.gpu.randomSeed !== null) lines.push(`randomSeed = ${fmtI(card.gpu.randomSeed)}`);
@@ -1182,7 +1353,7 @@ function emitterTemplateType(card) {
   return card.useGPU ? 'ControlableCParticleData' : 'ControlableParticleData';
 }
 
-function emitEmitterParameterDeclarations(bindingResolver, variablePlan, target, section = 'all') {
+function emitEmitterParameterDeclarations(bindingResolver, variablePlan, target, constantMaps, section = 'all') {
   const lines = [];
   const declaredData = new Set();
   if (section !== 'templates') {
@@ -1209,7 +1380,7 @@ function emitEmitterParameterDeclarations(bindingResolver, variablePlan, target,
       if (!card.externalTemplate || declaredTemplates.has(template)) return;
       lines.push('@CodecField');
       lines.push(`var ${template} = ${emitterTemplateType(card)}().apply {`);
-      emitterTemplateAssignments(bindingResolver, card, data, target, `emitter${index + 1}`)
+      emitterTemplateAssignments(bindingResolver, card, data, target, `emitter${index + 1}`, constantMaps)
         .map(classInitializerExpression)
         .forEach((line) => lines.push(`    ${line}`));
       lines.push('}');
@@ -1232,7 +1403,7 @@ function hasVelocityJitter(bindingResolver, card) {
   ));
 }
 
-function emitEmitterBlock(bindingResolver, card, index, target, variables, singleEmissionTick = undefined) {
+function emitEmitterBlock(bindingResolver, card, index, target, variables, constantMaps, singleEmissionTick = undefined, pointsBuilderParts = null) {
   const n = index + 1;
   const templateVar = variables.template;
   const dataVar = variables.data;
@@ -1246,11 +1417,11 @@ function emitEmitterBlock(bindingResolver, card, index, target, variables, singl
   }
   if (!card.externalTemplate) {
     lines.push(`    val ${templateVar} = ${emitterTemplateType(card)}().apply {`);
-    emitterTemplateAssignments(bindingResolver, card, dataVar, target, `emitter${n}`).forEach((line) => lines.push(`        ${line}`));
+    emitterTemplateAssignments(bindingResolver, card, dataVar, target, `emitter${n}`, constantMaps).forEach((line) => lines.push(`        ${line}`));
     lines.push('    }');
   }
   lines.push('    res.addAll(');
-  lines.push(indent(emitEmitterPointBuilder(bindingResolver, card, dataVar), 8));
+  lines.push(indent(emitEmitterPointBuilder(bindingResolver, card, dataVar, pointsBuilderParts), 8));
   lines.push('            .createWithoutClone()');
   lines.push('            .map { rel ->');
   lines.push(`                val speed = ${dataVar}.getRandomSpeed()`);
@@ -1298,16 +1469,16 @@ function emitEmitterBlock(bindingResolver, card, index, target, variables, singl
       lines.push(`                    this.alpha = (${alphaExpr} * ${fmtD(initialOpacity)} / 10000.0).toFloat()`);
     }
   }
-  const initialColorProgress = colorCurveEnabled(card)
-    ? clampUnit(sampleLifecycleCurve(card.curves.color, 0))
+  const initialColorProgress = colorLifecycleEnabled(card)
+    ? clampUnit(sampleLifecycleCurve(colorProgressCurve(card), 0))
     : 0;
   lines.push(`                    this.color = ${card.useGPU
-    ? colorCurveEnabled(card)
-      ? 'Vector3f(1f)'
+    ? colorLifecycleEnabled(card)
+      ? 'Vector3f(1F)'
       : colorExpr(bindingResolver, card, 'particle.colorStart', card.particle.colorStart)
-    : colorCurveEnabled(card)
+    : colorLifecycleEnabled(card)
       ? `${dataVar}.getInterpolatedColor(${fmtD(initialColorProgress)})`
-      : `${dataVar}.getRandomColor()`}`);
+      : `${dataVar}.getInterpolatedColor(0.0)`}`);
   if (usesIndependentScale(card)) {
     lines.push('                    uniformSize = false');
     lines.push(`                    weightSize = particleSize * ${templateVar}.weightSize`);
@@ -1442,7 +1613,7 @@ function emitLifecycleAction(
       if (emittedSigns.has(sign)) return;
       emittedSigns.add(sign);
       lines.push(`            ${sign} -> {`);
-      if (colorCurveEnabled(card)) {
+      if (colorLifecycleEnabled(card)) {
         lines.push(`                this.color = ${dataVar}.getInterpolatedColor(${prefix}ColorProgress.sample(lifeProgress).toDouble().coerceIn(0.0, 1.0))`);
       }
       emitCpuSizeCurveAssignments(lines, card, prefix);
@@ -1451,7 +1622,7 @@ function emitLifecycleAction(
         const opacity = alphaBinding
           ? `${prefix}BaseAlpha * ${prefix}Opacity.sample(lifeProgress)`
           : `${prefix}Opacity.sample(lifeProgress)`;
-        lines.push(`                this.particleAlpha = (${opacity}).toFloat().coerceIn(0f, 1f)`);
+        lines.push(`                this.particleAlpha = (${opacity}).toFloat().coerceIn(0F, 1F)`);
       }
       if (curveEnabled(card.curves.light)) {
         lines.push(`                this.light = ${prefix}Light.sample(lifeProgress).toInt().coerceIn(-1, 15)`);
@@ -1492,7 +1663,7 @@ function emitLifecycleAction(
 }
 
 function cardHasCpuLifecycle(card) {
-  if (colorCurveEnabled(card)
+  if (colorLifecycleEnabled(card)
     || curveEnabled(card.curves.opacity)
     || curveEnabled(card.curves.light)
     || curveEnabled(card.curves.rotation.roll)) return true;
@@ -1541,6 +1712,8 @@ export function generateEmitterKotlin(rawProject) {
         lengthSquaredMethod: 'lengthSquared',
         multiplyMethod: 'multiply',
         lifetimeProperty: 'maxAge',
+        resourceLocationImport: 'net.minecraft.util.Identifier',
+        resourceLocationFactory: (namespace, path) => `Identifier.of(${fmtString(namespace)}, ${fmtString(path)})`,
         blockHitResultImport: 'net.minecraft.util.hit.BlockHitResult',
         hitResultImport: 'net.minecraft.util.hit.HitResult'
       }
@@ -1550,6 +1723,8 @@ export function generateEmitterKotlin(rawProject) {
         lengthSquaredMethod: 'lengthSqr',
         multiplyMethod: 'scale',
         lifetimeProperty: 'lifetime',
+        resourceLocationImport: 'net.minecraft.resources.ResourceLocation',
+        resourceLocationFactory: (namespace, path) => `ResourceLocation.fromNamespaceAndPath(${fmtString(namespace)}, ${fmtString(path)})`,
         blockHitResultImport: 'net.minecraft.world.phys.BlockHitResult',
         hitResultImport: 'net.minecraft.world.phys.HitResult'
       };
@@ -1564,12 +1739,57 @@ export function generateEmitterKotlin(rawProject) {
     || (!card.curves.size.syncAxes && curveEnabled(card.curves.size.y))
     || curveEnabled(card.curves.opacity)
   ));
-  const hasGpuColorCurves = enabledEmitters.some((card) => card.useGPU && colorCurveEnabled(card));
+  const hasGpuColorCurves = enabledEmitters.some((card) => card.useGPU && colorLifecycleEnabled(card));
   const hasGpuBezierColorCurves = enabledEmitters.some((card) => (
     card.useGPU && colorCurveEnabled(card) && card.curves.color.mode === 'bezier'
   ));
-  const hasGpuCommands = enabledGpuCommands(project).length > 0;
+  const forceCommands = enabledForceCommands(project);
+  const hasForceCommands = forceCommands.length > 0;
+  const forceTypes = new Set(forceCommands.map((command) => command.force?.type));
+  const hasForceSelectors = forceCommands.some((command) => command.selector?.type && command.selector.type !== 'All');
+  const falloffForceTypes = new Set([
+    'Radial',
+    'DirectionalWind',
+    'BlenderVortex',
+    'Magnetic',
+    'Harmonic',
+    'VelocityDrag',
+    'Charge',
+    'LennardJones',
+    'Turbulence',
+    'Texture',
+    'FluidFlow'
+  ]);
+  const hasFalloffForces = forceCommands.some((command) => falloffForceTypes.has(command.force?.type));
+  const hasTextureForce = forceTypes.has('Texture');
+  const hasFluidFlowForce = forceTypes.has('FluidFlow');
+  const hasMagneticForce = forceTypes.has('Magnetic');
+  const constantMaps = cparticleConstantMaps(project);
   const emitterVariablePlan = createEmitterVariablePlan(project, enabledEmitters);
+  const pointsBuilderCoercer = createPointsBuilderCoercer(bindingResolver);
+  const pointsBuilderStaticReferenceResolver = createPointsBuilderStaticReferenceResolver(project.parameters);
+  const emitterPointsBuilderParts = enabledEmitters.map((card) => (
+    card.emitter.type === 'points_builder'
+      ? generatePointsBuilderKotlinParts({
+          ...(card.emitter.builderState || {}),
+          kotlinEndMode: 'builder'
+        }, {
+          coerceDoubleExpression: pointsBuilderCoercer,
+          resolveStaticReference: pointsBuilderStaticReferenceResolver
+        })
+      : null
+  ));
+  const pointsBuilderConstants = Array.from(new Set(
+    emitterPointsBuilderParts.flatMap((parts) => parts?.constants || [])
+  ));
+  const pointsBuilderDeclarations = Array.from(new Map(
+    emitterPointsBuilderParts
+      .flatMap((parts) => parts?.declarations || [])
+      .map((declaration) => {
+        const match = declaration.match(/^private (val|fun)\s+([A-Za-z_][A-Za-z0-9_]*)/);
+        return [match ? `${match[1]}:${match[2]}` : declaration, declaration];
+      })
+  ).values());
   const lines = [];
   if (packageName) {
     lines.push(`package ${packageName}`);
@@ -1583,9 +1803,22 @@ export function generateEmitterKotlin(rawProject) {
   if (hasGpuFloatCurves) lines.push('import cn.coostack.cooparticlesapi.cparticle.CParticleCurve');
   if (hasGpuColorCurves) lines.push('import cn.coostack.cooparticlesapi.cparticle.CParticleColorCurve');
   if (hasGpuBezierColorCurves) lines.push('import cn.coostack.cooparticlesapi.cparticle.CParticleBezierColorKeyframe');
-  if (hasGpuCommands) {
+  if (hasForceCommands) {
     lines.push('import cn.coostack.cooparticlesapi.cparticle.force.CParticleForce');
+    lines.push('import cn.coostack.cooparticlesapi.cparticle.force.CParticleForceSink');
   }
+  if (hasForceSelectors) lines.push('import cn.coostack.cooparticlesapi.cparticle.force.CParticleSelector');
+  if (hasFalloffForces) {
+    lines.push('import cn.coostack.cooparticlesapi.cparticle.force.CParticleFalloff');
+    lines.push('import cn.coostack.cooparticlesapi.cparticle.force.CParticleFalloffShape');
+    lines.push('import cn.coostack.cooparticlesapi.cparticle.force.CParticleZDirection');
+  }
+  if (hasTextureForce) {
+    lines.push('import cn.coostack.cooparticlesapi.cparticle.force.CParticleTextureForceMode');
+    lines.push('import cn.coostack.cooparticlesapi.cparticle.force.CParticleTextureResource');
+  }
+  if (hasFluidFlowForce) lines.push('import cn.coostack.cooparticlesapi.cparticle.force.CParticleFluidResource');
+  if (hasMagneticForce) lines.push('import cn.coostack.cooparticlesapi.cparticle.force.CParticleMagneticFieldMode');
   if (usesVectorOperatorExtensions(project)) lines.push('import cn.coostack.cooparticlesapi.extend.*');
   lines.push('import cn.coostack.cooparticlesapi.network.particle.emitters.*');
   lines.push('import cn.coostack.cooparticlesapi.network.particle.emitters.command.*');
@@ -1604,6 +1837,7 @@ export function generateEmitterKotlin(rawProject) {
   lines.push(project.kotlin.mapping === 'yarn'
     ? 'import net.minecraft.util.math.Vec3d'
     : 'import net.minecraft.world.phys.Vec3');
+  if (hasTextureForce || hasFluidFlowForce) lines.push(`import ${target.resourceLocationImport}`);
   if (collisionEnabled) {
     lines.push(`import ${target.blockHitResultImport}`);
     lines.push(`import ${target.hitResultImport}`);
@@ -1614,8 +1848,13 @@ export function generateEmitterKotlin(rawProject) {
   lines.push('');
   lines.push('@CooAutoRegister');
   lines.push(`class ${className}(pos: ${target.vec3Type}, world: ${target.worldType}?) : ${baseClass}(pos, world) {`);
-  if (hasGpuCommands) {
-    lines.push(indent(emitCParticleForces(project, target.vec3Type), 4));
+  const cparticleConstants = emitCParticleConstants(project, constantMaps, pointsBuilderConstants);
+  if (cparticleConstants) {
+    lines.push(indent(cparticleConstants, 4));
+    lines.push('');
+  }
+  if (hasForceCommands) {
+    lines.push(indent(emitCParticleForceCommands(project, target, constantMaps), 4));
     lines.push('');
   }
   const parameterDeclarations = emitProjectParameterDeclarations(project, target.vec3Type);
@@ -1623,7 +1862,11 @@ export function generateEmitterKotlin(rawProject) {
     lines.push(indent(parameterDeclarations, 4));
     lines.push('');
   }
-  const emitterDataDeclarations = emitEmitterParameterDeclarations(bindingResolver, emitterVariablePlan, target, 'data');
+  if (pointsBuilderDeclarations.length) {
+    lines.push(...pointsBuilderDeclarations.map((declaration) => indent(declaration, 4)));
+    lines.push('');
+  }
+  const emitterDataDeclarations = emitEmitterParameterDeclarations(bindingResolver, emitterVariablePlan, target, constantMaps, 'data');
   if (emitterDataDeclarations) {
     lines.push(indent(emitterDataDeclarations, 4));
     lines.push('');
@@ -1632,7 +1875,7 @@ export function generateEmitterKotlin(rawProject) {
     lines.push(indent(emitCurveDeclarations(bindingResolver, card, index), 4));
     lines.push('');
   });
-  const emitterTemplateDeclarations = emitEmitterParameterDeclarations(bindingResolver, emitterVariablePlan, target, 'templates');
+  const emitterTemplateDeclarations = emitEmitterParameterDeclarations(bindingResolver, emitterVariablePlan, target, constantMaps, 'templates');
   if (emitterTemplateDeclarations) {
     lines.push(indent(emitterTemplateDeclarations, 4));
     lines.push('');
@@ -1687,7 +1930,9 @@ export function generateEmitterKotlin(rawProject) {
       index,
       target,
       emitterVariablePlan[index],
-      lifecyclePlan.singleEmissionTicks[index]
+      constantMaps,
+      lifecyclePlan.singleEmissionTicks[index],
+      emitterPointsBuilderParts[index]
     ), 8));
     lines.push('');
   });

@@ -1,0 +1,14 @@
+{
+  "name": "ControlableFallingDustEffect",
+  "displayName": "FallingDust",
+  "textures": [
+    "assets/particles/falling_dust/generic_7.png",
+    "assets/particles/falling_dust/generic_6.png",
+    "assets/particles/falling_dust/generic_5.png",
+    "assets/particles/falling_dust/generic_4.png",
+    "assets/particles/falling_dust/generic_3.png",
+    "assets/particles/falling_dust/generic_2.png",
+    "assets/particles/falling_dust/generic_1.png",
+    "assets/particles/falling_dust/generic_0.png"
+  ]
+}

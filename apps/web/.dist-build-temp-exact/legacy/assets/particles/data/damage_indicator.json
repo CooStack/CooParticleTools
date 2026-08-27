@@ -1,0 +1,7 @@
+{
+  "name": "ControlableDamageIndicatorEffect",
+  "displayName": "DamageIndicator",
+  "textures": [
+    "assets/particles/damage_indicator/damage.png"
+  ]
+}

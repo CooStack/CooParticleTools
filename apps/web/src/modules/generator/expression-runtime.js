@@ -39,7 +39,7 @@ const COMPLETION_FUNCTIONS = Object.freeze([
 const COMPLETION_CONSTRUCTORS = Object.freeze([
   { type: 'Vec3', component: '0.0', detail: '构造 Vec3' },
   { type: 'RelativeLocation', component: '0.0', detail: '构造 RelativeLocation' },
-  { type: 'Vector3f', component: '0.0f', detail: '构造 Vector3f' }
+  { type: 'Vector3f', component: '0.0F', detail: '构造 Vector3f' }
 ]);
 
 const FORBIDDEN_IDENTIFIERS = new Set([
@@ -380,7 +380,7 @@ export function buildGeneratorExpressionCompletions(parameters = {}, options = {
           signature: `${name} = expression: ${type}`
         })];
         if (['Int', 'Long', 'Float', 'Double'].includes(item?.type)) {
-          const increment = item.type === 'Long' ? '1L' : item.type === 'Float' ? '1.0f' : '1';
+          const increment = item.type === 'Long' ? '1L' : item.type === 'Float' ? '1.0F' : '1';
           snippets.push(createGeneratorCompletion({
             id: `statement:increment:${identity}`,
             kind: 'statement',
@@ -479,7 +479,7 @@ function completionFunctionArguments(name, type) {
 
 function completionNumericZero(type) {
   if (type === 'Long') return '0L';
-  if (type === 'Float') return '0.0f';
+  if (type === 'Float') return '0.0F';
   if (type === 'Double') return '0.0';
   return '0';
 }

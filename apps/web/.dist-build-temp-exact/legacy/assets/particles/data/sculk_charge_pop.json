@@ -1,0 +1,10 @@
+{
+  "name": "ControlableSculkChargePopEffect",
+  "displayName": "SculkChargePop",
+  "textures": [
+    "assets/particles/sculk_charge_pop/sculk_charge_pop_0.png",
+    "assets/particles/sculk_charge_pop/sculk_charge_pop_1.png",
+    "assets/particles/sculk_charge_pop/sculk_charge_pop_2.png",
+    "assets/particles/sculk_charge_pop/sculk_charge_pop_3.png"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "ControlableEffectParticleEffect",
+  "displayName": "Effect",
+  "textures": [
+    "assets/particles/effect/effect_7.png",
+    "assets/particles/effect/effect_6.png",
+    "assets/particles/effect/effect_5.png",
+    "assets/particles/effect/effect_4.png",
+    "assets/particles/effect/effect_3.png",
+    "assets/particles/effect/effect_2.png",
+    "assets/particles/effect/effect_1.png",
+    "assets/particles/effect/effect_0.png"
+  ]
+}

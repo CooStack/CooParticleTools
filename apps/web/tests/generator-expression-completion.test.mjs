@@ -63,6 +63,26 @@ test('doTick completions include every parser-supported vector constructor', () 
     assert.equal(analysis.valid, true, `${type}: ${analysis.message}`);
     assert.equal(analysis.type, type);
   }
+  assert.equal(
+    completions.find((item) => item.id === 'constructor:Vector3f')?.insertText,
+    'Vector3f(0.0F, 0.0F, 0.0F)'
+  );
+});
+
+test('Float completion snippets use uppercase Kotlin suffixes', () => {
+  const completions = buildGeneratorExpressionCompletions({
+    variables: [{ name: 'gain', type: 'Float', value: 0 }]
+  }, { statements: true });
+
+  assert.equal(
+    completions.find((item) => item.id.startsWith('statement:increment:'))?.insertText,
+    'gain += 1.0F'
+  );
+  assert.match(
+    buildGeneratorExpressionCompletions({}, { expectedType: 'Float' })
+      .find((item) => item.id === 'function:abs')?.insertText || '',
+    /0\.0F/
+  );
 });
 
 test('typed inputs only receive function snippets assignable to their target type', () => {

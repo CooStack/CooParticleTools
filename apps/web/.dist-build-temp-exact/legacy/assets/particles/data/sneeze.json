@@ -1,0 +1,14 @@
+{
+  "name": "ControlableSneezeEffect",
+  "displayName": "Sneeze",
+  "textures": [
+    "assets/particles/sneeze/generic_7.png",
+    "assets/particles/sneeze/generic_6.png",
+    "assets/particles/sneeze/generic_5.png",
+    "assets/particles/sneeze/generic_4.png",
+    "assets/particles/sneeze/generic_3.png",
+    "assets/particles/sneeze/generic_2.png",
+    "assets/particles/sneeze/generic_1.png",
+    "assets/particles/sneeze/generic_0.png"
+  ]
+}

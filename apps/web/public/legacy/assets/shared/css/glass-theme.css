@@ -427,9 +427,10 @@
     --btn-bg: var(--glass-fill-2);
     --btn-bg-hover: var(--glass-fill-3);
 
+    /* Keep the same Material-style corner scale as the Vue shell tokens. */
     --radius: 16px;
     --radius2: 12px;
-    --radius3: 9px;
+    --radius3: 10px;
 
     --shadow: var(--glass-shadow);
     --shadow2: var(--glass-shadow-2);
@@ -518,7 +519,9 @@ body[data-theme^="glass-"],
  * the unblurred tiers where painting a gradient costs nothing extra.
  */
 [data-theme^="glass-"] .topbar,
+[data-theme^="glass-"] .generator-page .generator-topbar,
 [data-theme^="glass-"] .panel,
+[data-theme^="glass-"] .generator-page .generator-panel,
 [data-theme^="glass-"] .surface,
 [data-theme^="glass-"] .settings-panel,
 [data-theme^="glass-"] .code-panel,
@@ -616,7 +619,8 @@ body[data-theme^="glass-"],
         inset 0 -20px 30px -28px var(--glass-inner-lo);
 }
 
-[data-theme^="glass-"] .topbar {
+[data-theme^="glass-"] .topbar,
+[data-theme^="glass-"] .generator-page .generator-topbar {
     background:
         linear-gradient(180deg, var(--glass-sheen-1) 0%, transparent 62%) padding-box,
         linear-gradient(var(--glass-fill), var(--glass-fill)) padding-box,
@@ -639,6 +643,18 @@ body[data-theme^="glass-"],
 [data-theme^="glass-"] .emitter-list-card,
 [data-theme^="glass-"] .queue-card,
 [data-theme^="glass-"] .command-card,
+[data-theme^="glass-"] .generator-page .emitter-list-card,
+[data-theme^="glass-"] .generator-page .queue-card,
+[data-theme^="glass-"] .generator-page .command-card,
+[data-theme^="glass-"] .generator-page .parameter-editor,
+[data-theme^="glass-"] .generator-page .axis-curve-box,
+[data-theme^="glass-"] .generator-page .definition-row,
+[data-theme^="glass-"] .generator-page .resource-card,
+[data-theme^="glass-"] .generator-page .generator-right .editor-section,
+[data-theme^="glass-"] .generator-page .command-param-grid,
+[data-theme^="glass-"] .generator-page .selector-editor,
+[data-theme^="glass-"] .generator-page .mask-choice-list,
+[data-theme^="glass-"] .generator-page .force-vector-field,
 [data-theme^="glass-"] .layer-card,
 [data-theme^="glass-"] .node-card,
 [data-theme^="glass-"] .preset-card,
@@ -672,7 +688,10 @@ body[data-theme^="glass-"],
 [data-theme^="glass-"] .card:hover,
 [data-theme^="glass-"] .card-item:hover,
 [data-theme^="glass-"] .emitter-list-card:hover,
-[data-theme^="glass-"] .queue-card:hover {
+[data-theme^="glass-"] .queue-card:hover,
+[data-theme^="glass-"] .generator-page .emitter-list-card:hover,
+[data-theme^="glass-"] .generator-page .queue-card:hover,
+[data-theme^="glass-"] .generator-page .command-card:hover {
     background:
         radial-gradient(300px circle at var(--cp-glass-mx) var(--cp-glass-my),
             var(--glass-reveal-face) 0%,
@@ -699,7 +718,9 @@ body[data-theme^="glass-"],
 [data-theme^="glass-"] .card.focused,
 [data-theme^="glass-"] .card-item.active,
 [data-theme^="glass-"] .emitter-list-card.selected,
-[data-theme^="glass-"] .queue-card.selected {
+[data-theme^="glass-"] .queue-card.selected,
+[data-theme^="glass-"] .generator-page .emitter-list-card.selected,
+[data-theme^="glass-"] .generator-page .queue-card.selected {
     background:
         linear-gradient(color-mix(in srgb, var(--accent) 16%, var(--glass-fill-2)),
             color-mix(in srgb, var(--accent) 16%, var(--glass-fill-2))) padding-box,
@@ -836,9 +857,13 @@ body[data-theme^="glass-"],
 [data-theme^="glass-"] input,
 [data-theme^="glass-"] textarea {
     border: 1px solid transparent;
-    background:
-        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)) padding-box,
-        linear-gradient(148deg, var(--glass-rim-lo) 0%, var(--glass-rim-mid) 100%) border-box;
+    background-image:
+        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)),
+        linear-gradient(148deg, var(--glass-rim-lo) 0%, var(--glass-rim-mid) 100%);
+    background-color: transparent;
+    background-origin: padding-box, border-box;
+    background-clip: padding-box, border-box;
+    background-repeat: no-repeat;
     color: var(--glass-text);
     box-shadow: inset 0 1px 2px rgba(2, 5, 12, 0.12);
 }
@@ -857,11 +882,11 @@ body[data-theme^="glass-"],
 [data-theme^="glass-"] .input:not(select):focus,
 [data-theme^="glass-"] input:focus,
 [data-theme^="glass-"] textarea:focus {
-    background:
-        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)) padding-box,
+    background-image:
+        linear-gradient(var(--glass-field-bg), var(--glass-field-bg)),
         linear-gradient(148deg,
             color-mix(in srgb, var(--accent) 70%, transparent) 0%,
-            color-mix(in srgb, var(--accent) 40%, transparent) 100%) border-box;
+            color-mix(in srgb, var(--accent) 40%, transparent) 100%);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
@@ -986,13 +1011,13 @@ body[data-theme^="glass-"],
 [data-theme^="glass-"] select option,
 [data-theme^="glass-"] select.input option {
     color: var(--input-option-text);
-    background: var(--input-option-bg);
+    background-color: var(--input-option-bg);
 }
 
 [data-theme^="glass-"] select optgroup,
 [data-theme^="glass-"] select.input optgroup {
     color: var(--glass-muted);
-    background: var(--input-option-bg);
+    background-color: var(--input-option-bg);
     font-weight: 600;
     font-style: normal;
 }
@@ -1057,7 +1082,9 @@ body[data-theme^="glass-"],
  */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
     [data-theme^="glass-"] .topbar,
+    [data-theme^="glass-"] .generator-page .generator-topbar,
     [data-theme^="glass-"] .panel,
+    [data-theme^="glass-"] .generator-page .generator-panel,
     [data-theme^="glass-"] .surface,
     [data-theme^="glass-"] .settings-panel,
     [data-theme^="glass-"] .code-panel,

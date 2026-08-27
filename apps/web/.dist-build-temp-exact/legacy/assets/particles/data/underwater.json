@@ -1,0 +1,7 @@
+{
+  "name": "ControlableUnderwaterEffect",
+  "displayName": "Underwater",
+  "textures": [
+    "assets/particles/underwater/generic_0.png"
+  ]
+}

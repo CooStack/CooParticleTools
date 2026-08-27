@@ -16,6 +16,27 @@ import {
   getFirstNodeId
 } from './node-helpers.js';
 import { normalizePointsBuilderProject } from './normalizer.js';
+export {
+  BUILDER_REFERENCE_KIND,
+  EFFECT_RING_KIND,
+  EFFECT_GROUP_LABEL,
+  BUILDER_REFERENCE_SCHEMA_VERSION,
+  normalizeBuilderSnapshots,
+  createBuilderSnapshot,
+  createBuilderSnapshotStore,
+  createBuilderSnapshotFromPreset,
+  createBuilderReferenceNode,
+  createEffectRingNode,
+  materializeBuilderReferences,
+  expandBuilderReferences,
+  flattenBuilderReferencesForPreset,
+  saveBuilderPresetWithSnapshot,
+  resolveBuilderReferenceSnapshot,
+  builderReferenceCacheKey,
+  kotlinPrivateParameterConstantName,
+  getBuilderSnapshotRevision,
+  invalidateBuilderSnapshotCache
+} from './references.js';
 
 export function createPointsBuilderProject(tool = 'pointsbuilder') {
   const project = createPointsBuilderBaseProject(tool);

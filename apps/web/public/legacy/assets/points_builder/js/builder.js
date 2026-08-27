@@ -1,7 +1,7 @@
 import { sampleAdaptiveBezierNodes } from "./bezier-sampling.js?v=20260826_1";
 
 export function createBuilderTools(ctx) {
-    const { KIND, U, getState, getKotlinEndMode, rotatePointsToPointUpright } = ctx || {};
+    const { KIND, U, getState, getKotlinEndMode, rotatePointsToPointUpright, applyPointsBuilderInstanceOverrides } = ctx || {};
     const num = (value, fallback = 0) => {
         const next = Number(value);
         return Number.isFinite(next) ? next : fallback;
@@ -328,19 +328,101 @@ export function createBuilderTools(ctx) {
     }
 
     // Eval（同时计算：每个卡片新增的点在最终点数组里的区间，用于高亮）
-    function evalBuilderWithMeta(nodes, initialAxis) {
+    function evalBuilderWithMeta(nodes, initialAxis, options = {}) {
         const ctxLocal = { points: [], axis: U.clone(initialAxis || U.v(0, 1, 0)), previewPoints: [], maskPreviewPoints: [] };
         const segments = new Map(); // nodeId -> {start, end}
+        const state = typeof getState === "function" ? getState() : {};
+        const snapshots = options.snapshots || state?.builderSnapshots || {};
+        const referenceCache = options.referenceCache instanceof Map ? options.referenceCache : new Map();
+
+        const rotateSnapshotPoint = (point, params) => {
+            const scale = num(params?.scale, 1);
+            const source = scale > 0
+                ? U.v(num(point?.x) * scale, num(point?.y) * scale, num(point?.z) * scale)
+                : U.v(num(point?.x), num(point?.y), num(point?.z));
+            const angle = num(params?.rotationDeg) * Math.PI / 180;
+            const axis = U.v(num(params?.rotationAxisX), num(params?.rotationAxisY, 1), num(params?.rotationAxisZ));
+            const length = U.len(axis);
+            const unit = length > 1e-9 ? U.v(axis.x / length, axis.y / length, axis.z / length) : U.v(0, 1, 0);
+            const cos = Math.cos(angle), sin = Math.sin(angle);
+            const dot = source.x * unit.x + source.y * unit.y + source.z * unit.z;
+            const cross = U.cross(unit, source);
+            return {
+                x: source.x * cos + cross.x * sin + unit.x * dot * (1 - cos) + num(params?.ox),
+                y: source.y * cos + cross.y * sin + unit.y * dot * (1 - cos) + num(params?.oy),
+                z: source.z * cos + cross.z * sin + unit.z * dot * (1 - cos) + num(params?.oz)
+            };
+        };
+
+        const resolveSnapshot = (snapshotId, referenceNode = null) => {
+            const snapshot = snapshots?.[String(snapshotId || "")];
+            if (!snapshot) return { points: [], axis: U.v(0, 1, 0) };
+            const overrides = referenceNode?.params?.instanceMode === "construct"
+                ? referenceNode?.params?.overrides || null
+                : snapshot.staticOverrides || referenceNode?.params?.overrides || null;
+            const key = `${snapshot.id || snapshotId}:${snapshot.revision || 1}:${referenceNode?.params?.instanceMode === "construct" ? "construct" : "static"}:${JSON.stringify(overrides)}`;
+            if (referenceCache.has(key)) return referenceCache.get(key);
+            const children = typeof applyPointsBuilderInstanceOverrides === "function"
+                ? applyPointsBuilderInstanceOverrides(snapshot.children || [], snapshot, referenceNode)
+                : (snapshot.children || []);
+            const result = evalBuilderWithMeta(children, U.v(0, 1, 0), { snapshots, referenceCache });
+            const value = {
+                points: (result.points || []).map((p) => ({ x: num(p.x), y: num(p.y), z: num(p.z) })),
+                axis: U.clone(result.axis || U.v(0, 1, 0))
+            };
+            referenceCache.set(key, value);
+            return value;
+        };
+
+        const evalEffectRing = (node) => {
+            const p = node.params || {};
+            const ids = Array.isArray(p.snapshotIds) ? p.snapshotIds : [];
+            if (!ids.length) return [];
+            const count = Math.max(1, int(p.count || 12));
+            const radius = num(p.radius, 3);
+            const start = num(p.startDeg) * Math.PI / 180;
+            const origin = U.v(num(p.originX), num(p.originY), num(p.originZ));
+            const offset = U.v(num(p.offsetX), num(p.offsetY), num(p.offsetZ));
+            const points = [];
+            for (let index = 0; index < count; index += 1) {
+                const source = resolveSnapshot(ids[index % ids.length]);
+                const angle = start + Math.PI * 2 * index / count;
+                const center = U.v(origin.x + Math.cos(angle) * radius + offset.x, origin.y + offset.y, origin.z + Math.sin(angle) * radius + offset.z);
+                const target = p.reverse ? U.sub(center, origin) : U.sub(origin, center);
+                const rotated = source.points.map((item) => ({ ...item }));
+                if (p.faceCenter) rotatePointsToPointUpright(rotated, target, source.axis || U.v(0, 1, 0));
+                for (const item of rotated) points.push({ x: item.x + center.x, y: item.y + center.y, z: item.z + center.z });
+            }
+            return points;
+        };
 
         function evalList(list, targetCtx, baseOffset) {
             const arr = list || [];
             for (const n of arr) {
                 if (!n) continue;
 
+                if (n.kind === "builder_reference") {
+                    const before = targetCtx.points.length;
+                    const snapshot = resolveSnapshot(n.params?.snapshotId, n);
+                    for (const point of snapshot.points || []) {
+                        targetCtx.points.push(rotateSnapshotPoint(point, n.params || {}));
+                    }
+                    const after = targetCtx.points.length;
+                    if (after > before) segments.set(n.id, { start: before + baseOffset, end: after + baseOffset });
+                    continue;
+                }
+                if (n.kind === "effect_ring") {
+                    const before = targetCtx.points.length;
+                    targetCtx.points.push(...evalEffectRing(n));
+                    const after = targetCtx.points.length;
+                    if (after > before) segments.set(n.id, { start: before + baseOffset, end: after + baseOffset });
+                    continue;
+                }
+
                 // 特殊：addBuilder/withBuilder 需要递归并把子段位移到父数组区间
                 if (n.kind === "apply_bezier_distribution") {
                     const before = targetCtx.points.length;
-                    const child = evalBuilderWithMeta(n.children || [], U.v(0, 1, 0));
+                    const child = evalBuilderWithMeta(n.children || [], U.v(0, 1, 0), { snapshots, referenceCache });
                     const sourceNodes = n.params?.closed ? closeBezierPathNodes(n.params?.nodes) : n.params?.nodes;
                     const path = evaluateBezierPath(sourceNodes, n.params?.count || 16);
                     for (const pathPoint of path) {
@@ -354,7 +436,7 @@ export function createBuilderTools(ctx) {
                 }
                 if (n.kind === "add_builder" || n.kind === "with_builder") {
                     const before = targetCtx.points.length;
-                    const child = evalBuilderWithMeta(n.children || [], U.v(0, 1, 0));
+                    const child = evalBuilderWithMeta(n.children || [], U.v(0, 1, 0), { snapshots, referenceCache });
                     const useOffset = n.kind === "add_builder";
                     let ox = 0, oy = 0, oz = 0;
                     if (useOffset) {
@@ -398,7 +480,7 @@ export function createBuilderTools(ctx) {
                 }
 
                 if (n.kind === "clear_as_mask") {
-                    const child = evalBuilderWithMeta(n.children || [], U.v(0, 1, 0));
+                    const child = evalBuilderWithMeta(n.children || [], U.v(0, 1, 0), { snapshots, referenceCache });
                     const childPoints = Array.isArray(child.points) ? child.points : [];
                     const childPreviewPoints = Array.isArray(child.previewPoints) ? child.previewPoints : [];
                     const indexMap = childPoints.length
@@ -437,7 +519,7 @@ export function createBuilderTools(ctx) {
 
                 if (n.kind === "add_with") {
                     const before = targetCtx.points.length;
-                    const child = evalBuilderWithMeta(n.children || [], U.v(0, 1, 0));
+                    const child = evalBuilderWithMeta(n.children || [], U.v(0, 1, 0), { snapshots, referenceCache });
                     const childPoints = Array.isArray(child.points) ? child.points : [];
                     const offset = {
                         x: num(n.params?.ox),
@@ -556,9 +638,9 @@ export function createBuilderTools(ctx) {
     }
 
     function emitKotlin() {
-        const emitCtx = {decls: []};
-        const lines = [];
         const state = (typeof getState === "function") ? getState() : (ctx && ctx.state) || { root: { children: [] } };
+        const emitCtx = { decls: [], referenceDecls: [], snapshots: state.builderSnapshots || {} };
+        const lines = [];
         const endMode = (typeof getKotlinEndMode === "function") ? getKotlinEndMode() : (ctx && ctx.kotlinEndMode) || "builder";
         lines.push("PointsBuilder()");
         lines.push(...emitNodesKotlinLines(state.root.children, "  ", emitCtx));
@@ -569,11 +651,9 @@ export function createBuilderTools(ctx) {
         }
 
         const expr = lines.join("\n");
-        if (emitCtx.decls.length > 0) {
-            const declLines = emitCtx.decls.map(s => `  ${s}`);
-            return ["run {", ...declLines, `  ${expr.replace(/\n/g, "\n  ")}`, "}"].join("\n");
-        }
-        return expr;
+        const references = Array.isArray(emitCtx.referenceDecls) ? emitCtx.referenceDecls : [];
+        if (!emitCtx.decls.length && !references.length) return expr;
+        return [...references, ...emitCtx.decls, expr].join("\n\n");
     }
 
     return {

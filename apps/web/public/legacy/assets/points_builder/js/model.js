@@ -17,6 +17,9 @@ const OFFSET_KINDS = new Set([
     "add_fourier_series"
 ]);
 
+export const BUILDER_REFERENCE_KIND = "builder_reference";
+export const EFFECT_RING_KIND = "effect_ring";
+
 let fallbackIdSequence = 0;
 
 
@@ -97,6 +100,77 @@ export function normalizePointsBuilderVariables(raw) {
     return { scalar, vector };
 }
 
+function escapeInstanceVariableName(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function renderInstanceReplacement(value) {
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    const text = String(value ?? "").trim();
+    if (!text) return "0";
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/.test(text)) return text;
+    if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[fFdD]?$/.test(text)) return text;
+    return `(${text})`;
+}
+
+function getInstanceOverrideValues(snapshot, nodeOrOverrides) {
+    const isStatic = nodeOrOverrides?.params?.instanceMode !== "construct";
+    const raw = isStatic && snapshot?.staticOverrides && typeof snapshot.staticOverrides === "object"
+        ? snapshot.staticOverrides
+        : nodeOrOverrides?.params?.overrides || nodeOrOverrides?.overrides || nodeOrOverrides || {};
+    const defaults = snapshot?.variables?.inputs && typeof snapshot.variables.inputs === "object"
+        ? snapshot.variables.inputs
+        : {};
+    const scalar = { ...(defaults.scalar || {}), ...(raw.scalar || {}) };
+    const vector = { ...(defaults.vector || {}), ...(raw.vector || {}) };
+    for (const [name, mode] of Object.entries(raw.modes?.scalar || {})) {
+        const ref = String(raw.refs?.scalar?.[name] || "").trim();
+        if (mode === "reference" && ref) scalar[name] = ref;
+    }
+    for (const [name, mode] of Object.entries(raw.modes?.vector || {})) {
+        const ref = String(raw.refs?.vector?.[name] || "").trim();
+        if (mode === "reference" && ref) vector[name] = { x: `${ref}.x`, y: `${ref}.y`, z: `${ref}.z` };
+    }
+    return { scalar, vector };
+}
+
+export function applyPointsBuilderInstanceOverrides(nodes, snapshot, nodeOrOverrides) {
+    const replacements = getInstanceOverrideValues(snapshot, nodeOrOverrides);
+    const replaceString = (value) => {
+        let result = String(value ?? "");
+        for (const [name, replacement] of Object.entries(replacements.vector)) {
+            const escaped = escapeInstanceVariableName(name);
+            result = result.replace(
+                new RegExp(`(^|[^A-Za-z0-9_$])${escaped}\\s*\\.\\s*([xyz])(?![A-Za-z0-9_$])`, "g"),
+                (match, prefix, component) => `${prefix}${renderInstanceReplacement(replacement?.[component])}`
+            );
+        }
+        for (const [name, replacement] of Object.entries(replacements.scalar)) {
+            const escaped = escapeInstanceVariableName(name);
+            result = result.replace(
+                new RegExp(`(^|[^A-Za-z0-9_$])${escaped}(?![A-Za-z0-9_$])`, "g"),
+                (match, prefix) => `${prefix}${renderInstanceReplacement(replacement)}`
+            );
+        }
+        return result;
+    };
+    const visitValue = (value) => {
+        if (typeof value === "string") return replaceString(value);
+        if (Array.isArray(value)) return value.map(visitValue);
+        if (!value || typeof value !== "object") return value;
+        return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, visitValue(child)]));
+    };
+    const visitNode = (node) => {
+        if (!node || typeof node !== "object") return node;
+        const next = { ...node };
+        if (node.params && typeof node.params === "object") next.params = visitValue(node.params);
+        if (Array.isArray(node.terms)) next.terms = node.terms.map(visitValue);
+        if (Array.isArray(node.children)) next.children = node.children.map(visitNode);
+        return next;
+    };
+    return (Array.isArray(nodes) ? nodes : []).map(visitNode);
+}
+
 export function buildPointsBuilderVariableCompletions(raw) {
     const variables = normalizePointsBuilderVariables(raw);
     const numeric = Object.keys(variables.scalar).map((name) => ({
@@ -126,6 +200,68 @@ export function buildPointsBuilderVariableCompletions(raw) {
 function cloneJson(value) {
     if (value === undefined) return undefined;
     return JSON.parse(JSON.stringify(value));
+}
+
+const REFERENCE_GUIDE_AXES = new Set(["X", "Y", "Z"]);
+const REFERENCE_GUIDE_MODES = new Set(["segment", "line"]);
+
+function finiteNumber(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+}
+
+function positiveNumber(value, fallback = 1) {
+    const number = finiteNumber(value, fallback);
+    return number > 0 ? number : fallback;
+}
+
+function normalizeReferenceGuideOrigin(raw) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    return {
+        x: finiteNumber(source.x, 0),
+        y: finiteNumber(source.y, 0),
+        z: finiteNumber(source.z, 0)
+    };
+}
+
+export function createPointsBuilderReferenceGuide(init = {}, options = {}) {
+    const idFactory = getIdFactory(options);
+    const axis = REFERENCE_GUIDE_AXES.has(String(init.axis || "").toUpperCase())
+        ? String(init.axis).toUpperCase()
+        : "X";
+    const mode = REFERENCE_GUIDE_MODES.has(String(init.mode || ""))
+        ? String(init.mode)
+        : "segment";
+    let start = finiteNumber(init.start, -2);
+    let end = finiteNumber(init.end, 2);
+    if (start > end) [start, end] = [end, start];
+    const divisionCount = Math.max(1, Math.min(64, Math.trunc(finiteNumber(init.divisionCount, 1))));
+    return {
+        id: String(init.id || idFactory() || createPointsBuilderId()),
+        name: String(init.name || `${axis} 轴参考线`),
+        axis,
+        mode,
+        origin: normalizeReferenceGuideOrigin(init.origin),
+        start,
+        end,
+        visible: init.visible !== false,
+        locked: init.locked === true,
+        snapEnabled: init.snapEnabled !== false,
+        snapEndpoints: init.snapEndpoints !== false,
+        divisionCount,
+        step: positiveNumber(init.step, 1)
+    };
+}
+
+export function normalizePointsBuilderReferenceGuides(raw, options = {}) {
+    if (!Array.isArray(raw)) return [];
+    const usedIds = new Set();
+    return raw.map((item) => {
+        const guide = createPointsBuilderReferenceGuide(item, options);
+        if (!guide.id || usedIds.has(guide.id)) guide.id = makeUniqueId(usedIds, options);
+        else usedIds.add(guide.id);
+        return guide;
+    });
 }
 
 function getStateSource(source) {
@@ -212,6 +348,30 @@ function normalizeNodeParams(node, options) {
     }
 
     const params = node.params;
+    if (node.kind === BUILDER_REFERENCE_KIND) {
+        params.snapshotId = String(params.snapshotId || "").trim();
+        params.parameterId = String(params.parameterId || (node.id ? `pb_instance_${node.id}` : "")).trim();
+        params.instanceMode = params.instanceMode === "construct" ? "construct" : "static";
+        params.instanceBindingMode = ["registered", "indexed", "linked"].includes(params.instanceBindingMode)
+            ? params.instanceBindingMode
+            : "registered";
+        for (const key of ["ox", "oy", "oz", "scale", "rotationDeg", "rotationAxisX", "rotationAxisY", "rotationAxisZ"]) {
+            if (params[key] === undefined) params[key] = key === "rotationAxisY" || key === "scale" ? 1 : 0;
+        }
+        if (!params.overrides || typeof params.overrides !== "object") params.overrides = {};
+    }
+    if (node.kind === EFFECT_RING_KIND) {
+        params.snapshotIds = Array.isArray(params.snapshotIds)
+            ? params.snapshotIds.map((id) => String(id || "").trim()).filter(Boolean)
+            : [];
+        if (params.count === undefined) params.count = 12;
+        if (params.radius === undefined) params.radius = 3;
+        for (const key of ["startDeg", "originX", "originY", "originZ", "axisX", "axisY", "axisZ", "offsetX", "offsetY", "offsetZ"]) {
+            if (params[key] === undefined) params[key] = key === "axisZ" ? 1 : 0;
+        }
+        if (params.faceCenter === undefined) params.faceCenter = true;
+        if (params.reverse === undefined) params.reverse = false;
+    }
     switch (node.kind) {
         case "add_bezier":
             normalizeLegacyVecParams(params, "p1");
@@ -357,6 +517,7 @@ function normalizeNodeDeep(node, options) {
     if (node.kind !== "ROOT") {
         normalizeNodeParams(node, options);
         node.children = Array.isArray(node.children) ? node.children : [];
+        if (node.kind === BUILDER_REFERENCE_KIND || node.kind === EFFECT_RING_KIND) node.children = [];
         node.terms = Array.isArray(node.terms) ? node.terms : [];
         normalizeFourierTerms(node);
     } else if (!Array.isArray(node.children)) {
@@ -453,12 +614,40 @@ export function ensureUniquePointsBuilderIds(target, options = {}) {
     return repaired;
 }
 
+function ensureUniqueBuilderReferenceParameterIds(target) {
+    const used = new Set();
+    const visit = (node) => {
+        if (!node || typeof node !== "object") return;
+        if (node.kind === BUILDER_REFERENCE_KIND) {
+            const params = node.params || (node.params = {});
+            const base = String(params.parameterId || `pb_instance_${node.id || "instance"}`)
+                .trim()
+                .replace(/[^A-Za-z0-9_]/g, "_") || `pb_instance_${node.id || "instance"}`;
+            let candidate = base;
+            let suffix = 2;
+            while (used.has(candidate)) candidate = `${base}_${suffix++}`;
+            params.parameterId = candidate;
+            used.add(candidate);
+        }
+        for (const child of Array.isArray(node.children) ? node.children : []) visit(child);
+    };
+    if (Array.isArray(target)) {
+        for (const node of target) visit(node);
+    } else {
+        visit(target);
+    }
+}
+
 export function reassignPointsBuilderIds(target, usedIds = new Set(), options = {}) {
     const seen = usedIds instanceof Set ? usedIds : new Set();
     let changed = 0;
     const visit = (node) => {
         if (!node || typeof node !== "object") return;
         node.id = makeUniqueId(seen, options);
+        if (node.kind === BUILDER_REFERENCE_KIND) {
+            if (!node.params || typeof node.params !== "object") node.params = {};
+            node.params.parameterId = `pb_instance_${node.id}`;
+        }
         changed += 1;
         for (const term of Array.isArray(node.terms) ? node.terms : []) {
             if (!term || typeof term !== "object") continue;
@@ -478,6 +667,7 @@ export function reassignPointsBuilderIds(target, usedIds = new Set(), options = 
 export function normalizePointsBuilderNode(node, options = {}) {
     normalizeNodeDeep(node, options);
     ensureUniquePointsBuilderIds(node, options);
+    ensureUniqueBuilderReferenceParameterIds(node);
     return node;
 }
 
@@ -488,6 +678,7 @@ export function normalizePointsBuilderNodeTree(target, options = {}) {
         normalizeNodeDeep(target, options);
     }
     ensureUniquePointsBuilderIds(target, options);
+    ensureUniqueBuilderReferenceParameterIds(target);
     return target;
 }
 
@@ -512,7 +703,39 @@ export function normalizePointsBuilderState(source, options = {}) {
         kind: String(root.kind || "ROOT"),
         children: Array.isArray(root.children) ? root.children : []
     };
+    if (Object.prototype.hasOwnProperty.call(state, "builderSnapshots")) {
+        const sourceSnapshots = state.builderSnapshots && typeof state.builderSnapshots === "object" ? state.builderSnapshots : {};
+        const normalizedSnapshots = {};
+        for (const [key, raw] of Object.entries(sourceSnapshots)) {
+            if (!raw || typeof raw !== "object") continue;
+            const id = String(raw.id || key || "").trim();
+            if (!id) continue;
+            normalizedSnapshots[id] = {
+                id,
+                sourcePresetId: String(raw.sourcePresetId || raw.presetId || "").trim(),
+                sourcePresetRevision: String(raw.sourcePresetRevision || raw.revision || "").trim(),
+                name: String(raw.name || "未命名实例").trim() || "未命名实例",
+                origin: normalizeVariableVector(raw.origin),
+                variables: raw.variables && typeof raw.variables === "object" ? cloneJson(raw.variables) : null,
+                staticOverrides: raw.staticOverrides && typeof raw.staticOverrides === "object" ? cloneJson(raw.staticOverrides) : null,
+                children: Array.isArray(raw.children) ? cloneJson(raw.children) : [],
+                revision: Math.max(1, Math.trunc(Number(raw.revision) || 1)),
+                createdAt: Number(raw.createdAt) || Date.now(),
+                updatedAt: Number(raw.updatedAt) || Date.now()
+            };
+        }
+        state.builderSnapshots = normalizedSnapshots;
+    }
+    if (Object.prototype.hasOwnProperty.call(state, "builderPresetMappings")) {
+        const mappings = state.builderPresetMappings && typeof state.builderPresetMappings === "object"
+            ? state.builderPresetMappings
+            : {};
+        state.builderPresetMappings = Object.fromEntries(Object.entries(mappings)
+            .map(([presetId, snapshotId]) => [String(presetId || "").trim(), String(snapshotId || "").trim()])
+            .filter(([presetId, snapshotId]) => presetId && snapshotId));
+    }
     normalizePointsBuilderNodeTree(state.root, options);
+    state.guides = normalizePointsBuilderReferenceGuides(state.guides, options);
 
     if (Object.prototype.hasOwnProperty.call(state, "presets") && typeof options.normalizePresets === "function") {
         state.presets = options.normalizePresets(state.presets);

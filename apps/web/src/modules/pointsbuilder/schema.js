@@ -1,4 +1,4 @@
-export const POINTS_BUILDER_SCHEMA_VERSION = 2;
+export const POINTS_BUILDER_SCHEMA_VERSION = 3;
 
 export function createRootNode() {
   return {
@@ -32,6 +32,8 @@ export function createPointsBuilderBaseProject(tool = 'pointsbuilder') {
     settings: createPointsBuilderSettings(),
     state: {
       root: createRootNode(),
+      builderSnapshots: {},
+      builderPresetMappings: {},
       selection: {
         focusedNodeId: ''
       }

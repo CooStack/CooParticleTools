@@ -1,0 +1,14 @@
+{
+  "name": "ControlableCloudEffect",
+  "displayName": "Cloud",
+  "textures": [
+    "assets/particles/cloud/generic_7.png",
+    "assets/particles/cloud/generic_6.png",
+    "assets/particles/cloud/generic_5.png",
+    "assets/particles/cloud/generic_4.png",
+    "assets/particles/cloud/generic_3.png",
+    "assets/particles/cloud/generic_2.png",
+    "assets/particles/cloud/generic_1.png",
+    "assets/particles/cloud/generic_0.png"
+  ]
+}

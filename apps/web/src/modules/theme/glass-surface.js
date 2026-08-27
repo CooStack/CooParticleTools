@@ -197,6 +197,9 @@ const CONTROL_SELECTOR = [
   '.iconbtn', '.icon-btn', '.topbar-menu-trigger',
   '.card', '.card-item', '.node-item', '.project-item',
   '.emitter-list-card', '.queue-card', '.command-card', '.layer-card',
+  '.parameter-editor', '.axis-curve-box', '.definition-row', '.resource-card',
+  '.generator-right .editor-section', '.command-param-grid', '.selector-editor',
+  '.mask-choice-list', '.force-vector-field',
   '.node-card', '.preset-card', '.texture-card',
   '.hk-row', '.section-block', '.subgroup', '.kv-row', '.child-row',
   // Vue shell equivalents (WorkbenchPage.vue / PluginsPage.vue).
@@ -206,7 +209,7 @@ const CONTROL_SELECTOR = [
 ].join(',');
 
 const CONTAINER_SELECTOR = [
-  '.topbar', '.panel', '.surface', '.settings-panel',
+  '.topbar', '.generator-topbar', '.panel', '.generator-panel', '.surface', '.settings-panel',
   '.code-panel', '.modal', '.topbar-submenu', '.snap-render-popover',
   // Vue shell equivalents.
   '.workbench-rail', '.create-dialog', '.plugins-header', '.plugins-section'

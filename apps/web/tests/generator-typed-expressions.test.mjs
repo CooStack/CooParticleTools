@@ -225,7 +225,7 @@ test('normal returns a unit vector and emits the receiver-specific Kotlin method
   assert.equal(color.valid, true);
   assert.equal(
     color.kotlin,
-    'Vector3f(color).apply { if (lengthSquared() <= 1.0e-12f) zero() else normalize() }'
+    'Vector3f(color).apply { if (lengthSquared() <= 1.0e-12F) zero() else normalize() }'
   );
 
   const zeroColor = analyzeGeneratorExpression('Vector3f(0f, 0f, 0f).normal()', typedValues, {
@@ -236,7 +236,7 @@ test('normal returns a unit vector and emits the receiver-specific Kotlin method
     { x: zeroColor.value.x, y: zeroColor.value.y, z: zeroColor.value.z },
     { x: 0, y: 0, z: 0 }
   );
-  assert.match(zeroColor.kotlin, /\.apply \{ if \(lengthSquared\(\) <= 1\.0e-12f\) zero\(\) else normalize\(\) \}/);
+  assert.match(zeroColor.kotlin, /\.apply \{ if \(lengthSquared\(\) <= 1\.0e-12F\) zero\(\) else normalize\(\) \}/);
 
   assert.match(analyzeGeneratorExpression('i.normal()', typedValues).message, /只能用于向量/);
   assert.match(analyzeGeneratorExpression('vec.normal(1)', typedValues).message, /不接受参数/);

@@ -1,0 +1,7 @@
+{
+  "name": "ControlableVaultConnectionEffect",
+  "displayName": "VaultConnection",
+  "textures": [
+    "assets/particles/vault_connection/vault_connection.png"
+  ]
+}

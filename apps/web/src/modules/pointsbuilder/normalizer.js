@@ -2,6 +2,7 @@ import { deepClone } from '../../utils/clone.js';
 import { createPointsBuilderBaseProject } from './schema.js';
 import { POINTS_NODE_KINDS } from './kinds.js';
 import { createFourierTerm, createNodeByKind, isBuilderContainerKind } from './node-helpers.js';
+import { normalizeBuilderSnapshots } from './references.js';
 
 const KIND_ALIASES = {
   point: 'add_point',
@@ -81,6 +82,30 @@ function normalizeNodeParams(kind, params, rawNode = {}) {
     if (params.ox === undefined) params.ox = 0;
     if (params.oy === undefined) params.oy = 0;
     if (params.oz === undefined) params.oz = 0;
+  }
+
+  if (kind === 'builder_reference') {
+    params.snapshotId = String(params.snapshotId || '').trim();
+    params.parameterId = String(params.parameterId || (rawNode?.id ? `pb_instance_${rawNode.id}` : '')).trim();
+    params.instanceMode = params.instanceMode === 'construct' ? 'construct' : 'static';
+    params.instanceBindingMode = ['registered', 'indexed', 'linked'].includes(params.instanceBindingMode)
+      ? params.instanceBindingMode
+      : 'registered';
+    ['ox', 'oy', 'oz', 'scale', 'rotationDeg', 'rotationAxisX', 'rotationAxisY', 'rotationAxisZ'].forEach((key) => {
+      if (params[key] === undefined) params[key] = key === 'rotationAxisY' || key === 'scale' ? 1 : 0;
+    });
+    if (!params.overrides || typeof params.overrides !== 'object') params.overrides = {};
+  }
+
+  if (kind === 'effect_ring') {
+    if (!Array.isArray(params.snapshotIds)) params.snapshotIds = [];
+    params.snapshotIds = params.snapshotIds.map((id) => String(id || '').trim()).filter(Boolean);
+    if (params.count === undefined) params.count = 12;
+    if (params.radius === undefined) params.radius = 3;
+    ['startDeg', 'originX', 'originY', 'originZ', 'axisX', 'axisY', 'axisZ', 'offsetX', 'offsetY', 'offsetZ']
+      .forEach((key) => { if (params[key] === undefined) params[key] = key === 'axisZ' ? 1 : 0; });
+    if (params.faceCenter === undefined) params.faceCenter = true;
+    if (params.reverse === undefined) params.reverse = false;
   }
 
   switch (kind) {
@@ -174,6 +199,28 @@ function normalizeNodeParams(kind, params, rawNode = {}) {
   }
 }
 
+function ensureUniqueBuilderReferenceParameterIds(nodes) {
+  const used = new Set();
+  const visit = (list) => {
+    for (const node of list || []) {
+      if (!node || typeof node !== 'object') continue;
+      if (node.kind === 'builder_reference') {
+        const params = node.params || (node.params = {});
+        const base = String(params.parameterId || `pb_instance_${node.id || 'instance'}`)
+          .trim()
+          .replace(/[^A-Za-z0-9_]/g, '_') || `pb_instance_${node.id || 'instance'}`;
+        let candidate = base;
+        let suffix = 2;
+        while (used.has(candidate)) candidate = `${base}_${suffix++}`;
+        params.parameterId = candidate;
+        used.add(candidate);
+      }
+      visit(node.children);
+    }
+  };
+  visit(nodes);
+}
+
 export function normalizeNode(rawNode) {
   const kind = normalizeKind(rawNode?.kind);
   const definition = POINTS_NODE_KINDS[kind];
@@ -194,7 +241,7 @@ export function normalizeNode(rawNode) {
     })
   };
 
-  node.children = isBuilderContainerKind(kind)
+  node.children = isBuilderContainerKind(kind) && kind !== 'builder_reference' && kind !== 'effect_ring'
     ? (Array.isArray(rawNode?.children) ? rawNode.children.map((child) => normalizeNode(child)) : [])
     : [];
 
@@ -226,6 +273,8 @@ export function normalizePointsBuilderProject(source, tool = 'pointsbuilder') {
       ? raw.nodes
       : [];
 
+  const normalizedNodes = rawNodes.map((node) => normalizeNode(node));
+  ensureUniqueBuilderReferenceParameterIds(normalizedNodes);
   const normalized = {
     id: raw.id || base.id,
     tool: raw.tool || tool,
@@ -237,12 +286,24 @@ export function normalizePointsBuilderProject(source, tool = 'pointsbuilder') {
       ...base.settings,
       ...(typeof raw.settings === 'object' && raw.settings ? raw.settings : {})
     },
+    snapshots: {
+      version: 1,
+      items: Object.values(normalizeBuilderSnapshots(
+        rawState.builderSnapshots || raw.builderSnapshots || raw.snapshots
+      ))
+    },
     state: {
       ...rawState,
+      builderSnapshots: normalizeBuilderSnapshots(rawState.builderSnapshots || raw.builderSnapshots),
+      builderPresetMappings: rawState.builderPresetMappings && typeof rawState.builderPresetMappings === 'object'
+        ? Object.fromEntries(Object.entries(rawState.builderPresetMappings)
+            .map(([presetId, snapshotId]) => [String(presetId || '').trim(), String(snapshotId || '').trim()])
+            .filter(([presetId, snapshotId]) => presetId && snapshotId))
+        : {},
       root: {
         id: 'root',
         kind: 'ROOT',
-        children: rawNodes.map((node) => normalizeNode(node))
+        children: normalizedNodes
       },
       selection: {
         ...(typeof rawState.selection === 'object' && rawState.selection ? rawState.selection : {}),

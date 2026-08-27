@@ -1,6 +1,7 @@
 const STYLE_ID = "preview-distance-tool-style";
 const CONTEXT_DRAG_PX = 6;
 const CONTEXT_SUPPRESS_MS = 260;
+const MEASURE_AXES = ["X", "Y", "Z"];
 
 function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
@@ -109,14 +110,57 @@ function normalizeResolvedPoint(value, fallbackClientX = NaN, fallbackClientY = 
     };
 }
 
-function computeAbResult(pointA, pointB) {
+export function normalizeMeasureAxes(value) {
+    const source = Array.isArray(value) ? value : [];
+    const normalized = [];
+    for (const item of source) {
+        const axis = String(item || "").toUpperCase();
+        if (!MEASURE_AXES.includes(axis) || normalized.includes(axis)) continue;
+        normalized.push(axis);
+    }
+    return normalized;
+}
+
+export function resolveNearestMeasureAxis(pointA, pointB, allowedAxes) {
+    const axes = normalizeMeasureAxes(allowedAxes);
+    if (!pointA || !pointB || !axes.length) return "";
+    let bestAxis = axes[0];
+    let bestDistance = -1;
+    for (const axis of axes) {
+        const key = axis.toLowerCase();
+        const distance = Math.abs(safeNum(pointB[key]) - safeNum(pointA[key]));
+        if (distance <= bestDistance) continue;
+        bestAxis = axis;
+        bestDistance = distance;
+    }
+    return bestAxis;
+}
+
+export function constrainMeasurePoint(pointA, pointB, axis) {
+    const anchor = clonePoint(pointA);
+    const target = clonePoint(pointB);
+    const normalizedAxis = String(axis || "").toUpperCase();
+    if (!anchor || !target || !MEASURE_AXES.includes(normalizedAxis)) return target;
+    const key = normalizedAxis.toLowerCase();
+    return {
+        ...anchor,
+        [key]: target[key],
+        label: target.label
+    };
+}
+
+export function computeAxisMeasureResult(pointA, pointB, axis = "") {
     const a = clonePoint(pointA);
     const b = clonePoint(pointB);
     const dx = safeNum(b?.x) - safeNum(a?.x);
     const dy = safeNum(b?.y) - safeNum(a?.y);
     const dz = safeNum(b?.z) - safeNum(a?.z);
     const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    return { pointA: a, pointB: b, dx, dy, dz, distance };
+    const normalizedAxis = String(axis || "").toUpperCase();
+    const key = MEASURE_AXES.includes(normalizedAxis) ? normalizedAxis.toLowerCase() : "";
+    const signedDistance = key ? safeNum(b?.[key]) - safeNum(a?.[key]) : distance;
+    const direction = key ? `${signedDistance < 0 ? "-" : "+"}${normalizedAxis}` : "";
+    return { pointA: a, pointB: b, dx, dy, dz, distance, axis: key ? normalizedAxis : "", signedDistance, direction };
 }
 
 function isRightLike(ev) {
@@ -137,7 +181,10 @@ export function createPreviewDistanceTool(options = {}) {
         projectPointToClient = null,
         attachContextMenu = true,
         shouldOpenContextMenu = null,
-        isBlocked = null
+        isBlocked = null,
+        getAllowedAxes = null,
+        onMeasureConfirmed = null,
+        completeOnConfirm = false
     } = options;
 
     if (!(canvas instanceof Element) || typeof resolvePointFromEvent !== "function") {
@@ -159,10 +206,13 @@ export function createPreviewDistanceTool(options = {}) {
     const state = {
         active: false,
         anchorResolved: null,
+        rawHoverResolved: null,
         hoverResolved: null,
         lockedResolved: null,
         hoverResult: null,
-        lockedResult: null
+        lockedResult: null,
+        axisConstraint: "",
+        activeAxis: ""
     };
 
     let overlayRaf = 0;
@@ -239,7 +289,9 @@ export function createPreviewDistanceTool(options = {}) {
         }
         const mx = (fromScreen.x + toScreen.x) * 0.5;
         const my = (fromScreen.y + toScreen.y) * 0.5;
-        distanceLabel.textContent = formatNum(result.distance);
+        distanceLabel.textContent = result.direction
+            ? `${result.direction} · 长度 ${formatNum(result.distance)}`
+            : formatNum(result.distance);
         distanceLabel.style.left = `${Math.round(mx)}px`;
         distanceLabel.style.top = `${Math.round(my)}px`;
         distanceLabel.classList.remove("hidden");
@@ -301,10 +353,13 @@ export function createPreviewDistanceTool(options = {}) {
 
     function resetState() {
         state.anchorResolved = null;
+        state.rawHoverResolved = null;
         state.hoverResolved = null;
         state.lockedResolved = null;
         state.hoverResult = null;
         state.lockedResult = null;
+        state.axisConstraint = "";
+        state.activeAxis = "";
     }
 
     function resolvePoint(ev) {
@@ -317,6 +372,42 @@ export function createPreviewDistanceTool(options = {}) {
         } catch {
             return null;
         }
+    }
+
+    function allowedAxes() {
+        if (typeof getAllowedAxes !== "function") return [];
+        try {
+            return normalizeMeasureAxes(getAllowedAxes());
+        } catch {
+            return [];
+        }
+    }
+
+    function constrainResolvedPoint(resolved) {
+        if (!resolved?.point || !state.anchorResolved?.point) return resolved;
+        const axes = allowedAxes();
+        if (!axes.length) {
+            state.activeAxis = "";
+            return resolved;
+        }
+        const explicitAxis = axes.includes(state.axisConstraint) ? state.axisConstraint : "";
+        const axis = explicitAxis || resolveNearestMeasureAxis(state.anchorResolved.point, resolved.point, axes);
+        state.activeAxis = axis;
+        if (!axis) return resolved;
+        return {
+            ...resolved,
+            point: constrainMeasurePoint(state.anchorResolved.point, resolved.point, axis),
+            axis
+        };
+    }
+
+    function refreshHoverFromRaw() {
+        const resolved = constrainResolvedPoint(state.rawHoverResolved);
+        state.hoverResolved = resolved;
+        state.hoverResult = resolved?.point && state.anchorResolved?.point
+            ? computeAxisMeasureResult(state.anchorResolved.point, resolved.point, state.activeAxis)
+            : null;
+        render();
     }
 
     function cancel(silent = false) {
@@ -332,7 +423,7 @@ export function createPreviewDistanceTool(options = {}) {
         state.active = true;
         resetState();
         render();
-        emitToast("测距已开启：左键选 A 点，再选 B 点", "info");
+        emitToast("点选择已开启：先选起点，再按 X/Y/Z 或移动鼠标确定轴向", "info");
     }
 
     function toggleMeasureMode() {
@@ -347,14 +438,15 @@ export function createPreviewDistanceTool(options = {}) {
         if (!state.active || isToolBlocked()) return;
         if (ev && ev.buttons) return;
         const resolved = resolvePoint(ev);
-        state.hoverResolved = resolved;
+        state.rawHoverResolved = resolved;
         if (!resolved?.point || !state.anchorResolved?.point) {
+            state.hoverResolved = resolved;
             state.hoverResult = null;
+            state.activeAxis = "";
             render();
             return;
         }
-        state.hoverResult = computeAbResult(state.anchorResolved.point, resolved.point);
-        render();
+        refreshHoverFromRaw();
     }
 
     function confirmPoint(ev) {
@@ -366,20 +458,59 @@ export function createPreviewDistanceTool(options = {}) {
         }
         if (!state.anchorResolved?.point || state.lockedResolved?.point) {
             state.anchorResolved = resolved;
+            state.rawHoverResolved = resolved;
             state.hoverResolved = resolved;
             state.lockedResolved = null;
             state.hoverResult = null;
             state.lockedResult = null;
+            state.axisConstraint = "";
+            state.activeAxis = "";
             render();
-            emitToast("已记录 A 点", "info");
+            const axes = allowedAxes();
+            emitToast(axes.length
+                ? `已记录起点；可按 ${axes.join("/")} 约束方向，或移动鼠标自动选择最近轴`
+                : "已记录起点",
+            "info");
             return true;
         }
-        state.lockedResolved = resolved;
-        state.hoverResolved = resolved;
-        state.lockedResult = computeAbResult(state.anchorResolved.point, resolved.point);
+        state.rawHoverResolved = resolved;
+        const constrained = constrainResolvedPoint(resolved);
+        state.lockedResolved = constrained;
+        state.hoverResolved = constrained;
+        state.lockedResult = computeAxisMeasureResult(state.anchorResolved.point, constrained.point, state.activeAxis);
         state.hoverResult = state.lockedResult;
         render();
+        if (typeof onMeasureConfirmed === "function") {
+            try {
+                onMeasureConfirmed({ ...state.lockedResult });
+            } catch {
+            }
+        }
+        emitToast(state.lockedResult.direction
+            ? `已确认 ${state.lockedResult.direction}，长度 ${formatNum(state.lockedResult.distance)}`
+            : `已确认长度 ${formatNum(state.lockedResult.distance)}`,
+        "success");
+        if (completeOnConfirm) cancel(true);
         return true;
+    }
+
+    function handleAxisKeydown(ev) {
+        if (!state.active || !state.anchorResolved?.point || state.lockedResolved?.point || isToolBlocked()) return;
+        if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+        const target = ev.target;
+        if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return;
+        const axis = String(ev.code || "").replace(/^Key/, "").toUpperCase();
+        if (!MEASURE_AXES.includes(axis)) return;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        const axes = allowedAxes();
+        if (!axes.includes(axis)) {
+            emitToast(`当前工作平面不包含 ${axis} 轴`, "info");
+            return;
+        }
+        state.axisConstraint = axis;
+        refreshHoverFromRaw();
+        emitToast(`已约束到 ${axis} 轴`, "info");
     }
 
     function updateRightGesture(ev) {
@@ -391,6 +522,11 @@ export function createPreviewDistanceTool(options = {}) {
     }
 
     function handlePointerDown(ev) {
+        if (state.active && ev?.button === 0 && !isRightLike(ev)) {
+            ev.preventDefault();
+            ev.stopImmediatePropagation();
+            return;
+        }
         if (!attachContextMenu || !isRightLike(ev)) return;
         rightGesture = {
             pointerId: ev.pointerId,
@@ -450,7 +586,9 @@ export function createPreviewDistanceTool(options = {}) {
     const handleCanvasClick = (ev) => {
         if (ev.button !== undefined && ev.button !== 0) return;
         if (!state.active) return;
-        confirmPoint(ev);
+        if (!confirmPoint(ev)) return;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
     };
 
     canvas.addEventListener("pointerdown", handlePointerDown, true);
@@ -460,6 +598,7 @@ export function createPreviewDistanceTool(options = {}) {
     canvas.addEventListener("pointercancel", handlePointerUp, true);
     canvas.addEventListener("click", handleCanvasClick, true);
     canvas.addEventListener("contextmenu", handleContextMenu, true);
+    window.addEventListener("keydown", handleAxisKeydown, true);
 
     render();
 
@@ -474,6 +613,7 @@ export function createPreviewDistanceTool(options = {}) {
         openPanelAtCanvasCenter: startMeasureMode,
         togglePanelAtCanvasCenter: toggleMeasureMode,
         startMode: startMeasureMode,
+        getResult: () => state.lockedResult ? { ...state.lockedResult } : null,
         destroy() {
             stopOverlayLoop();
             canvas.removeEventListener("pointerdown", handlePointerDown, true);
@@ -483,6 +623,7 @@ export function createPreviewDistanceTool(options = {}) {
             canvas.removeEventListener("pointercancel", handlePointerUp, true);
             canvas.removeEventListener("click", handleCanvasClick, true);
             canvas.removeEventListener("contextmenu", handleContextMenu, true);
+            window.removeEventListener("keydown", handleAxisKeydown, true);
             if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
         }
     };

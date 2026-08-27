@@ -1,0 +1,7 @@
+{
+  "name": "ControlableHappyVillagerEffect",
+  "displayName": "HappyVillager",
+  "textures": [
+    "assets/particles/happy_villager/glint.png"
+  ]
+}

@@ -4,6 +4,16 @@ export const STATE_STORAGE_KEY = "pb_state_v1";
 export const PRESET_STORAGE_KEY = "pb_presets_v1";
 export const PRESET_GROUPS_KEY = "pb_preset_groups_v1";
 
+// Keep Composition Builder drafts isolated per card and target. The legacy
+// shared slot remains available for standalone PointsBuilder pages.
+export function getAutoStateStorageKey(context = null, storageKey = STATE_STORAGE_KEY) {
+    const base = String(storageKey || STATE_STORAGE_KEY);
+    const normalized = getAutoStateContext(context);
+    if (!normalized) return base;
+    const suffix = `:${encodeURIComponent(normalized.cardId)}:${encodeURIComponent(normalized.target)}`;
+    return base.endsWith(suffix) ? base : `${base}${suffix}`;
+}
+
 const AUTO_STATE_DB_NAME = "coo-particles-points-builder-v1";
 const AUTO_STATE_DB_VERSION = 1;
 const AUTO_STATE_STORE = "drafts";
@@ -202,7 +212,9 @@ export function saveKotlinEndMode(mode) {
 
 export function loadAutoState() {
     try {
-        const raw = localStorage.getItem(STATE_STORAGE_KEY);
+        const context = getAutoStateContext(globalThis.__PB_EDITOR_CONTEXT);
+        const storageKey = getAutoStateStorageKey(context, STATE_STORAGE_KEY);
+        const raw = localStorage.getItem(storageKey);
         if (!raw) return null;
         const obj = JSON.parse(raw);
         const state = (obj && obj.state) ? obj.state : obj;
@@ -213,9 +225,13 @@ export function loadAutoState() {
 }
 
 export async function loadLatestAutoStatePayload({ storageKey = STATE_STORAGE_KEY, expectedContext = null } = {}) {
+    const resolvedStorageKey = getAutoStateStorageKey(
+        expectedContext || globalThis.__PB_EDITOR_CONTEXT,
+        storageKey
+    );
     const local = (() => {
         try {
-            return parseAutoStatePayload(localStorage.getItem(storageKey));
+            return parseAutoStatePayload(localStorage.getItem(resolvedStorageKey));
         } catch {
             return null;
         }
@@ -255,10 +271,14 @@ export function saveAutoState(state, serializedState = "") {
         const payloadJson = context?.cardId
             ? `{"state":${stateJson},"context":${JSON.stringify(context)},"ts":${ts}}`
             : `{"state":${stateJson},"ts":${ts}}`;
+        const localStorageKey = getAutoStateStorageKey(context, STATE_STORAGE_KEY);
         let localSaved = false;
         try {
-            localStorage.setItem(STATE_STORAGE_KEY, payloadJson);
+            localStorage.setItem(localStorageKey, payloadJson);
             localSaved = true;
+            if (context?.cardId && localStorageKey !== STATE_STORAGE_KEY) {
+                localStorage.removeItem(STATE_STORAGE_KEY);
+            }
         } catch (error) {
             try {
                 globalThis.dispatchEvent?.(new CustomEvent("pb-auto-save-error", {
@@ -280,7 +300,9 @@ export function saveAutoState(state, serializedState = "") {
 
 export function clearAutoState() {
     try {
-        localStorage.removeItem(STATE_STORAGE_KEY);
+        const contextKey = getAutoStateStorageKey(globalThis.__PB_EDITOR_CONTEXT, STATE_STORAGE_KEY);
+        localStorage.removeItem(contextKey);
+        if (contextKey !== STATE_STORAGE_KEY) localStorage.removeItem(STATE_STORAGE_KEY);
         return true;
     } catch {
         return false;

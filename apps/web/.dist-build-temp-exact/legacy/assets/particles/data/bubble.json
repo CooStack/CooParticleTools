@@ -1,0 +1,7 @@
+{
+  "name": "ControlableBubbleEffect",
+  "displayName": "Bubble",
+  "textures": [
+    "assets/particles/bubble/bubble.png"
+  ]
+}

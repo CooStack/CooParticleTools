@@ -46,9 +46,14 @@
   --input-bg-focus: rgba(17, 22, 28, 0.84);
 
   /* Geometry */
-  --radius: 14px;
-  --radius2: 10px;
-  --radius3: 8px;
+  /*
+   * Shared Material-style geometry.  Keep one scale for every shell and
+   * builder so nested cards, fields and controls do not switch corner language
+   * as the user moves between pages.
+   */
+  --radius: 16px;
+  --radius2: 12px;
+  --radius3: 10px;
 
   /* Elevation */
   --shadow: 0 12px 30px rgba(0, 0, 0, 0.35);

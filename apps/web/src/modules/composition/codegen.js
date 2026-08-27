@@ -1,4 +1,4 @@
-import { generatePointsBuilderKotlin } from '../pointsbuilder/codegen.js';
+import { generatePointsBuilderKotlin, generatePointsBuilderKotlinParts } from '../pointsbuilder/codegen.js';
 import { createCompositionPreviewRuntime } from './preview-runtime.js';
 import { normalizeCompositionProject } from './normalizer.js';
 
@@ -43,6 +43,41 @@ function emitAngleOffsetComments(lines, angleOffset, indent = 2, label = 'angleO
 
 export function emitBuilderExprFromState(builderState) {
   return generatePointsBuilderKotlin(builderState);
+}
+
+function parseStaticCompositionVector(value) {
+  const match = String(value || '').trim().match(/^[A-Za-z0-9_]+\s*\(([^)]+)\)$/);
+  if (!match) return undefined;
+  const parts = match[1].split(',').slice(0, 3).map((part) => Number(part.trim().replace(/[fFdDlL]$/g, '')));
+  return parts.length === 3 && parts.every(Number.isFinite)
+    ? { x: parts[0], y: parts[1], z: parts[2] }
+    : undefined;
+}
+
+function createStaticCompositionReferenceResolver(project) {
+  const values = new Map();
+  for (const item of [...(project.globalVars || []), ...(project.globalConsts || [])]) {
+    if (!values.has(item.name)) values.set(item.name, item);
+  }
+  return (type, name) => {
+    const item = values.get(String(name || '').trim());
+    if (!item) return undefined;
+    if (type === 'vector') return parseStaticCompositionVector(item.value);
+    const numeric = Number(String(item.value ?? '').replace(/[fFdDlL]$/g, ''));
+    return Number.isFinite(numeric) ? numeric : undefined;
+  };
+}
+
+function emitPointsBuilderExpressionParts(parts) {
+  const expression = parts?.expression || 'PointsBuilder()';
+  const localDeclarations = Array.isArray(parts?.localDeclarations) ? parts.localDeclarations : [];
+  if (!localDeclarations.length) return expression;
+  return [
+    'run {',
+    ...localDeclarations.map((line) => indentBlock(line, 2)),
+    indentBlock(expression, 2),
+    '}'
+  ].join('\n');
 }
 
 function emitGlobalVar(item) {
@@ -141,7 +176,7 @@ function emitShapeNode(node, indent = 4, path = []) {
   return lines;
 }
 
-function emitCard(card) {
+function emitCard(card, builderParts = null) {
   const lines = [];
   lines.push(`card("${escapeKotlinString(card.name)}") {`);
   lines.push(`  particleEffect = "${escapeKotlinString(card.particleEffect)}"`);
@@ -173,7 +208,10 @@ function emitCard(card) {
     lines.push(`  point(${Number(card.point.x || 0)}, ${Number(card.point.y || 0)}, ${Number(card.point.z || 0)})`);
   } else {
     lines.push('  builder {');
-    lines.push(indentBlock(generatePointsBuilderKotlin(card.builderState), 4));
+    lines.push(indentBlock(
+      builderParts ? emitPointsBuilderExpressionParts(builderParts) : generatePointsBuilderKotlin(card.builderState),
+      4
+    ));
     lines.push('  }');
   }
   pushComment(lines, `shapeAxis = ${String(card.shapeAxisExpr || card.shapeAxisPreset || 'RelativeLocation.yAxis()')}`);
@@ -201,8 +239,29 @@ export function collectCompositionPreviewPoints(project, tick = 0) {
 
 export function generateCompositionKotlin(rawProject) {
   const project = normalizeCompositionProject(rawProject);
+  const resolveStaticReference = createStaticCompositionReferenceResolver(project);
+  const builderPartsByCard = project.cards.map((card) => (
+    card.bindMode === 'point' ? null : generatePointsBuilderKotlinParts(card.builderState, { resolveStaticReference })
+  ));
+  const builderConstants = Array.from(new Set(
+    builderPartsByCard.flatMap((parts) => parts?.constants || [])
+  ));
+  const builderDeclarations = Array.from(new Map(
+    builderPartsByCard
+      .flatMap((parts) => parts?.declarations || [])
+      .map((declaration) => {
+        const match = declaration.match(/^private (val|fun)\s+([A-Za-z_][A-Za-z0-9_]*)/);
+        return [match ? `${match[1]}:${match[2]}` : declaration, declaration];
+      })
+  ).values());
   const lines = [];
   lines.push(`class ${project.name || 'NewComposition'} {`);
+  if (builderConstants.length) {
+    lines.push('  private companion object {');
+    builderConstants.forEach((constant) => lines.push(`    ${constant}`));
+    lines.push('  }');
+    lines.push('');
+  }
   lines.push('  fun build() = composition {');
   lines.push(`    compositionType = "${project.compositionType}"`);
   lines.push(`    previewPlayTicks = ${Number(project.previewPlayTicks || 70)}`);
@@ -214,14 +273,22 @@ export function generateCompositionKotlin(rawProject) {
   project.globalConsts.forEach((item) => {
     lines.push(indentBlock(emitGlobalConst(item), 4));
   });
+  builderDeclarations.forEach((declaration) => {
+    lines.push(indentBlock(
+      declaration
+        .replace(/^private val /, 'val ')
+        .replace(/^private fun /, 'fun '),
+      4
+    ));
+  });
   project.compositionAnimates.forEach((item) => {
     lines.push(indentBlock(emitRootAnimate(item), 4));
   });
   project.displayActions.forEach((item) => {
     lines.push(indentBlock(emitDisplayAction(item), 4));
   });
-  project.cards.forEach((card) => {
-    lines.push(indentBlock(emitCard(card), 4));
+  project.cards.forEach((card, index) => {
+    lines.push(indentBlock(emitCard(card, builderPartsByCard[index]), 4));
   });
   lines.push('  }');
   lines.push('}');

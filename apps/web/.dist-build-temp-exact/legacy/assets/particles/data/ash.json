@@ -1,0 +1,7 @@
+{
+  "name": "ControlableAshEffect",
+  "displayName": "Ash",
+  "textures": [
+    "assets/particles/ash/generic_0.png"
+  ]
+}

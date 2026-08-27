@@ -1,0 +1,7 @@
+{
+  "name": "ControlableBubbleColumnUpEffect",
+  "displayName": "BubbleColumnUp",
+  "textures": [
+    "assets/particles/bubble_column_up/bubble.png"
+  ]
+}

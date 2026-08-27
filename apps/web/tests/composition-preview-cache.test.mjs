@@ -1963,6 +1963,53 @@ test('GPU preview keeps project scale on a uniform transform instead of rebuildi
   assert.ok(Math.abs(app._pointsShaderRef.uniforms.uGpuPreviewGlobalTransform.value.elements[10] - 1.25) < 1e-6);
 });
 
+test('GPU preview applies manual project scale helper state to the global transform', () => {
+  const { card, leaf } = createGpuShapeCard();
+  const { app } = prepareGpuParticlePathHarness(card, leaf);
+  app.state.projectScale = {
+    type: 'bezier',
+    runMode: 'manual',
+    min: 0.01,
+    max: 1,
+    tick: 10,
+    c1x: 3.18,
+    c1y: 1.31,
+    c1z: 0,
+    c2x: 3.23,
+    c2y: 1.33,
+    c2z: 0,
+    reversedOnDisable: false
+  };
+  app.state.displayActions = [{
+    type: 'expression',
+    expression: 'age++; if (age > 50) { scaleHelper.doScale(); }'
+  }];
+  app._pointsShaderRef = {
+    uniforms: {
+      uGpuPreviewEnabled: { value: 0 },
+      uGpuPreviewTick: { value: 0 },
+      uGpuPreviewPlayTicks: { value: 0 },
+      uGpuPreviewCycleTicks: { value: 0 },
+      uGpuPreviewGlobalAlpha: { value: 1 },
+      uGpuPreviewGlobalTransform: { value: app.createPreviewGpuMatrix4() }
+    }
+  };
+  app.getPreviewCycleConfig = () => ({ appear: 0, live: 210, fade: 0, play: 210, total: 210 });
+  delete app.compilePreviewScriptsFromState;
+  app.compilePreviewScriptsFromState({ force: true });
+  app.previewAnimStart = 0;
+  assert.equal(app.configurePreviewGpuParticlePath(), true);
+
+  app.updatePreviewGpuParticleAnimation(60 * 50);
+  const scaleAtTick60 = app._pointsShaderRef.uniforms.uGpuPreviewGlobalTransform.value.elements[0];
+
+  assert.ok(scaleAtTick60 > 0.1, JSON.stringify({
+    scaleAtTick60,
+    runtime: app.previewRuntimeGlobals,
+    actions: app.buildPreviewRuntimeActions(60, app.state.displayActions, { scope: 'display' })
+  }));
+});
+
 
 test('GPU preview keeps single-group card scale in a shared uniform value', () => {
   const { card, leaf } = createGpuShapeCard({}, {

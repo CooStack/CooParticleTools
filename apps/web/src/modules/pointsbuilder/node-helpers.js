@@ -94,6 +94,10 @@ export function mirrorCopyNode(node, planeKey = 'XZ') {
     return cloned;
   }
 
+  if (cloned.kind === 'builder_reference' || cloned.kind === 'effect_ring') {
+    return cloned;
+  }
+
   if (cloned.kind === 'add_builder' || cloned.kind === 'with_builder' || cloned.kind === 'add_with' || cloned.kind === 'clear_as_mask') {
     if (params.ox !== undefined || params.oy !== undefined || params.oz !== undefined) {
       const offset = mirrorPointByPlane({ x: params.ox, y: params.oy, z: params.oz }, planeKey);

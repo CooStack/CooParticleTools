@@ -1,0 +1,7 @@
+{
+  "name": "ControlableFallingSporeBlossomEffect",
+  "displayName": "FallingSporeBlossom",
+  "textures": [
+    "assets/particles/falling_spore_blossom/drip_fall.png"
+  ]
+}

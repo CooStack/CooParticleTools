@@ -1,0 +1,14 @@
+{
+  "name": "ControlableSnowflakeEffect",
+  "displayName": "Snowflake",
+  "textures": [
+    "assets/particles/snowflake/generic_7.png",
+    "assets/particles/snowflake/generic_6.png",
+    "assets/particles/snowflake/generic_5.png",
+    "assets/particles/snowflake/generic_4.png",
+    "assets/particles/snowflake/generic_3.png",
+    "assets/particles/snowflake/generic_2.png",
+    "assets/particles/snowflake/generic_1.png",
+    "assets/particles/snowflake/generic_0.png"
+  ]
+}

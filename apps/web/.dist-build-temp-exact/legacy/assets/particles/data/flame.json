@@ -1,0 +1,7 @@
+{
+  "name": "ControlableFlameEffect",
+  "displayName": "Flame",
+  "textures": [
+    "assets/particles/flame/flame.png"
+  ]
+}

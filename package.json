@@ -1,11 +1,12 @@
 {
   "name": "coo-particles-api-tools",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Local desktop client shells for CooParticlesAPI tools.",
   "scripts": {
     "electron": "py scripts/run_electron.py",
     "electron:rebuild": "py scripts/run_electron.py --rebuild",
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
     "test:python": "py -m unittest discover"
   }
 }

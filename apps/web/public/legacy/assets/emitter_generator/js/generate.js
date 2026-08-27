@@ -180,19 +180,19 @@ import {
             builderState: createDefaultBuilderState(),
         },
         particle: {
-            lifeMin: 40,
-            lifeMax: 120,
-            sizeMin: 0.08,
-            sizeMax: 0.18,
-            countMin: 2,
-            countMax: 6,
+            lifeMin: 10,
+            lifeMax: 20,
+            sizeMin: 0.1,
+            sizeMax: 0.2,
+            countMin: 10,
+            countMax: 20,
             velMode: "fixed",
-            vel: {x: 0, y: 0.15, z: 0},
-            velSpeedMin: 1.0,
-            velSpeedMax: 1.2,
+            vel: {x: 0, y: 0, z: 0},
+            velSpeedMin: 0.1,
+            velSpeedMax: 0.3,
             visibleRange: 128,
-            colorStart: "#4df3ff",
-            colorEnd: "#4df3ff",
+            colorStart: "#ffffff",
+            colorEnd: "#ffffff",
             colorOverLifeEnabled: false,
         },
         template: {
@@ -594,22 +594,22 @@ import {
         emitter.builderState = normalizeBuilderState(emitter.builderState);
 
         const particle = card.particle || (card.particle = {});
-        particle.lifeMin = normalizeNumExpr(particle.lifeMin, 40, { min: 1 });
-        particle.lifeMax = normalizeNumExpr(particle.lifeMax, 120, { min: 1 });
-        particle.sizeMin = normalizeNumExpr(particle.sizeMin, 0.08, { min: 0.001 });
-        particle.sizeMax = normalizeNumExpr(particle.sizeMax, 0.18, { min: 0.001 });
-        particle.countMin = normalizeNumExpr(particle.countMin, 2, { min: 0 });
-        particle.countMax = normalizeNumExpr(particle.countMax, 6, { min: 0 });
+        particle.lifeMin = normalizeNumExpr(particle.lifeMin, 10, { min: 1 });
+        particle.lifeMax = normalizeNumExpr(particle.lifeMax, 20, { min: 1 });
+        particle.sizeMin = normalizeNumExpr(particle.sizeMin, 0.1, { min: 0.001 });
+        particle.sizeMax = normalizeNumExpr(particle.sizeMax, 0.2, { min: 0.001 });
+        particle.countMin = normalizeNumExpr(particle.countMin, 10, { min: 0 });
+        particle.countMax = normalizeNumExpr(particle.countMax, 20, { min: 0 });
         particle.velMode = (particle.velMode === "spawn_rel") ? "spawn_rel" : "fixed";
-        particle.vel = particle.vel || {x: 0, y: 0.15, z: 0};
+        particle.vel = particle.vel || {x: 0, y: 0, z: 0};
         particle.vel.x = normalizeNumExpr(particle.vel.x, 0);
-        particle.vel.y = normalizeNumExpr(particle.vel.y, 0.15);
+        particle.vel.y = normalizeNumExpr(particle.vel.y, 0);
         particle.vel.z = normalizeNumExpr(particle.vel.z, 0);
-        particle.velSpeedMin = normalizeNumExpr(particle.velSpeedMin, 1.0, { min: 0 });
-        particle.velSpeedMax = normalizeNumExpr(particle.velSpeedMax, 1.2, { min: 0 });
+        particle.velSpeedMin = normalizeNumExpr(particle.velSpeedMin, 0.1, { min: 0 });
+        particle.velSpeedMax = normalizeNumExpr(particle.velSpeedMax, 0.3, { min: 0 });
         particle.visibleRange = normalizeNumExpr(particle.visibleRange, 128, { min: 1 });
-        particle.colorStart = (particle.colorStart || "#4df3ff").trim();
-        particle.colorEnd = (particle.colorEnd || particle.colorStart || "#4df3ff").trim();
+        particle.colorStart = (particle.colorStart || "#ffffff").trim();
+        particle.colorEnd = (particle.colorEnd || particle.colorStart || "#ffffff").trim();
         particle.colorOverLifeEnabled = !!particle.colorOverLifeEnabled;
 
         const lifeMinN = maybeNumericLiteral(particle.lifeMin);

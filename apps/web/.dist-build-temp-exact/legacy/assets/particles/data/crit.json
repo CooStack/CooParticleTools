@@ -1,0 +1,7 @@
+{
+  "name": "ControlableCritEffect",
+  "displayName": "Crit",
+  "textures": [
+    "assets/particles/crit/critical_hit.png"
+  ]
+}

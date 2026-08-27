@@ -1,10 +1,10 @@
 const ADAPTIVE_GRID_BASE_STEP = 1;
 const ADAPTIVE_GRID_TARGET_PIXEL_SPACING = 48;
-const ADAPTIVE_GRID_MIN_STEP = 0.01;
-const ADAPTIVE_GRID_MAX_STEP = 100000;
+const ADAPTIVE_GRID_MIN_EXPONENT = -7;
+const ADAPTIVE_GRID_MAX_EXPONENT = 17;
 
-function clampGridStep(value) {
-  return Math.max(ADAPTIVE_GRID_MIN_STEP, Math.min(ADAPTIVE_GRID_MAX_STEP, value));
+function clampGridExponent(value, maximum = ADAPTIVE_GRID_MAX_EXPONENT) {
+  return Math.max(ADAPTIVE_GRID_MIN_EXPONENT, Math.min(maximum, value));
 }
 
 function resolveRawGridStep({ distance, fov = 55, viewportHeight, targetPixelSpacing = ADAPTIVE_GRID_TARGET_PIXEL_SPACING } = {}) {
@@ -23,30 +23,18 @@ function resolveRawGridStep({ distance, fov = 55, viewportHeight, targetPixelSpa
 
 export function resolveAdaptiveGridStep(options = {}) {
   const rawStep = resolveRawGridStep(options);
-
-  const exponent = Math.floor(Math.log10(rawStep));
-  const magnitude = 10 ** exponent;
-  const normalized = rawStep / magnitude;
-  const multiplier = normalized < 1.5 ? 1 : normalized < 3.5 ? 2 : normalized < 7.5 ? 5 : 10;
-  return clampGridStep(multiplier * magnitude);
+  const exponent = clampGridExponent(Math.round(Math.log2(rawStep / ADAPTIVE_GRID_BASE_STEP)));
+  return ADAPTIVE_GRID_BASE_STEP * (2 ** exponent);
 }
 
 export function resolveAdaptiveGridLod(options = {}) {
   const rawStep = resolveRawGridStep(options);
-  const exponent = Math.floor(Math.log10(rawStep));
-  const magnitude = 10 ** exponent;
-  const normalizedMagnitude = rawStep / magnitude;
-  let fineMultiplier = 1;
-  let coarseMultiplier = 2;
-  if (normalizedMagnitude >= Math.sqrt(2) && normalizedMagnitude < Math.sqrt(10)) {
-    fineMultiplier = 2;
-    coarseMultiplier = 5;
-  } else if (normalizedMagnitude >= Math.sqrt(10)) {
-    fineMultiplier = 5;
-    coarseMultiplier = 10;
-  }
-  const fineStep = clampGridStep(fineMultiplier * magnitude);
-  const coarseStep = clampGridStep(coarseMultiplier * magnitude);
+  const exponent = clampGridExponent(
+    Math.floor(Math.log2(rawStep / ADAPTIVE_GRID_BASE_STEP)),
+    ADAPTIVE_GRID_MAX_EXPONENT - 1
+  );
+  const fineStep = ADAPTIVE_GRID_BASE_STEP * (2 ** exponent);
+  const coarseStep = fineStep * 2;
   const normalized = rawStep / fineStep;
   const blendStart = 1.05;
   const blendEnd = Math.max(blendStart + 0.1, (coarseStep / fineStep) * 0.85);

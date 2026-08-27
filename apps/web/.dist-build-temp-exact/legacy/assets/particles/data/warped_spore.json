@@ -1,0 +1,7 @@
+{
+  "name": "ControlableWarpedSporeEffect",
+  "displayName": "WarpedSpore",
+  "textures": [
+    "assets/particles/warped_spore/generic_0.png"
+  ]
+}

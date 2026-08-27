@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { createGeneratorProject } from '../src/modules/generator/defaults.js';
 import { sampleLifecycleCurve } from '../src/modules/generator/curves.js';
+import { setCParticleTexturePreview } from '../src/modules/generator/cparticle-forces.js';
 import {
   createGeneratorPreviewRuntime,
   resolveRelativeParticleRotation
@@ -23,6 +24,7 @@ function createFixture(count = 1) {
   card.particle.sizeMax = 0.1;
   card.particle.colorStart = '#000000';
   card.particle.colorEnd = '#ffffff';
+  card.particle.colorGradientEnabled = true;
   card.curves.color.enabled = true;
   card.render.alpha = 100;
   card.render.light = 15;
@@ -35,6 +37,44 @@ function createFixture(count = 1) {
   card.curves.size.y.keyframes[0].value = 1;
   card.curves.size.y.keyframes[1].value = 1;
   return { project, card };
+}
+
+function simulateCParticleForce(type, parameters, options = {}) {
+  const { project, card } = createFixture();
+  const position = options.position || { x: 0, y: 0, z: 0 };
+  const velocity = options.velocity || { x: 0, y: 0, z: 0 };
+  const speed = Math.hypot(velocity.x, velocity.y, velocity.z);
+  card.useGPU = true;
+  card.emitter.type = 'point';
+  card.emitter.offset = { ...position };
+  card.emission.mode = 'once';
+  card.particle.lifeMin = 100;
+  card.particle.lifeMax = 100;
+  card.particle.velocity = { ...velocity };
+  card.particle.velocityRandom = { x: 0, y: 0, z: 0 };
+  card.particle.speedMin = speed;
+  card.particle.speedMax = speed;
+  if (Object.hasOwn(options, 'charge')) card.gpu.charge = options.charge;
+  project.forceCommands = [{
+    id: `${type}-preview`,
+    enabled: true,
+    label: `${type} preview`,
+    force: { type, parameters },
+    selector: { type: 'All' }
+  }];
+  const runtime = createGeneratorPreviewRuntime();
+  runtime.step(project, 1);
+  return runtime.snapshotRenderData(project);
+}
+
+function assertPreviewPosition(snapshot, expected, epsilon = 1e-6) {
+  assert.equal(snapshot.count, 1);
+  expected.forEach((value, index) => {
+    assert.ok(
+      Math.abs(snapshot.positions[index] - value) < epsilon,
+      `expected axis ${index} to be ${value}, received ${snapshot.positions[index]}`
+    );
+  });
 }
 
 test('generator render cache preserves values and invalidates after curve edits', () => {
@@ -241,32 +281,27 @@ test('GPU preview samples Bezier opacity, color, and size from the shared lifecy
   assert.ok(Math.abs(point.scaleY - size) < 1e-9);
 });
 
-test('disabled color curve previews CPU random color while GPU keeps the left color', () => {
+test('disabled custom color curve keeps the default lifetime gradient for CPU and GPU', () => {
   const { project, card } = createFixture();
   card.emitter.type = 'point';
   card.particle.colorStart = '#000000';
   card.particle.colorEnd = '#ff0000';
   card.curves.color.enabled = false;
-  const originalRandom = Math.random;
-  Math.random = () => 0.5;
-  try {
-    const cpuRuntime = createGeneratorPreviewRuntime();
-    cpuRuntime.step(project, 1);
-    const cpuSnapshot = cpuRuntime.snapshotRenderData(project);
-    assert.ok(Math.abs(cpuSnapshot.colors[0] - 0.5) < 1e-6);
-    assert.equal(cpuSnapshot.colors[1], 0);
-    assert.equal(cpuSnapshot.colors[2], 0);
 
-    card.useGPU = true;
-    const gpuRuntime = createGeneratorPreviewRuntime();
-    gpuRuntime.step(project, 1);
-    const gpuSnapshot = gpuRuntime.snapshotRenderData(project);
-    assert.equal(gpuSnapshot.colors[0], 0);
-    assert.equal(gpuSnapshot.colors[1], 0);
-    assert.equal(gpuSnapshot.colors[2], 0);
-  } finally {
-    Math.random = originalRandom;
-  }
+  const cpuRuntime = createGeneratorPreviewRuntime();
+  cpuRuntime.step(project, 1);
+  const cpuSnapshot = cpuRuntime.snapshotRenderData(project);
+  assert.ok(Math.abs(cpuSnapshot.colors[0] - 0.25) < 1e-6);
+  assert.equal(cpuSnapshot.colors[1], 0);
+  assert.equal(cpuSnapshot.colors[2], 0);
+
+  card.useGPU = true;
+  const gpuRuntime = createGeneratorPreviewRuntime();
+  gpuRuntime.step(project, 1);
+  const gpuSnapshot = gpuRuntime.snapshotRenderData(project);
+  assert.ok(Math.abs(gpuSnapshot.colors[0] - 0.25) < 1e-6);
+  assert.equal(gpuSnapshot.colors[1], 0);
+  assert.equal(gpuSnapshot.colors[2], 0);
 });
 
 test('generator preview applies emitter gravity before movement', () => {
@@ -287,7 +322,7 @@ test('generator preview applies emitter gravity before movement', () => {
   assert.ok(Math.abs(snapshot.positions[1] - 0.75) < 1e-6);
 });
 
-test('generator preview separates CPU queues from shared GPU Commands', () => {
+test('generator preview separates CPU queues from CParticle Force Commands', () => {
   const { project, card } = createFixture();
   card.emitter.type = 'point';
   card.emitter.offset = { x: 0, y: 0, z: 0 };
@@ -310,9 +345,10 @@ test('generator preview separates CPU queues from shared GPU Commands', () => {
       params: { deltaX: 1, deltaY: 0, deltaZ: 0 }
     }]
   }];
-  project.gpuCommands = [{
-    id: 'gpu-gravity', enabled: true, tick: 12, type: 'gravity', label: 'GPU gravity',
-    params: { gravity: 0.5 }
+  project.forceCommands = [{
+    id: 'gpu-gravity', enabled: true, label: 'GPU gravity',
+    force: { type: 'Gravity', parameters: { accelX: 0, accelY: -0.5, accelZ: 0 } },
+    selector: { type: 'All' }
   }];
 
   const runtime = createGeneratorPreviewRuntime();
@@ -324,6 +360,401 @@ test('generator preview separates CPU queues from shared GPU Commands', () => {
   assert.ok(Math.abs(snapshot.positions[1] - 0.75) < 1e-6);
   assert.ok(Math.abs(snapshot.positions[3]) < 1e-6);
   assert.ok(Math.abs(snapshot.positions[4] - 10.5) < 1e-6);
+});
+
+test('generator preview simulates every legacy analytical CParticle Force', () => {
+  const envDrag = simulateCParticleForce('EnvDrag', { airDensity: 400000 }, {
+    velocity: { x: 1, y: 0, z: 0 }
+  });
+  assertPreviewPosition(envDrag, [0, 0, 0]);
+
+  const expDrag = simulateCParticleForce('ExpDrag', {
+    damping: Math.log(2),
+    minSpeed: 0,
+    linear: 0
+  }, { velocity: { x: 1, y: 0, z: 0 } });
+  assertPreviewPosition(expDrag, [0.5, 0, 0]);
+
+  const wind = simulateCParticleForce('Wind', {
+    windX: 2,
+    windY: 0,
+    windZ: 0,
+    airDensity: 400000,
+    rangeMode: 0
+  });
+  assertPreviewPosition(wind, [4, 0, 0]);
+
+  const vortex = simulateCParticleForce('Vortex', {
+    centerX: 0,
+    centerY: 0,
+    centerZ: 0,
+    axisX: 0,
+    axisY: 1,
+    axisZ: 0,
+    swirlStrength: 1,
+    radialPull: 0,
+    axialLift: 0,
+    range: 1,
+    falloffPower: 1,
+    minDistance: 0
+  }, { position: { x: 1, y: 0, z: 0 } });
+  assertPreviewPosition(vortex, [1, 0, -0.5]);
+
+  const attraction = simulateCParticleForce('Attraction', {
+    targetX: 0,
+    targetY: 0,
+    targetZ: 0,
+    strength: 1,
+    range: 1,
+    falloffPower: 1,
+    minDistance: 0
+  }, { position: { x: 1, y: 0, z: 0 } });
+  assertPreviewPosition(attraction, [0.5, 0, 0]);
+
+  const rotation = simulateCParticleForce('RotationForce', {
+    centerX: 0,
+    centerY: 0,
+    centerZ: 0,
+    axisX: 0,
+    axisY: 1,
+    axisZ: 0,
+    strength: 1,
+    range: 1,
+    falloffPower: 1
+  }, { position: { x: 1, y: 0, z: 0 } });
+  assertPreviewPosition(rotation, [1, 0, -0.5]);
+
+  const noise = simulateCParticleForce('Noise', {
+    strength: 1,
+    frequency: 0.35,
+    speed: 0.02,
+    clampSpeed: 2,
+    affectY: 1,
+    useLifeCurve: false,
+    seedOffset: 0
+  }, { position: { x: 1, y: 2, z: 3 } });
+  assert.equal(noise.count, 1);
+  assert.ok(
+    Math.abs(noise.positions[0] - 1) > 1e-6
+      || Math.abs(noise.positions[1] - 2) > 1e-6
+      || Math.abs(noise.positions[2] - 3) > 1e-6
+  );
+
+  const flowField = simulateCParticleForce('FlowField', {
+    amplitude: 2,
+    frequency: 0,
+    timeScale: 0,
+    phaseOffset: 0,
+    worldOffsetX: 0,
+    worldOffsetY: 0,
+    worldOffsetZ: 0
+  });
+  assertPreviewPosition(flowField, [1, 1, 1]);
+});
+
+test('generator preview applies Sign, CommandMask, and runtime Source selectors', () => {
+  const { project, card } = createFixture();
+  card.emitter.type = 'point';
+  card.emitter.offset = { x: 0, y: 0, z: 0 };
+  card.particle.velocity = { x: 0, y: 1, z: 0 };
+  card.particle.velocityRandom = { x: 0, y: 0, z: 0 };
+  card.particle.speedMin = 1;
+  card.particle.speedMax = 1;
+  card.useGPU = true;
+  card.gpu.signRef = 'sign-smoke';
+  card.gpu.commandMaskRefs = ['mask-wind'];
+
+  const second = JSON.parse(JSON.stringify(card));
+  second.id = 'gpu-selector-second';
+  second.emitter.offset = { x: 0, y: 10, z: 0 };
+  second.gpu.signRef = 'sign-spark';
+  second.gpu.commandMaskRefs = ['mask-heat'];
+  project.emitters.push(second);
+  project.signs = [
+    { id: 'sign-smoke', name: 'smoke', value: 2 },
+    { id: 'sign-spark', name: 'spark', value: 4 }
+  ];
+  project.commandMasks = [
+    { id: 'mask-wind', name: 'wind', value: 1 },
+    { id: 'mask-heat', name: 'heat', value: 2 }
+  ];
+  project.forceCommands = [
+    {
+      id: 'sign-force', enabled: true, label: 'sign force',
+      force: { type: 'Gravity', parameters: { accelX: 1, accelY: 0, accelZ: 0 } },
+      selector: { type: 'SignEquals', signRef: 'sign-smoke' }
+    },
+    {
+      id: 'mask-force', enabled: true, label: 'mask force',
+      force: { type: 'Gravity', parameters: { accelX: 0, accelY: 0, accelZ: 2 } },
+      selector: { type: 'CommandMask', commandMaskRefs: ['mask-heat'] }
+    },
+    {
+      id: 'source-force', enabled: true, label: 'source force',
+      force: { type: 'Gravity', parameters: { accelX: 0, accelY: -0.5, accelZ: 0 } },
+      selector: { type: 'SourceEquals', sourceId: 1 }
+    }
+  ];
+
+  const runtime = createGeneratorPreviewRuntime();
+  runtime.step(project, 1);
+  const snapshot = runtime.snapshotRenderData(project);
+
+  assert.equal(snapshot.count, 2);
+  assert.ok(Math.abs(snapshot.positions[0] - 1) < 1e-6);
+  assert.ok(Math.abs(snapshot.positions[1] - 1) < 1e-6);
+  assert.ok(Math.abs(snapshot.positions[2]) < 1e-6);
+  assert.ok(Math.abs(snapshot.positions[3]) < 1e-6);
+  assert.ok(Math.abs(snapshot.positions[4] - 10.5) < 1e-6);
+  assert.ok(Math.abs(snapshot.positions[5] - 2) < 1e-6);
+});
+
+test('generator preview simulates Radial, DirectionalWind, and BlenderVortex forces', () => {
+  const fullStrengthFalloff = {
+    minDistance: 0,
+    maxDistance: null,
+    power: 0,
+    shape: 'SPHERE',
+    zDirection: 'BOTH',
+    falloffAxisX: 0,
+    falloffAxisY: 0,
+    falloffAxisZ: 1
+  };
+  const radial = simulateCParticleForce('Radial', {
+    centerX: 0,
+    centerY: 0,
+    centerZ: 0,
+    strength: 2,
+    inverseSquare: false,
+    ...fullStrengthFalloff
+  }, { position: { x: 1, y: 0, z: 0 } });
+  assertPreviewPosition(radial, [3, 0, 0]);
+
+  const wind = simulateCParticleForce('DirectionalWind', {
+    centerX: 0,
+    centerY: 0,
+    centerZ: 0,
+    axisX: 0,
+    axisY: 1,
+    axisZ: 0,
+    strength: 2,
+    ...fullStrengthFalloff
+  });
+  assertPreviewPosition(wind, [0, 2, 0]);
+
+  const vortex = simulateCParticleForce('BlenderVortex', {
+    centerX: 0,
+    centerY: 0,
+    centerZ: 0,
+    axisX: 0,
+    axisY: 1,
+    axisZ: 0,
+    tangentialStrength: 1,
+    radialStrength: 0,
+    velocityCompensation: 0,
+    ...fullStrengthFalloff
+  }, { position: { x: 1, y: 0, z: 0 } });
+  assertPreviewPosition(vortex, [1, 0, -1]);
+});
+
+test('generator preview simulates Magnetic, Harmonic, and VelocityDrag forces', () => {
+  const fullStrengthFalloff = {
+    minDistance: 0,
+    maxDistance: null,
+    power: 0,
+    shape: 'SPHERE',
+    zDirection: 'BOTH'
+  };
+  const magnetic = simulateCParticleForce('Magnetic', {
+    centerX: 0,
+    centerY: 0,
+    centerZ: 0,
+    axisX: 0,
+    axisY: 1,
+    axisZ: 0,
+    strength: 1,
+    fieldMode: 'LINE',
+    ...fullStrengthFalloff
+  }, {
+    position: { x: 1, y: 0, z: 0 },
+    velocity: { x: 0, y: 1, z: 0 }
+  });
+  assertPreviewPosition(magnetic, [0, 1, 0]);
+
+  const harmonic = simulateCParticleForce('Harmonic', {
+    centerX: 0,
+    centerY: 0,
+    centerZ: 0,
+    stiffness: 1,
+    damping: 0,
+    restLength: 1,
+    ...fullStrengthFalloff,
+    falloffAxisX: 0,
+    falloffAxisY: 0,
+    falloffAxisZ: 1
+  }, { position: { x: 2, y: 0, z: 0 } });
+  assertPreviewPosition(harmonic, [1, 0, 0]);
+
+  const drag = simulateCParticleForce('VelocityDrag', {
+    strength: 0,
+    damping: 0.25,
+    exact: true,
+    ...fullStrengthFalloff,
+    falloffAxisX: 0,
+    falloffAxisY: 0,
+    falloffAxisZ: 1
+  }, { velocity: { x: 1, y: 0, z: 0 } });
+  assertPreviewPosition(drag, [0.75, 0, 0]);
+});
+
+test('generator preview simulates Charge, LennardJones, and Turbulence forces', () => {
+  const fullStrengthFalloff = {
+    minDistance: 0,
+    maxDistance: null,
+    power: 0,
+    shape: 'SPHERE',
+    zDirection: 'BOTH',
+    falloffAxisX: 0,
+    falloffAxisY: 0,
+    falloffAxisZ: 1
+  };
+  const charge = simulateCParticleForce('Charge', {
+    centerX: 0,
+    centerY: 0,
+    centerZ: 0,
+    strength: 1,
+    defaultCharge: 0,
+    ...fullStrengthFalloff
+  }, {
+    position: { x: 1, y: 0, z: 0 },
+    charge: 2
+  });
+  assertPreviewPosition(charge, [3, 0, 0]);
+
+  const defaultCharge = simulateCParticleForce('Charge', {
+    centerX: 0,
+    centerY: 0,
+    centerZ: 0,
+    strength: 1,
+    defaultCharge: 3,
+    ...fullStrengthFalloff
+  }, {
+    position: { x: 1, y: 0, z: 0 },
+    charge: null
+  });
+  assertPreviewPosition(defaultCharge, [4, 0, 0]);
+
+  const lennardJones = simulateCParticleForce('LennardJones', {
+    centerX: 0,
+    centerY: 0,
+    centerZ: 0,
+    strength: 1,
+    sourceRadius: 1,
+    ...fullStrengthFalloff
+  }, { position: { x: 2, y: 0, z: 0 } });
+  assert.equal(lennardJones.count, 1);
+  assert.ok(lennardJones.positions[0] < 2);
+
+  const turbulence = simulateCParticleForce('Turbulence', {
+    strength: 1,
+    size: 1,
+    seed: 7,
+    timeScale: 0,
+    ...fullStrengthFalloff
+  }, { position: { x: 1, y: 2, z: 3 } });
+  assert.equal(turbulence.count, 1);
+  assert.ok(
+    Math.abs(turbulence.positions[0] - 1) > 1e-6
+      || Math.abs(turbulence.positions[1] - 2) > 1e-6
+      || Math.abs(turbulence.positions[2] - 3) > 1e-6
+  );
+});
+
+test('generator preview warns when resource Force data is unavailable', () => {
+  const { project, card } = createFixture();
+  card.useGPU = true;
+  project.forceCommands = [
+    {
+      id: 'texture-preview',
+      enabled: true,
+      label: 'texture preview',
+      force: { type: 'Texture', parameters: {} },
+      selector: { type: 'All' }
+    },
+    {
+      id: 'fluid-preview',
+      enabled: true,
+      label: 'fluid preview',
+      force: { type: 'FluidFlow', parameters: {} },
+      selector: { type: 'All' }
+    }
+  ];
+
+  const runtime = createGeneratorPreviewRuntime();
+  runtime.step(project, 1);
+  const snapshot = runtime.snapshotRenderData(project);
+
+  assert.deepEqual(snapshot.errors, []);
+  assert.deepEqual(
+    new Set(snapshot.warnings.map((warning) => warning.message)),
+    new Set([
+      'Texture 需要上传可采样纹理才能在 Web 预览中模拟；Kotlin 仍按声明的 ResourceLocation 生成。',
+      'FluidFlow 需要客户端注册三维资源绑定；Web 预览不会用二维纹理伪造流场。'
+    ])
+  );
+});
+
+test('generator preview samples an uploaded Texture resource', () => {
+  const { project, card } = createFixture();
+  card.useGPU = true;
+  card.emitter.type = 'point';
+  card.emitter.offset = { x: 0, y: 0, z: 0 };
+  card.emission.mode = 'once';
+  card.particle.lifeMin = 100;
+  card.particle.lifeMax = 100;
+  card.particle.velocity = { x: 0, y: 0, z: 0 };
+  card.particle.velocityRandom = { x: 0, y: 0, z: 0 };
+  card.particle.speedMin = 0;
+  card.particle.speedMax = 0;
+  const resource = {
+    id: 'uploaded-texture',
+    name: 'uploaded texture',
+    kind: 'texture',
+    location: 'examplemod:textures/force/uploaded.png',
+    dataUrl: 'data:image/png;base64,preview'
+  };
+  project.forceResources = [resource];
+  project.forceCommands = [{
+    id: 'texture-preview',
+    enabled: true,
+    label: 'texture preview',
+    force: {
+      type: 'Texture',
+      parameters: {
+        resourceRef: resource.id,
+        strength: 1,
+        mode: 'VECTOR',
+        minDistance: 0,
+        maxDistance: null,
+        power: 0,
+        shape: 'SPHERE',
+        zDirection: 'BOTH'
+      }
+    },
+    selector: { type: 'All' }
+  }];
+  setCParticleTexturePreview(resource, {
+    width: 1,
+    height: 1,
+    pixels: new Uint8ClampedArray([255, 0, 0, 255])
+  });
+
+  const runtime = createGeneratorPreviewRuntime();
+  runtime.step(project, 1);
+  const snapshot = runtime.snapshotRenderData(project);
+
+  assert.deepEqual(snapshot.warnings, []);
+  assertPreviewPosition(snapshot, [1, -1, -1]);
 });
 
 test('generator preview uses the first gravity setting for duplicate data signs', () => {

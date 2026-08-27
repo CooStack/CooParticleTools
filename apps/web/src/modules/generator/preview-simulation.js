@@ -9,7 +9,7 @@ import {
   createGeneratorExpressionScope
 } from './expression-runtime.js';
 import { sampleBezierSegment, sampleLifecycleCurve } from './curves.js';
-import { CPARTICLE_COMMAND_TYPE_IDS } from './defaults.js';
+import { getCParticleTexturePreview } from './cparticle-forces.js';
 
 const MAX_SIM_PARTICLES = 65536;
 const MAX_PREWARM_VISUAL_SAMPLES = 16384;
@@ -31,6 +31,28 @@ const COMMAND_ALIASES = {
   ParticleLifetimeMotionCommand: 'lifetime_motion',
   acceleration: 'velocity_add'
 };
+
+const CPARTICLE_PREVIEW_SUPPORTED_FORCE_TYPES = new Set([
+  'Gravity',
+  'EnvDrag',
+  'ExpDrag',
+  'Wind',
+  'Vortex',
+  'Attraction',
+  'RotationForce',
+  'Noise',
+  'FlowField',
+  'Radial',
+  'DirectionalWind',
+  'BlenderVortex',
+  'Magnetic',
+  'Harmonic',
+  'VelocityDrag',
+  'Charge',
+  'LennardJones',
+  'Turbulence',
+  'Texture'
+]);
 
 const BINDING_PATH_LABELS = {
   'emitter.offset': '世界偏移',
@@ -166,18 +188,18 @@ function resolveEmitterCard(project, card, resolver, index = 0) {
     },
     particle: {
       ...particle,
-      countMin: resolveNumberPath(resolver, card, 'particle.countMin', particle.countMin, 1, 'Int'),
-      countMax: resolveNumberPath(resolver, card, 'particle.countMax', particle.countMax, 1, 'Int'),
-      lifeMin: resolveNumberPath(resolver, card, 'particle.lifeMin', particle.lifeMin, 1, 'Int'),
-      lifeMax: resolveNumberPath(resolver, card, 'particle.lifeMax', particle.lifeMax, 1, 'Int'),
-      sizeMin: resolveNumberPath(resolver, card, 'particle.sizeMin', particle.sizeMin, 0.08),
-      sizeMax: resolveNumberPath(resolver, card, 'particle.sizeMax', particle.sizeMax, 0.18),
+      countMin: resolveNumberPath(resolver, card, 'particle.countMin', particle.countMin, 10, 'Int'),
+      countMax: resolveNumberPath(resolver, card, 'particle.countMax', particle.countMax, 20, 'Int'),
+      lifeMin: resolveNumberPath(resolver, card, 'particle.lifeMin', particle.lifeMin, 10, 'Int'),
+      lifeMax: resolveNumberPath(resolver, card, 'particle.lifeMax', particle.lifeMax, 20, 'Int'),
+      sizeMin: resolveNumberPath(resolver, card, 'particle.sizeMin', particle.sizeMin, 0.1),
+      sizeMax: resolveNumberPath(resolver, card, 'particle.sizeMax', particle.sizeMax, 0.2),
       colorStart: rgbToHexObject(resolveColorPath(resolver, card, 'particle.colorStart', particle.colorStart)),
       colorEnd: rgbToHexObject(resolveColorPath(resolver, card, 'particle.colorEnd', particle.colorEnd)),
       velocity: resolveVectorPath(resolver, card, 'particle.velocity', particle.velocity || particle.vel, ['Vec3']),
       velocityRandom: resolveVectorPath(resolver, card, 'particle.velocityRandom', particle.velocityRandom || particle.velRandom, ['Vec3']),
-      speedMin: resolveNumberPath(resolver, card, 'particle.speedMin', particle.speedMin ?? particle.velSpeedMin, 0),
-      speedMax: resolveNumberPath(resolver, card, 'particle.speedMax', particle.speedMax ?? particle.velSpeedMax, 0),
+      speedMin: resolveNumberPath(resolver, card, 'particle.speedMin', particle.speedMin ?? particle.velSpeedMin, 0.1),
+      speedMax: resolveNumberPath(resolver, card, 'particle.speedMax', particle.speedMax ?? particle.velSpeedMax, 0.3),
       visibleRange: resolveNumberPath(resolver, card, 'particle.visibleRange', particle.visibleRange, 128, 'Float')
     },
     physics: {
@@ -348,9 +370,15 @@ function toFiniteNumber(value, fallback = 0) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
-function attachPreviewErrors(target, errors) {
+function attachPreviewMessages(target, errors, warnings) {
   Object.defineProperty(target, 'errors', {
     value: Array.isArray(errors) ? errors : [],
+    configurable: true,
+    writable: true,
+    enumerable: false
+  });
+  Object.defineProperty(target, 'warnings', {
+    value: Array.isArray(warnings) ? warnings : [],
     configurable: true,
     writable: true,
     enumerable: false
@@ -370,7 +398,9 @@ export function createGeneratorPreviewRuntime() {
     variables: {},
     constants: {},
     parameterSignature: '',
-    expressionError: ''
+    expressionError: '',
+    nextCParticleSlot: 0,
+    freeCParticleSlots: []
   };
 
   function reset() {
@@ -384,11 +414,15 @@ export function createGeneratorPreviewRuntime() {
     runtime.constants = {};
     runtime.parameterSignature = '';
     runtime.expressionError = '';
+    runtime.nextCParticleSlot = 0;
+    runtime.freeCParticleSlots = [];
   }
 
   function clearParticles() {
     runtime.particles = [];
     runtime.snapshotPoints = [];
+    runtime.nextCParticleSlot = 0;
+    runtime.freeCParticleSlots = [];
   }
 
   function step(project, tickCount = 1) {
@@ -415,10 +449,15 @@ export function createGeneratorPreviewRuntime() {
         progress: lifecycleProgress
       })
     });
+    const signValues = collectNamedIntValues(project.signs);
+    const commandMaskValues = collectNamedIntValues(project.commandMasks);
     const emitters = (Array.isArray(project.emitters) ? project.emitters : [])
       .map((card, index) => ({
         ...resolveEmitterCard(project, card, resolver, index),
-        cparticleEnabled: card?.useGPU === true
+        cparticleEnabled: card?.useGPU === true,
+        cparticleSourceId: index,
+        cparticleSign: signValues.get(String(card?.gpu?.signRef || '')) || 0,
+        cparticleCommandMask: combineNamedIntRefs(card?.gpu?.commandMaskRefs, commandMaskValues)
       }));
     const emitterById = new Map(emitters.map((card) => [String(card.id || ''), card]));
     const birthContextsByEmitter = new Map();
@@ -471,13 +510,13 @@ export function createGeneratorPreviewRuntime() {
     }
 
     const queues = collectCommandQueues(project.commandQueues);
-    const gpuQueues = collectGpuCommands(project.gpuCommands);
+    const forceCommands = collectCParticleForceCommands(project, signValues, commandMaskValues);
     const gravityBySign = collectEmitterGravityBySign(emitters.filter((card) => !card.cparticleEnabled));
     for (let index = runtime.particles.length - 1; index >= 0; index -= 1) {
       const particle = runtime.particles[index];
       particle.age += 1;
       if (particle.cparticleEnabled) {
-        if (gpuQueues.length) applyCommandQueues(gpuQueues, particle, tick);
+        if (forceCommands.length) applyCParticleForceCommands(forceCommands, particle, tick);
       } else {
         applyEmitterPhysics(particle, gravityBySign);
         if (queues.length) applyCommandQueues(queues, particle, tick);
@@ -511,7 +550,8 @@ export function createGeneratorPreviewRuntime() {
     const countMax = Math.max(countMin, Math.trunc(Number(card.particle?.countMax || countMin)));
     const count = randomInt(countMin, countMax);
     for (let i = 0; i < count && runtime.particles.length < MAX_SIM_PARTICLES; i += 1) {
-      runtime.particles.push(createParticle(card, builderPoints, birthRenderContext));
+      const slot = card.cparticleEnabled ? takeCParticlePreviewSlot(runtime) : -1;
+      runtime.particles.push(createParticle(card, builderPoints, birthRenderContext, slot));
     }
   }
 
@@ -533,7 +573,7 @@ export function createGeneratorPreviewRuntime() {
       writable: true,
       enumerable: false
     });
-    attachPreviewErrors(result, plan.errors);
+    attachPreviewMessages(result, plan.errors, plan.warnings);
     return result;
   }
 
@@ -570,7 +610,8 @@ export function createGeneratorPreviewRuntime() {
       scaleYs: buffers.scaleYs,
       rolls: buffers.rolls,
       lifeProgresses: buffers.lifeProgresses,
-      errors: plan.errors
+      errors: plan.errors,
+      warnings: plan.warnings
     };
   }
 
@@ -588,15 +629,17 @@ export function createGeneratorPreviewRuntime() {
       .map((card, index) => resolveEmitterCard(project, card, resolver, index));
     const contexts = new Map(emitters
       .map((card) => [String(card.id || ''), createEmitterSnapshotContext(card)]));
+    const resolverErrors = runtime.expressionError
+      ? [...resolver.errors, { key: 'doTick', message: `doTick：${runtime.expressionError}` }]
+      : resolver.errors;
     runtime.renderPlan = {
       signature,
       contexts,
       effectSignature: resolveEffectSignature(contexts),
       textureSheet: resolveTextureSheet(contexts),
       canUseBillboardBuffers: canUseBillboardBuffers(contexts),
-      errors: runtime.expressionError
-        ? [...resolver.errors, { key: 'doTick', message: `doTick：${runtime.expressionError}` }]
-        : resolver.errors
+      errors: resolverErrors,
+      warnings: collectCParticlePreviewForceWarnings(project)
     };
     return runtime.renderPlan;
   }
@@ -639,7 +682,7 @@ function syncParameterRuntime(runtime, parameters = {}) {
 function serializeRuntimeParameterValue(type, value) {
   if (!['Vec3', 'RelativeLocation', 'Vector3f'].includes(type)
     || !value || typeof value !== 'object') return value;
-  const suffix = type === 'Vector3f' ? 'f' : '';
+  const suffix = type === 'Vector3f' ? 'F' : '';
   const component = (axis) => {
     const numeric = Number(value[axis]);
     const safe = Number.isFinite(numeric) ? numeric : 0;
@@ -729,14 +772,13 @@ function isEmitterActive(card, tick) {
   return tick >= start && (end < 0 || tick <= end);
 }
 
-function createParticle(card, builderPoints, birthRenderContext = null) {
+function createParticle(card, builderPoints, birthRenderContext = null, cparticleSlot = -1) {
   const pos = sampleEmitterPoint(card, builderPoints);
   const velocity = sampleVelocity(card, pos);
   const lifeMin = Math.max(1, Math.trunc(Number(card.particle?.lifeMin || 1)));
   const lifeMax = Math.max(lifeMin, Math.trunc(Number(card.particle?.lifeMax || lifeMin)));
   const sizeMin = Math.max(0.001, Number(card.particle?.sizeMin || card.render?.baseScale?.x || 0.08));
   const sizeMax = Math.max(sizeMin, Number(card.particle?.sizeMax || sizeMin));
-  const randomColorProgress = { r: Math.random(), g: Math.random(), b: Math.random() };
   return {
     cardId: String(card.id || ''),
     card,
@@ -748,8 +790,15 @@ function createParticle(card, builderPoints, birthRenderContext = null) {
     age: 0,
     life: randomInt(lifeMin, lifeMax),
     baseSize: random(sizeMin, sizeMax),
-    randomColorProgress,
-    sign: Math.trunc(Number(card.render?.sign || 0)),
+    sourceId: card?.cparticleEnabled === true ? Math.trunc(Number(card.cparticleSourceId || 0)) : -1,
+    sign: card?.cparticleEnabled === true
+      ? Math.trunc(Number(card.cparticleSign || 0))
+      : Math.trunc(Number(card.render?.sign || 0)),
+    commandMask: card?.cparticleEnabled === true ? Math.trunc(Number(card.cparticleCommandMask || 0)) : 0,
+    charge: card?.cparticleEnabled === true
+      ? card.gpu?.charge === null ? Number.NaN : Number(card.gpu?.charge)
+      : Number.NaN,
+    cparticleSlot,
     seed: Math.trunc(Math.random() * 0x7fffffff),
     respawnCount: 0,
     previewSpawnRenderContext: birthRenderContext,
@@ -769,8 +818,10 @@ function respawnParticle(particle, card, builderPoints, birthRenderContext = nul
   particle.age = 0;
   particle.life = next.life;
   particle.baseSize = next.baseSize;
-  particle.randomColorProgress = next.randomColorProgress;
+  particle.sourceId = next.sourceId;
   particle.sign = next.sign;
+  particle.commandMask = next.commandMask;
+  particle.charge = next.charge;
   particle.seed = next.seed;
   particle.previewSpawnRenderContext = next.previewSpawnRenderContext;
   particle.previewRenderPlan = null;
@@ -780,8 +831,19 @@ function respawnParticle(particle, card, builderPoints, birthRenderContext = nul
 
 function removeParticleAt(runtime, index) {
   const last = runtime.particles.length - 1;
+  const removed = runtime.particles[index];
+  if (removed?.cparticleEnabled && removed.cparticleSlot >= 0) {
+    runtime.freeCParticleSlots.push(removed.cparticleSlot);
+  }
   if (index !== last) runtime.particles[index] = runtime.particles[last];
   runtime.particles.pop();
+}
+
+function takeCParticlePreviewSlot(runtime) {
+  if (runtime.freeCParticleSlots.length) return runtime.freeCParticleSlots.pop();
+  const slot = runtime.nextCParticleSlot;
+  runtime.nextCParticleSlot += 1;
+  return slot;
 }
 
 function collectEmitterGravityBySign(emitters) {
@@ -809,12 +871,492 @@ function collectCommandQueues(rawQueues) {
   })).filter((queue) => queue.commands.length);
 }
 
-function collectGpuCommands(rawCommands) {
-  const commands = (Array.isArray(rawCommands) ? rawCommands : [])
+function collectNamedIntValues(rawValues) {
+  return new Map((Array.isArray(rawValues) ? rawValues : []).map((item) => [
+    String(item?.id || ''),
+    Math.trunc(Number(item?.value) || 0)
+  ]));
+}
+
+function combineNamedIntRefs(rawRefs, values) {
+  return (Array.isArray(rawRefs) ? rawRefs : []).reduce((result, ref) => (
+    result | (values.get(String(ref)) || 0)
+  ), 0);
+}
+
+function collectCParticleForceCommands(project, signValues, commandMaskValues) {
+  const resources = Array.isArray(project?.forceResources) ? project.forceResources : [];
+  return (Array.isArray(project?.forceCommands) ? project.forceCommands : [])
     .filter((command) => command && command.enabled !== false)
-    .map((command) => ({ ...command, type: normalizeCommandType(command.type), tick: 0 }))
-    .filter((command) => CPARTICLE_COMMAND_TYPE_IDS.includes(command.type));
-  return commands.length ? [{ signs: null, commands }] : [];
+    .map((command) => normalizeCParticlePreviewCommand(command, signValues, commandMaskValues, resources))
+    .filter(Boolean);
+}
+
+function collectCParticlePreviewForceWarnings(project) {
+  const resources = Array.isArray(project?.forceResources) ? project.forceResources : [];
+  const warnings = [];
+  const missingTexture = (Array.isArray(project?.forceCommands) ? project.forceCommands : []).some((command) => {
+    if (command?.enabled === false || command?.force?.type !== 'Texture') return false;
+    const resource = resources.find((item) => item.id === command.force?.parameters?.resourceRef);
+    return !getCParticleTexturePreview(resource);
+  });
+  if (missingTexture) {
+    warnings.push({
+      key: 'cparticle-force-preview:Texture',
+      message: 'Texture 需要上传可采样纹理才能在 Web 预览中模拟；Kotlin 仍按声明的 ResourceLocation 生成。'
+    });
+  }
+  const hasFluidFlow = (Array.isArray(project?.forceCommands) ? project.forceCommands : []).some((command) => (
+    command?.enabled !== false && command?.force?.type === 'FluidFlow'
+  ));
+  if (hasFluidFlow) {
+    warnings.push({
+      key: 'cparticle-force-preview:FluidFlow',
+      message: 'FluidFlow 需要客户端注册三维资源绑定；Web 预览不会用二维纹理伪造流场。'
+    });
+  }
+  return warnings;
+}
+
+function normalizeCParticlePreviewCommand(command, signValues, commandMaskValues, resources) {
+  const force = command.force && typeof command.force === 'object' ? command.force : command;
+  const forceType = String(force.type || '');
+  const params = force.parameters && typeof force.parameters === 'object'
+    ? force.parameters
+    : force.params && typeof force.params === 'object'
+      ? force.params
+      : {};
+  if (!CPARTICLE_PREVIEW_SUPPORTED_FORCE_TYPES.has(forceType)) return null;
+  return {
+    type: forceType,
+    params,
+    texturePreview: forceType === 'Texture'
+      ? getCParticleTexturePreview(resources.find((item) => item.id === params.resourceRef))
+      : null,
+    selector: normalizeCParticlePreviewSelector(command.selector, signValues, commandMaskValues)
+  };
+}
+
+function normalizeCParticlePreviewSelector(rawSelector, signValues, commandMaskValues) {
+  const selector = rawSelector && typeof rawSelector === 'object' ? rawSelector : {};
+  const type = String(selector.type || 'All');
+  return {
+    type,
+    sourceId: Math.trunc(Number(selector.sourceId) || 0),
+    sourceMask: Math.trunc(Number(selector.sourceMask) || 0),
+    sign: signValues.get(String(selector.signRef || '')) || 0,
+    signMask: Math.trunc(Number(selector.signMask) || 0),
+    commandMask: combineNamedIntRefs(selector.commandMaskRefs, commandMaskValues)
+  };
+}
+
+function applyCParticleForceCommands(commands, particle, tick) {
+  commands.forEach((command) => {
+    if (!matchesCParticlePreviewSelector(command.selector, particle)) return;
+    applyCParticleForceCommand(command, particle, tick);
+  });
+}
+
+function applyCParticleForceCommand(command, particle) {
+  const params = command.params && typeof command.params === 'object' ? command.params : {};
+  const n = (key, fallback = 0) => numberParam(params, key, fallback);
+  switch (command.type) {
+    case 'Gravity':
+      addInPlace(particle.vel, vecParam(params, 'accel', vec(0, -0.04, 0)));
+      return;
+    case 'EnvDrag': {
+      const speed = vectorLength(particle.vel);
+      if (speed > 0.01) {
+        const multiplier = cparticleEnvDragCoefficient(n('airDensity', 1.225)) * speed;
+        particle.vel.x -= multiplier * particle.vel.x;
+        particle.vel.y -= multiplier * particle.vel.y;
+        particle.vel.z -= multiplier * particle.vel.z;
+      }
+      return;
+    }
+    case 'ExpDrag': {
+      const speed = vectorLength(particle.vel);
+      const minSpeed = n('minSpeed', 0);
+      if (minSpeed > 0 && speed <= minSpeed) {
+        particle.vel = vec();
+        return;
+      }
+      const damping = n('damping', 0.15);
+      const dampingFactor = damping <= 0 ? 1 : Math.exp(-damping);
+      const linear = n('linear', 0);
+      const linearFactor = linear > 0 ? clamp(1 - linear, 0, 1) : 1;
+      multiplyInPlace(particle.vel, dampingFactor * linearFactor);
+      return;
+    }
+    case 'Wind': {
+      const center = vecParam(params, 'rangeCenter');
+      const relative = sub(particle.pos, center);
+      const rangeSize = vecParam(params, 'rangeSize');
+      const rangeMode = Math.trunc(n('rangeMode', 0));
+      const inRange = rangeMode === 1
+        ? dot(relative, relative) <= rangeSize.x * rangeSize.x
+        : rangeMode === 2
+          ? Math.abs(relative.x) <= rangeSize.x
+            && Math.abs(relative.y) <= rangeSize.y
+            && Math.abs(relative.z) <= rangeSize.z
+          : true;
+      if (!inRange) return;
+      const relativeWind = sub(vecParam(params, 'wind'), particle.vel);
+      const windLength = vectorLength(relativeWind);
+      if (windLength > 1e-6) {
+        addInPlace(
+          particle.vel,
+          multiply(relativeWind, cparticleEnvDragCoefficient(n('airDensity', 1.225)) * windLength)
+        );
+      }
+      return;
+    }
+    case 'Vortex': {
+      const axis = cparticleSafeNormalize(vecParam(params, 'axis', vec(0, 1, 0)));
+      const relative = sub(particle.pos, vecParam(params, 'center'));
+      const radial = sub(relative, multiply(axis, dot(relative, axis)));
+      const radialLength = vectorLength(radial);
+      const distance = Math.max(radialLength, n('minDistance', 0.2));
+      const falloff = cparticleInversePowerFalloff(distance, n('range', 10), n('falloffPower', 2));
+      const tangent = cross(axis, radial);
+      const tangentLength = vectorLength(tangent);
+      const tangentScale = tangentLength > 1e-9 ? n('swirlStrength', 0.8) * falloff / tangentLength : 0;
+      const radialScale = radialLength > 1e-9 ? -n('radialPull', 0.35) * falloff / radialLength : 0;
+      const axialScale = n('axialLift', 0) * falloff;
+      particle.vel.x += tangent.x * tangentScale + radial.x * radialScale + axis.x * axialScale;
+      particle.vel.y += tangent.y * tangentScale + radial.y * radialScale + axis.y * axialScale;
+      particle.vel.z += tangent.z * tangentScale + radial.z * radialScale + axis.z * axialScale;
+      return;
+    }
+    case 'Attraction': {
+      const relative = sub(particle.pos, vecParam(params, 'target'));
+      const towardTarget = multiply(relative, -1);
+      const distance = vectorLength(towardTarget);
+      if (distance > 1e-9) {
+        const falloff = cparticleInversePowerFalloff(
+          Math.max(distance, n('minDistance', 0.25)),
+          n('range', 8),
+          n('falloffPower', 2)
+        );
+        addInPlace(particle.vel, multiply(towardTarget, n('strength', 0.8) * falloff / distance));
+      }
+      return;
+    }
+    case 'RotationForce': {
+      const relative = sub(particle.pos, vecParam(params, 'center'));
+      const tangent = cross(cparticleSafeNormalize(vecParam(params, 'axis', vec(0, 1, 0))), relative);
+      const tangentLength = vectorLength(tangent);
+      if (tangentLength > 1e-9) {
+        const falloff = cparticleInversePowerFalloff(
+          vectorLength(relative),
+          n('range', 8),
+          n('falloffPower', 2)
+        );
+        addInPlace(particle.vel, multiply(tangent, n('strength', 0.35) * falloff / tangentLength));
+      }
+      return;
+    }
+    case 'Noise': {
+      const time = particle.age * n('speed', 0.02);
+      const seed = (Math.imul(particle.cparticleSlot | 0, 668265263) + Math.trunc(n('seedOffset', 0))) | 0;
+      const frequency = n('frequency', 0.35);
+      let amplitude = n('strength', 0.1);
+      if (params.useLifeCurve === true) {
+        amplitude *= 1 - clamp(particle.age / Math.max(1, particle.life), 0, 1);
+      }
+      const sampleX = particle.pos.x * frequency + time;
+      const sampleY = particle.pos.y * frequency + time * 0.7;
+      const sampleZ = particle.pos.z * frequency + time * 1.3;
+      const noise = vec(
+        cparticleValueNoise3(sampleX, sampleY, sampleZ, seed + 11) * 2 - 1,
+        cparticleValueNoise3(sampleX, sampleY, sampleZ, seed + 23) * 2 - 1,
+        cparticleValueNoise3(sampleX, sampleY, sampleZ, seed + 37) * 2 - 1
+      );
+      const noiseLength = vectorLength(noise);
+      if (noiseLength > 1e-4) {
+        const normalizedNoise = multiply(noise, 1 / noiseLength);
+        particle.vel.x += normalizedNoise.x * amplitude;
+        particle.vel.y += normalizedNoise.y * n('affectY', 1) * amplitude;
+        particle.vel.z += normalizedNoise.z * amplitude;
+        const clampSpeed = n('clampSpeed', 2);
+        const speedSquared = dot(particle.vel, particle.vel);
+        if (speedSquared > clampSpeed * clampSpeed && speedSquared > 1e-12) {
+          multiplyInPlace(particle.vel, clampSpeed / Math.sqrt(speedSquared));
+        }
+      }
+      return;
+    }
+    case 'FlowField': {
+      const point = add(particle.pos, vecParam(params, 'worldOffset'));
+      const time = particle.age * n('timeScale', 0.06) + n('phaseOffset', 0);
+      const frequency = n('frequency', 0.25);
+      const multiplier = 0.5 * n('amplitude', 0.15);
+      particle.vel.x += (Math.sin((point.y + time) * frequency) + Math.cos((point.z - time) * frequency)) * multiplier;
+      particle.vel.y += (Math.sin((point.z + time) * frequency) + Math.cos((point.x + time) * frequency)) * multiplier;
+      particle.vel.z += (Math.sin((point.x - time) * frequency) + Math.cos((point.y - time) * frequency)) * multiplier;
+      return;
+    }
+    case 'Radial': {
+      const relative = sub(particle.pos, vecParam(params, 'center'));
+      const distance = vectorLength(relative);
+      const falloff = blenderFalloff(params, relative);
+      if (distance > 1e-6 && falloff > 0) {
+        let magnitude = n('strength', 1) * falloff;
+        if (params.inverseSquare === true) magnitude /= Math.max(distance * distance, 1e-6);
+        addInPlace(particle.vel, multiply(relative, magnitude / distance));
+      }
+      return;
+    }
+    case 'DirectionalWind': {
+      const axis = cparticleSafeNormalize(vecParam(params, 'axis', vec(0, 1, 0)));
+      const relative = sub(particle.pos, vecParam(params, 'center'));
+      addInPlace(particle.vel, multiply(axis, n('strength', 1) * blenderFalloff(params, relative, axis)));
+      return;
+    }
+    case 'BlenderVortex': {
+      const axis = cparticleSafeNormalize(vecParam(params, 'axis', vec(0, 1, 0)));
+      const relative = sub(particle.pos, vecParam(params, 'center'));
+      const radial = sub(relative, multiply(axis, dot(relative, axis)));
+      const radialLength = vectorLength(radial);
+      if (radialLength > 1e-6) {
+        const tangent = cross(axis, radial);
+        const tangentLength = Math.max(vectorLength(tangent), 1e-6);
+        const falloff = blenderFalloff(params, relative, axis);
+        particle.vel.x += tangent.x / tangentLength * n('tangentialStrength', 1) * falloff
+          - radial.x / radialLength * n('radialStrength', 0) * falloff
+          - particle.vel.x * n('velocityCompensation', 0) * falloff;
+        particle.vel.y += tangent.y / tangentLength * n('tangentialStrength', 1) * falloff
+          - radial.y / radialLength * n('radialStrength', 0) * falloff
+          - particle.vel.y * n('velocityCompensation', 0) * falloff;
+        particle.vel.z += tangent.z / tangentLength * n('tangentialStrength', 1) * falloff
+          - radial.z / radialLength * n('radialStrength', 0) * falloff
+          - particle.vel.z * n('velocityCompensation', 0) * falloff;
+      }
+      return;
+    }
+    case 'Magnetic': {
+      const axis = cparticleSafeNormalize(vecParam(params, 'axis', vec(0, 1, 0)));
+      const relative = sub(particle.pos, vecParam(params, 'center'));
+      const fieldMode = String(params.fieldMode || 'LINE');
+      const rawField = fieldMode === 'PLANE'
+        ? axis
+        : fieldMode === 'POINT'
+          ? relative
+          : cross(axis, relative);
+      const fieldLength = vectorLength(rawField);
+      if (fieldLength > 1e-6) {
+        const field = multiply(
+          rawField,
+          n('strength', 1) * blenderFalloff(params, relative, axis) / fieldLength
+        );
+        const oldVelocity = { ...particle.vel };
+        addInPlace(particle.vel, cross(oldVelocity, field));
+      }
+      return;
+    }
+    case 'Harmonic': {
+      const relative = sub(particle.pos, vecParam(params, 'center'));
+      const distance = vectorLength(relative);
+      const falloff = blenderFalloff(params, relative);
+      if (distance > 1e-6 && falloff > 0) {
+        const displacement = distance - n('restLength', 0);
+        const springScale = -n('stiffness', 1) * falloff * displacement / distance;
+        const damping = n('damping', 0);
+        const oldVelocity = { ...particle.vel };
+        particle.vel.x += relative.x * springScale - oldVelocity.x * damping;
+        particle.vel.y += relative.y * springScale - oldVelocity.y * damping;
+        particle.vel.z += relative.z * springScale - oldVelocity.z * damping;
+      }
+      return;
+    }
+    case 'VelocityDrag': {
+      const speed = vectorLength(particle.vel);
+      if (speed > 1e-6) {
+        const falloff = blenderFalloff(params, particle.pos);
+        if (params.exact !== false) {
+          const factor = (n('damping', 0) + n('strength', 0) * speed) * falloff;
+          particle.vel.x -= particle.vel.x / speed * speed * factor;
+          particle.vel.y -= particle.vel.y / speed * speed * factor;
+          particle.vel.z -= particle.vel.z / speed * speed * factor;
+        } else {
+          multiplyInPlace(particle.vel, Math.exp(-n('damping', 0) * falloff));
+        }
+      }
+      return;
+    }
+    case 'Charge': {
+      const relative = sub(particle.pos, vecParam(params, 'center'));
+      const distance = vectorLength(relative);
+      const falloff = blenderFalloff(params, relative);
+      if (distance > 1e-6 && falloff > 0) {
+        const charge = Number.isFinite(particle.charge) ? particle.charge : n('defaultCharge', 0);
+        addInPlace(particle.vel, multiply(relative, charge * n('strength', 1) * falloff / distance));
+      }
+      return;
+    }
+    case 'LennardJones': {
+      const relative = sub(particle.pos, vecParam(params, 'center'));
+      const distance = vectorLength(relative);
+      if (distance > 1e-6) {
+        const ratio = n('sourceRadius', 0) / distance;
+        const sixth = ratio * ratio * ratio * ratio * ratio * ratio;
+        const force = Math.min(-sixth * (1 - sixth) / distance, 2)
+          * n('strength', 1)
+          * blenderFalloff(params, relative);
+        addInPlace(particle.vel, multiply(relative, force / distance));
+      }
+      return;
+    }
+    case 'Turbulence': {
+      const time = particle.age * n('timeScale', 0);
+      const seed = Math.trunc(n('seed', 0));
+      const scale = Math.max(n('size', 1), 1e-4);
+      const strength = n('strength', 0.1) * blenderFalloff(params, particle.pos);
+      const x = particle.pos.x / scale;
+      const y = particle.pos.y / scale;
+      const z = particle.pos.z / scale;
+      particle.vel.x += (cparticleValueNoise3(x + time, y, z, seed) * 2 - 1) * strength;
+      particle.vel.y += (cparticleValueNoise3(y + time, z, x, seed + 17) * 2 - 1) * strength;
+      particle.vel.z += (cparticleValueNoise3(z + time, x, y, seed + 31) * 2 - 1) * strength;
+      return;
+    }
+    case 'Texture': {
+      if (!command.texturePreview) return;
+      const falloff = blenderFalloff(params, particle.pos);
+      const strength = n('strength', 1) * falloff;
+      if (String(params.mode || 'VECTOR') === 'GRADIENT') {
+        const nabla = Math.max(n('nabla', 0.01), 1e-6);
+        const positiveX = cparticleTextureLuminance(sampleCParticleTexture(command.texturePreview, particle.pos.x + nabla, particle.pos.z));
+        const negativeX = cparticleTextureLuminance(sampleCParticleTexture(command.texturePreview, particle.pos.x - nabla, particle.pos.z));
+        const positiveZ = cparticleTextureLuminance(sampleCParticleTexture(command.texturePreview, particle.pos.x, particle.pos.z + nabla));
+        const negativeZ = cparticleTextureLuminance(sampleCParticleTexture(command.texturePreview, particle.pos.x, particle.pos.z - nabla));
+        const scale = strength / (2 * nabla);
+        particle.vel.x += (positiveX - negativeX) * scale;
+        particle.vel.z += (positiveZ - negativeZ) * scale;
+        return;
+      }
+      const sample = sampleCParticleTexture(command.texturePreview, particle.pos.x, particle.pos.z);
+      particle.vel.x += (sample[0] * 2 - 1) * strength;
+      particle.vel.y += (sample[1] * 2 - 1) * strength;
+      particle.vel.z += (sample[2] * 2 - 1) * strength;
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+function sampleCParticleTexture(preview, x, z) {
+  const u = x - Math.floor(x);
+  const v = z - Math.floor(z);
+  const sampleX = clamp(Math.trunc(u * preview.width), 0, preview.width - 1);
+  const sampleY = clamp(Math.trunc(v * preview.height), 0, preview.height - 1);
+  const offset = (sampleY * preview.width + sampleX) * 4;
+  return [
+    preview.pixels[offset] / 255,
+    preview.pixels[offset + 1] / 255,
+    preview.pixels[offset + 2] / 255,
+    preview.pixels[offset + 3] / 255
+  ];
+}
+
+function cparticleTextureLuminance(sample) {
+  return (sample[0] + sample[1] + sample[2]) / 3;
+}
+
+function blenderFalloff(params, relative, axisOverride = null) {
+  const distance = vectorLength(relative);
+  if (!Number.isFinite(distance)) return 0;
+  const axis = cparticleSafeNormalize(axisOverride || vecParam(params, 'falloffAxis', vec(0, 0, 1)));
+  const axisLength = vectorLength(axis);
+  const shape = String(params.shape || 'SPHERE');
+  const zDirection = String(params.zDirection || 'BOTH');
+  if (axisLength <= 1e-9 && (shape !== 'SPHERE' || zDirection !== 'BOTH')) return 0;
+  const axial = axisLength > 1e-9 ? dot(relative, axis) / axisLength : 0;
+  if ((zDirection === 'POSITIVE' && axial < 0) || (zDirection === 'NEGATIVE' && axial > 0)) return 0;
+  const factor = shape === 'TUBE'
+    ? Math.sqrt(Math.max(distance * distance - axial * axial, 0))
+    : shape === 'CONE'
+      ? Math.acos(clamp(axial / Math.max(distance, 1e-6), -1, 1)) * (180 / Math.PI)
+      : distance;
+  const minDistance = toFiniteNumber(params.minDistance, 0);
+  const maxDistance = params.maxDistance === null || params.maxDistance === ''
+    ? -1
+    : toFiniteNumber(params.maxDistance, -1);
+  if (maxDistance >= 0 && factor > maxDistance) return 0;
+  if (factor < minDistance) return 1;
+  const power = Math.max(toFiniteNumber(params.power, 2), 0);
+  return clamp(Math.pow(Math.max(1 + factor - minDistance, 1e-6), -power), 0, 1);
+}
+
+function cparticleEnvDragCoefficient(airDensity) {
+  return 0.5 * airDensity * 0.01 * 0.01 * 0.05;
+}
+
+function cparticleSafeNormalize(value) {
+  const length = vectorLength(value);
+  return Number.isFinite(length) && length > 1e-9 ? multiply(value, 1 / length) : vec();
+}
+
+function cparticleInversePowerFalloff(distance, scale, power) {
+  const normalizedDistance = Math.max(distance, 0) / Math.max(scale, 1e-9);
+  const safePower = Math.max(power, 1);
+  const powered = safePower === 2
+    ? normalizedDistance * normalizedDistance
+    : Math.pow(normalizedDistance, safePower);
+  return 1 / (1 + powered);
+}
+
+function cparticleFade(value) {
+  return value * value * value * (value * (value * 6 - 15) + 10);
+}
+
+function cparticleHash3(ix, iy, iz, seed) {
+  let hash = (
+    Math.imul(ix | 0, 374761393)
+    + Math.imul(iy | 0, 668265263)
+    + Math.imul(iz | 0, 2147483647)
+    + Math.imul(seed | 0, 374761)
+  ) | 0;
+  hash = Math.imul((hash ^ (hash >>> 13)) | 0, 1274126177) | 0;
+  hash = (hash ^ (hash >>> 16)) | 0;
+  return (hash & 0x7fffffff) / 2147483647;
+}
+
+function cparticleValueNoise3(x, y, z, seed) {
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const z0 = Math.floor(z);
+  const u = cparticleFade(x - x0);
+  const v = cparticleFade(y - y0);
+  const w = cparticleFade(z - z0);
+  const n000 = cparticleHash3(x0, y0, z0, seed);
+  const n100 = cparticleHash3(x0 + 1, y0, z0, seed);
+  const n010 = cparticleHash3(x0, y0 + 1, z0, seed);
+  const n110 = cparticleHash3(x0 + 1, y0 + 1, z0, seed);
+  const n001 = cparticleHash3(x0, y0, z0 + 1, seed);
+  const n101 = cparticleHash3(x0 + 1, y0, z0 + 1, seed);
+  const n011 = cparticleHash3(x0, y0 + 1, z0 + 1, seed);
+  const n111 = cparticleHash3(x0 + 1, y0 + 1, z0 + 1, seed);
+  const nx00 = mix(n000, n100, u);
+  const nx10 = mix(n010, n110, u);
+  const nx01 = mix(n001, n101, u);
+  const nx11 = mix(n011, n111, u);
+  return mix(mix(nx00, nx10, v), mix(nx01, nx11, v), w);
+}
+
+function matchesCParticlePreviewSelector(selector, particle) {
+  if (!selector || selector.type === 'All') return true;
+  if (selector.type === 'SourceEquals') return particle.sourceId === selector.sourceId;
+  if (selector.type === 'SourceMask') {
+    return (particle.sourceId & selector.sourceMask) === (selector.sourceId & selector.sourceMask);
+  }
+  if (selector.type === 'SignEquals') return particle.sign === selector.sign;
+  if (selector.type === 'SignMask') {
+    return (particle.sign & selector.signMask) === (selector.sign & selector.signMask);
+  }
+  if (selector.type === 'CommandMask') return (particle.commandMask & selector.commandMask) !== 0;
+  return false;
 }
 
 function makeSignSet(values) {
@@ -1067,7 +1609,6 @@ function createEmitterSnapshotContext(card) {
     sizeSyncAxes,
     rotationSyncAxes,
     cparticleEnabled: card?.cparticleEnabled === true || card?.useGPU === true,
-    colorCurveEnabled: colorGradientEnabled && curves.color?.enabled === true,
     colorStart: hexToRgb(particle.colorStart),
     colorEnd: hexToRgb(colorGradientEnabled ? particle.colorEnd : particle.colorStart),
     curves: {
@@ -1075,7 +1616,7 @@ function createEmitterSnapshotContext(card) {
       sizeY: prepareEnabledCurve(sizeSyncAxes ? curves.size?.x : curves.size?.y, 1),
       opacity: prepareEnabledCurve(curves.opacity, 100),
       light: prepareEnabledCurve(curves.light, Number(render.light ?? 15)),
-      color: prepareEnabledCurve(colorGradientEnabled ? curves.color : null, 0),
+      color: prepareColorCurve(curves.color, colorGradientEnabled),
       roll: prepareEnabledCurve(curves.rotation?.roll, 0),
       yaw: prepareEnabledCurve(rotationSyncAxes ? curves.rotation?.roll : curves.rotation?.yaw, 0),
       pitch: prepareEnabledCurve(rotationSyncAxes ? curves.rotation?.roll : curves.rotation?.pitch, 0)
@@ -1117,7 +1658,17 @@ function makeRenderPlanSignature(project, variables = {}, tick = 0) {
     parameters: project?.parameters || {},
     runtimeVariables: variables,
     runtimeTick: dynamicContext ? tick : 0,
-    emitters: Array.isArray(project?.emitters) ? project.emitters : []
+    emitters: Array.isArray(project?.emitters) ? project.emitters : [],
+    forceCommands: Array.isArray(project?.forceCommands) ? project.forceCommands : [],
+    forceResources: (Array.isArray(project?.forceResources) ? project.forceResources : []).map((resource) => ({
+      id: resource.id,
+      kind: resource.kind,
+      location: resource.location,
+      fileName: resource.fileName,
+      imageWidth: resource.imageWidth,
+      imageHeight: resource.imageHeight,
+      dataSize: String(resource.dataUrl || '').length
+    }))
   });
 }
 
@@ -1192,7 +1743,7 @@ function writeParticlePreviewData(particle, context, buffers, index) {
   buffers.prevPositions[offset] = particle.prev.x;
   buffers.prevPositions[offset + 1] = particle.prev.y;
   buffers.prevPositions[offset + 2] = particle.prev.z;
-  writeParticlePreviewColor(buffers.colors, offset, particle, context, visual);
+  writeParticlePreviewColor(buffers.colors, offset, visual);
   buffers.alphas[index] = visual.alpha;
   buffers.sizes[index] = Math.max(0.001, Math.max(0.01, sx, sy) * 1.6);
   buffers.scaleXs[index] = Math.max(0.001, sx * 1.6);
@@ -1206,9 +1757,9 @@ function particleToPreviewPoint(particle, context) {
   const visual = getParticleVisualSample(particle, context);
   const sx = particle.baseSize * visual.sizeScaleX;
   const sy = particle.baseSize * visual.sizeScaleY;
-  point.r = particlePreviewColorComponent(particle, context, visual, 'r');
-  point.g = particlePreviewColorComponent(particle, context, visual, 'g');
-  point.b = particlePreviewColorComponent(particle, context, visual, 'b');
+  point.r = visual.r;
+  point.g = visual.g;
+  point.b = visual.b;
   point.x = particle.pos.x;
   point.y = particle.pos.y;
   point.z = particle.pos.z;
@@ -1293,17 +1844,10 @@ function buildParticleVisualSample(age, life, context) {
   };
 }
 
-function writeParticlePreviewColor(target, offset, particle, context, visual) {
-  target[offset] = particlePreviewColorComponent(particle, context, visual, 'r');
-  target[offset + 1] = particlePreviewColorComponent(particle, context, visual, 'g');
-  target[offset + 2] = particlePreviewColorComponent(particle, context, visual, 'b');
-}
-
-function particlePreviewColorComponent(particle, context, visual, component) {
-  if (context.cparticleEnabled || context.colorCurveEnabled) return visual[component];
-  const progress = clamp(particle.randomColorProgress?.[component], 0, 1);
-  const value = mix(context.colorStart[component], context.colorEnd[component], progress);
-  return clamp(value * previewLightFactor(visual.light), 0, 255) / 255;
+function writeParticlePreviewColor(target, offset, visual) {
+  target[offset] = visual.r;
+  target[offset + 1] = visual.g;
+  target[offset + 2] = visual.b;
 }
 
 function previewLightFactor(light) {
@@ -1334,6 +1878,19 @@ function prepareCurve(curve, fallback = 0) {
 
 function prepareEnabledCurve(curve, fallback = 0) {
   return prepareCurve(curve?.enabled === true ? curve : null, fallback);
+}
+
+function prepareColorCurve(curve, gradientEnabled) {
+  if (!gradientEnabled) return prepareCurve(null, 0);
+  if (curve?.enabled === true) return prepareCurve(curve, 0);
+  return prepareCurve({
+    mode: 'linear',
+    defaultValue: 0,
+    keyframes: [
+      { time: 0, value: 0 },
+      { time: 100, value: 1 }
+    ]
+  }, 0);
 }
 
 export function samplePreparedCurve(curve, percent, fallback = 0) {

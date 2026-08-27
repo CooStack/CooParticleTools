@@ -1,0 +1,7 @@
+{
+  "name": "ControlableWaxOffEffect",
+  "displayName": "WaxOff",
+  "textures": [
+    "assets/particles/wax_off/glow.png"
+  ]
+}

@@ -29,6 +29,7 @@ export function initGlobalShortcuts(ctx = {}) {
         normalizeHotkey,
         deleteSelectedCards,
         deleteFocusedCard,
+        deleteSelectedReferenceGuide,
         getInsertContextFromFocus,
         isBuilderContainerKind,
         openModal,
@@ -47,6 +48,8 @@ export function initGlobalShortcuts(ctx = {}) {
         stopLinePick,
         getPointPickMode,
         stopPointPick,
+        cancelPointPick,
+        confirmPointPickDefault,
         startLinePick,
         startDottedLinePick,
         startTrianglePick,
@@ -67,6 +70,8 @@ export function initGlobalShortcuts(ctx = {}) {
         setMirrorPlane,
         copyFocusedCard,
         mirrorCopyFocusedCard,
+        copySelectedReferenceGuide,
+        mirrorCopySelectedReferenceGuide,
         getFocusedNodeId,
         getCardSelectionIds,
         focusCardById,
@@ -77,7 +82,9 @@ export function initGlobalShortcuts(ctx = {}) {
         getTransformConstraintOperation,
         cancelActiveTransformOperation,
         resetOffsetForTargetIds,
+        resetOffsetForGuideId,
         startOffsetMode,
+        getSelectedReferenceGuideId,
         addKindInContext,
         hideActionMenu,
         onWindowBlurCleanup,
@@ -293,7 +300,7 @@ export function initGlobalShortcuts(ctx = {}) {
         if (!isAnyModalOpen) {
             const ae = document.activeElement;
             const tag = (ae && ae.tagName ? String(ae.tagName).toUpperCase() : "");
-            const isTypingField = !!(ae && (tag === "INPUT" || tag === "TEXTAREA" || ae.isContentEditable));
+            const isTypingField = !!(ae && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || ae.isContentEditable));
             // 删除快捷键不应该在编辑输入时触发（尤其是 number 输入里的 Backspace）
             if (!isTypingField) {
                 const delHk = hotkeys.actions.deleteFocused || "";
@@ -304,6 +311,13 @@ export function initGlobalShortcuts(ctx = {}) {
                     e.preventDefault();
                     if (typeof getSelectedBezierNode === "function" && getSelectedBezierNode()
                         && typeof deleteSelectedBezierNode === "function" && deleteSelectedBezierNode()) {
+                        return;
+                    }
+                    const guideId = typeof getSelectedReferenceGuideId === "function"
+                        ? getSelectedReferenceGuideId()
+                        : "";
+                    if (guideId && typeof deleteSelectedReferenceGuide === "function"
+                        && deleteSelectedReferenceGuide()) {
                         return;
                     }
                     if (!(typeof deleteSelectedCards === "function" && deleteSelectedCards())) {
@@ -572,12 +586,26 @@ export function initGlobalShortcuts(ctx = {}) {
         if (hotkeyMatchEvent(e, hotkeys.actions.copyFocused)) {
             if ((modal && !modal.classList.contains("hidden")) || (hkModal && !hkModal.classList.contains("hidden"))) return;
             e.preventDefault();
+            const guideId = typeof getSelectedReferenceGuideId === "function"
+                ? getSelectedReferenceGuideId()
+                : "";
+            if (guideId && typeof copySelectedReferenceGuide === "function") {
+                copySelectedReferenceGuide();
+                return;
+            }
             if (typeof copyFocusedCard === "function") copyFocusedCard();
             return;
         }
         if (hotkeyMatchEvent(e, hotkeys.actions.mirrorCopy)) {
             if ((modal && !modal.classList.contains("hidden")) || (hkModal && !hkModal.classList.contains("hidden"))) return;
             e.preventDefault();
+            const guideId = typeof getSelectedReferenceGuideId === "function"
+                ? getSelectedReferenceGuideId()
+                : "";
+            if (guideId && typeof mirrorCopySelectedReferenceGuide === "function") {
+                mirrorCopySelectedReferenceGuide();
+                return;
+            }
             if (typeof mirrorCopyFocusedCard === "function") mirrorCopyFocusedCard();
             return;
         }
@@ -615,6 +643,13 @@ export function initGlobalShortcuts(ctx = {}) {
             if ((modal && !modal.classList.contains("hidden")) || (hkModal && !hkModal.classList.contains("hidden"))) return;
             e.preventDefault();
             if (offsetMode && typeof stopOffsetMode === "function") stopOffsetMode();
+            const guideId = typeof getSelectedReferenceGuideId === "function"
+                ? getSelectedReferenceGuideId()
+                : "";
+            if (guideId && typeof resetOffsetForGuideId === "function") {
+                resetOffsetForGuideId(guideId);
+                return;
+            }
             let targetId = (typeof getFocusedNodeId === "function") ? getFocusedNodeId() : null;
             let selectedIds = [];
             if (typeof getCardSelectionIds === "function") {
@@ -666,10 +701,23 @@ export function initGlobalShortcuts(ctx = {}) {
                 if (typeof stopOffsetMode === "function") stopOffsetMode();
                 return;
             }
+            if (pointPickMode) {
+                e.preventDefault();
+                if (typeof cancelPointPick === "function") cancelPointPick();
+                else if (typeof stopPointPick === "function") stopPointPick();
+                return;
+            }
             const activeTransform = typeof getTransformConstraintOperation === "function"
                 ? getTransformConstraintOperation()
                 : null;
             if (activeTransform && activeTransform !== "point_pick") return;
+            const guideId = typeof getSelectedReferenceGuideId === "function"
+                ? getSelectedReferenceGuideId()
+                : "";
+            if (guideId) {
+                if (typeof startOffsetMode === "function") startOffsetMode(null, { guideId });
+                return;
+            }
             let targetId = (typeof getFocusedNodeId === "function") ? getFocusedNodeId() : null;
             let selectedIds = [];
             if (!targetId && typeof getCardSelectionIds === "function") {
@@ -687,6 +735,13 @@ export function initGlobalShortcuts(ctx = {}) {
             } else {
                 if (typeof startOffsetMode === "function") startOffsetMode(targetId);
             }
+            return;
+        }
+
+        if (e.code === "Enter" && pointPickMode
+            && typeof confirmPointPickDefault === "function"
+            && confirmPointPickDefault()) {
+            e.preventDefault();
             return;
         }
 

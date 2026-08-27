@@ -1,0 +1,7 @@
+{
+  "name": "ControlableDrippingWaterEffect",
+  "displayName": "DrippingWater",
+  "textures": [
+    "assets/particles/dripping_water/drip_hang.png"
+  ]
+}

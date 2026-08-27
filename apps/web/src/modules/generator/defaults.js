@@ -8,8 +8,31 @@ import {
   normalizeGeneratorTypedValue,
   normalizeGeneratorValueType
 } from './bindings.js';
+import {
+  normalizeCParticleCommandMasks,
+  normalizeCParticleForceCommand,
+  normalizeCParticleForceResources,
+  normalizeCParticleSigns
+} from './cparticle-forces.js';
 
 export { GENERATOR_VALUE_TYPES };
+export {
+  CPARTICLE_FORCE_MAX_COMMANDS,
+  CPARTICLE_FORCE_MAX_RESOURCES_PER_KIND,
+  CPARTICLE_FORCE_TYPE_OPTIONS,
+  CPARTICLE_SELECTOR_OPTIONS,
+  collectCParticleForceErrors,
+  collectCParticleForceWarnings,
+  createCParticleForceCommand,
+  createCParticleForceResource,
+  createDefaultCParticleForceParameters,
+  getCParticleForceTypeOption,
+  kotlinConstantName,
+  nextAvailableCParticleCommandMaskValue,
+  nextAvailableCParticleDefinitionName,
+  nextAvailableCParticleSignValue,
+  parseMinecraftResourceLocation
+} from './cparticle-forces.js';
 
 let idSeed = 1;
 
@@ -401,17 +424,6 @@ export const COMMAND_TYPE_OPTIONS = [
   }
 ];
 
-export const CPARTICLE_COMMAND_TYPE_IDS = Object.freeze([
-  'drag',
-  'gravity',
-  'attraction',
-  'noise',
-  'flow_field',
-  'vortex',
-  'rotation_force',
-  'velocity_add'
-]);
-
 export function createCurveGroup() {
   return {
     size: {
@@ -506,7 +518,12 @@ export function createEmitterCard(overrides = {}) {
     gpu: {
       updateMode: 'static',
       randomSeed: null,
-      useDataColorCurve: false
+      useDataColorCurve: false,
+      signRef: '',
+      commandMaskRefs: [],
+      metadataFlags: 0,
+      charge: null,
+      radius: 0
     },
     externalData: false,
     externalTemplate: false,
@@ -515,7 +532,7 @@ export function createEmitterCard(overrides = {}) {
       template: ''
     },
     emitter: {
-      type: 'sphere',
+      type: 'point',
       offset: { x: 0, y: 0, z: 0 },
       builderState: createEmitterPointsBuilderState(),
       box: { x: 2, y: 1, z: 2, density: 0, surface: false },
@@ -534,20 +551,20 @@ export function createEmitterCard(overrides = {}) {
       burstInterval: 10
     },
     particle: {
-      countMin: 2,
-      countMax: 6,
-      lifeMin: 40,
-      lifeMax: 120,
-      sizeMin: 0.08,
-      sizeMax: 0.18,
-      colorGradientEnabled: true,
-      colorStart: '#ffd1d1',
-      colorEnd: '#ff8b8b',
+      countMin: 10,
+      countMax: 20,
+      lifeMin: 10,
+      lifeMax: 20,
+      sizeMin: 0.1,
+      sizeMax: 0.2,
+      colorGradientEnabled: false,
+      colorStart: '#ffffff',
+      colorEnd: '#ffffff',
       velocityMode: 'fixed',
-      velocity: { x: 0, y: 0.12, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
       velocityRandom: { x: 0.04, y: 0.04, z: 0.04 },
-      speedMin: 0.2,
-      speedMax: 0.6,
+      speedMin: 0.1,
+      speedMax: 0.3,
       visibleRange: 128
     },
     physics: {
@@ -611,7 +628,7 @@ function emitterSignKey(card, bindingResolver) {
 export function createCommandQueue(overrides = {}) {
   return {
     id: makeId('queue'),
-    name: '命令队列 1',
+    name: 'CPU 粒子处理力 1',
     signs: [],
     commands: [],
     ...overrides
@@ -634,7 +651,7 @@ export function createGeneratorProject(overrides = {}) {
   return normalizeGeneratorProject({
     id: '',
     tool: 'generator',
-    schemaVersion: 12,
+    schemaVersion: 13,
     name: 'EmitterGenerator',
     description: '参数化粒子发射器生成器',
     ticksPerSecond: 20,
@@ -678,59 +695,12 @@ export function createGeneratorProject(overrides = {}) {
     },
     emitters: [createEmitterCard()],
     commandQueues: [createCommandQueue()],
-    gpuCommands: [],
+    forceCommands: [],
+    signs: [],
+    commandMasks: [],
+    forceResources: [],
     ...overrides
   });
-}
-
-export function convertParticleCommandsToGpu(rawCommands = [], options = {}) {
-  const result = convertCommands(rawCommands, (type) => CPARTICLE_COMMAND_TYPE_IDS.includes(type));
-  const signs = normalizeCollisionTargets(options.signs || []);
-  if (signs.length && result.commands.length) {
-    result.adjustments.push({ field: 'signs', values: signs });
-  }
-  return result;
-}
-
-export function convertGpuCommandsToParticle(rawCommands = []) {
-  return convertCommands(rawCommands, (type) => COMMAND_TYPE_OPTIONS.some((item) => item.id === type));
-}
-
-function convertCommands(rawCommands, isCompatible) {
-  const commands = [];
-  const incompatible = [];
-  const adjustments = [];
-  (Array.isArray(rawCommands) ? rawCommands : []).forEach((command, index) => {
-    const type = resolveKnownCommandType(command?.type);
-    if (!type || !isCompatible(type)) {
-      incompatible.push({
-        id: String(command?.id || ''),
-        type: String(command?.type || ''),
-        label: String(command?.label || command?.type || `命令 ${index + 1}`)
-      });
-      return;
-    }
-    const converted = normalizeQueueCommand({
-      ...command,
-      id: makeId('cmd'),
-      tick: 0,
-      type,
-      params: { ...(command?.params || {}) }
-    }, index);
-    commands.push(converted);
-    const sourceTick = Math.trunc(toNumber(command?.tick, 0));
-    if (sourceTick !== 0) {
-      adjustments.push({
-        id: converted.id,
-        type,
-        label: String(command?.label || command?.type || `命令 ${index + 1}`),
-        field: 'tick',
-        from: sourceTick,
-        to: 0
-      });
-    }
-  });
-  return { commands, incompatible, adjustments };
 }
 
 export function normalizeGeneratorProject(raw = {}) {
@@ -762,6 +732,7 @@ export function normalizeGeneratorProject(raw = {}) {
         repairOverscaledOpacityHandles,
         legacyUseGPU,
         legacyGpuUpdateMode,
+        legacyParticleDefaults: sourceSchemaVersion < 12,
         inferLegacyCurveEnabled: sourceSchemaVersion < 11,
         legacyColorCurveEnabledByDefault: sourceSchemaVersion <= 7
       }))
@@ -769,25 +740,50 @@ export function normalizeGeneratorProject(raw = {}) {
   const commandQueues = Array.isArray(base.commandQueues) && base.commandQueues.length
     ? base.commandQueues.map((queue, index) => ({
       id: String(queue.id || makeId('queue')),
-      name: String(queue.name || `命令队列 ${index + 1}`),
+      name: String(queue.name || `CPU 粒子处理力 ${index + 1}`),
       signs: Array.isArray(queue.signs) ? queue.signs.map((value) => Math.trunc(toNumber(value, 0))) : [],
       commands: Array.isArray(queue.commands) ? queue.commands.map((command, commandIndex) => normalizeQueueCommand(command, commandIndex)) : []
     }))
     : [createCommandQueue()];
-  const gpuCommandSource = Array.isArray(base.gpuCommands) ? base.gpuCommands : [];
-  const gpuCommands = gpuCommandSource.map((command, index) => normalizeQueueCommand(command, index, {
-    preserveUnknownType: true
-  }));
+  const signs = normalizeCParticleSigns(base.signs);
+  const commandMasks = normalizeCParticleCommandMasks(base.commandMasks);
+  const forceResources = normalizeCParticleForceResources(base.forceResources);
+  const forceCommandSource = Array.isArray(base.forceCommands)
+      && (base.forceCommands.length > 0 || (!Array.isArray(base.cparticleForces) && !Array.isArray(base.gpuCommands)))
+    ? base.forceCommands
+    : Array.isArray(base.cparticleForces)
+      ? base.cparticleForces
+      : Array.isArray(base.gpuCommands)
+        ? base.gpuCommands
+        : [];
+  const forceCommands = forceCommandSource.map((command, index) => normalizeCParticleForceCommand(command, index));
+  emitters.forEach((card, index) => {
+    if (!card.useGPU || card.gpu.signRef || card.render.sign === 0) return;
+    let sign = signs.find((item) => Number(item.value) === Number(card.render.sign));
+    if (!sign) {
+      sign = {
+        id: `legacy_sign_${index + 1}`,
+        name: `legacy_sign_${card.render.sign}`,
+        value: card.render.sign
+      };
+      signs.push(sign);
+    }
+    card.gpu.signRef = sign.id;
+  });
   const parameters = normalizeGeneratorParameters(base.parameters);
   const legacyDoTick = Array.isArray(base.doTickExpressions)
     ? base.doTickExpressions.filter(Boolean).join('\n')
     : '';
   const normalized = {
     ...base,
-    schemaVersion: 12,
+    schemaVersion: 13,
     ticksPerSecond: clampInt(base.ticksPerSecond, 1, 200, 20),
     previewTicks: clampInt(base.previewTicks, 1, 2000, 120),
-    leftTab: ['emitters', 'queues', 'gpu_commands', 'project', 'tick', 'death'].includes(base.leftTab) ? base.leftTab : 'emitters',
+    leftTab: base.leftTab === 'gpu_commands'
+      ? 'force_commands'
+      : ['emitters', 'queues', 'force_commands', 'resources', 'cparticle_masks', 'project', 'tick', 'death'].includes(base.leftTab)
+        ? base.leftTab
+        : 'emitters',
     pageMode: base.pageMode === 'code' ? 'code' : 'editor',
     selectedEmitterId: emitters.some((item) => item.id === base.selectedEmitterId) ? base.selectedEmitterId : emitters[0]?.id || '',
     selectedQueueId: commandQueues.some((item) => item.id === base.selectedQueueId) ? base.selectedQueueId : commandQueues[0]?.id || '',
@@ -820,9 +816,14 @@ export function normalizeGeneratorProject(raw = {}) {
     },
     emitters,
     commandQueues,
-    gpuCommands
+    forceCommands,
+    signs,
+    commandMasks,
+    forceResources
   };
   delete normalized.particleBackend;
+  delete normalized.gpuCommands;
+  delete normalized.cparticleForces;
   return normalized;
 }
 
@@ -842,6 +843,39 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
     : normalizePlanarScale(renderSource.baseScale, { x: 1, y: 1 });
   const alphaUsesUnit = options.legacyPercentUnit || (renderSource.alpha === undefined && templateSource.alpha !== undefined);
   const velocityMode = particleSource.velocityMode || particleSource.velMode;
+  const legacyParticleDefaults = options.legacyParticleDefaults === true;
+  const particleDefaults = legacyParticleDefaults
+    ? {
+        countMin: 2,
+        countMax: 6,
+        lifeMin: 40,
+        lifeMax: 120,
+        sizeMin: 0.08,
+        sizeMax: 0.18,
+        colorStart: '#ffd1d1',
+        colorEnd: '#ff8b8b',
+        velocity: { x: 0, y: 0.12, z: 0 },
+        speedMin: 0.2,
+        speedMax: 0.6
+      }
+    : {
+        countMin: 10,
+        countMax: 20,
+        lifeMin: 10,
+        lifeMax: 20,
+        sizeMin: 0.1,
+        sizeMax: 0.2,
+        colorStart: '#ffffff',
+        colorEnd: '#ffffff',
+        velocity: { x: 0, y: 0, z: 0 },
+        speedMin: 0.1,
+        speedMax: 0.3
+      };
+  const colorGradientEnabled = particleSource.colorGradientEnabled !== undefined
+    ? particleSource.colorGradientEnabled === true
+    : legacyParticleDefaults
+      ? particleSource.colorOverLifeEnabled !== false
+      : false;
   const next = {
     ...card,
     id: String(card.id || makeId('emitter')),
@@ -857,7 +891,14 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
       randomSeed: gpuSource.randomSeed === null || gpuSource.randomSeed === undefined || gpuSource.randomSeed === ''
         ? null
         : clampInt(gpuSource.randomSeed, -2147483648, 2147483647, 0),
-      useDataColorCurve: gpuSource.useDataColorCurve === true
+      useDataColorCurve: gpuSource.useDataColorCurve === true,
+      signRef: String(gpuSource.signRef || ''),
+      commandMaskRefs: Array.isArray(gpuSource.commandMaskRefs) ? gpuSource.commandMaskRefs.map(String) : [],
+      metadataFlags: normalizeFiniteNumberCandidate(gpuSource.metadataFlags, 0),
+      charge: gpuSource.charge === null || gpuSource.charge === undefined || gpuSource.charge === ''
+        ? null
+        : normalizeFiniteNumberCandidate(gpuSource.charge, gpuSource.charge),
+      radius: normalizeFiniteNumberCandidate(gpuSource.radius, 0)
     },
     externalData: card.externalData === true,
     externalTemplate: card.externalTemplate === true,
@@ -866,7 +907,7 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
       template: normalizeEmitterVariableName(card.vars?.template)
     },
     emitter: {
-      type: normalizeEmitterType(card.emitter?.type),
+      type: normalizeEmitterType(card.emitter?.type, legacyParticleDefaults ? 'sphere' : 'point'),
       offset: normalizeVector(card.emitter?.offset, { x: 0, y: 0, z: 0 }),
       builderState: normalizePointsBuilderProject(
         card.emitter?.builderState || createEmitterPointsBuilderState(),
@@ -918,24 +959,24 @@ export function normalizeEmitterCard(raw = {}, index = 0, options = {}) {
       burstInterval: clampInt(card.emission?.burstInterval, 1, 100000, 10)
     },
     particle: {
-      countMin: clampInt(particleSource.countMin, 1, 100000, 2),
-      countMax: clampInt(particleSource.countMax, 1, 100000, 6),
-      lifeMin: clampInt(particleSource.lifeMin, 1, 100000, 40),
-      lifeMax: clampInt(particleSource.lifeMax, 1, 100000, 120),
-      sizeMin: clampNumber(particleSource.sizeMin ?? particleSource.size ?? inferredLegacySize, 0.001, 100, 0.08),
-      sizeMax: clampNumber(particleSource.sizeMax ?? particleSource.size ?? inferredLegacySize, 0.001, 100, 0.18),
-      colorGradientEnabled: particleSource.colorGradientEnabled !== false,
-      colorStart: normalizeHex(particleSource.colorStart, '#ffd1d1'),
-      colorEnd: normalizeHex(particleSource.colorEnd, '#ff8b8b'),
+      countMin: clampInt(particleSource.countMin, 1, 100000, particleDefaults.countMin),
+      countMax: clampInt(particleSource.countMax, 1, 100000, particleDefaults.countMax),
+      lifeMin: clampInt(particleSource.lifeMin, 1, 100000, particleDefaults.lifeMin),
+      lifeMax: clampInt(particleSource.lifeMax, 1, 100000, particleDefaults.lifeMax),
+      sizeMin: clampNumber(particleSource.sizeMin ?? particleSource.size ?? inferredLegacySize, 0.001, 100, particleDefaults.sizeMin),
+      sizeMax: clampNumber(particleSource.sizeMax ?? particleSource.size ?? inferredLegacySize, 0.001, 100, particleDefaults.sizeMax),
+      colorGradientEnabled,
+      colorStart: normalizeHex(particleSource.colorStart, particleDefaults.colorStart),
+      colorEnd: normalizeHex(particleSource.colorEnd, particleDefaults.colorEnd),
       velocityMode: velocityMode === 'spawn_inward' || velocityMode === 'spawn_in'
         ? 'spawn_inward'
         : velocityMode === 'spawn_relative' || velocityMode === 'spawn_rel'
           ? 'spawn_relative'
           : 'fixed',
-      velocity: normalizeVector(particleSource.velocity || particleSource.vel, { x: 0, y: 0.12, z: 0 }),
+      velocity: normalizeVector(particleSource.velocity || particleSource.vel, particleDefaults.velocity),
       velocityRandom: normalizeVector(particleSource.velocityRandom || particleSource.velRandom, { x: 0.04, y: 0.04, z: 0.04 }),
-      speedMin: clampNumber(particleSource.speedMin ?? particleSource.velSpeedMin, 0, 100, 0.2),
-      speedMax: clampNumber(particleSource.speedMax ?? particleSource.velSpeedMax, 0, 100, 0.6),
+      speedMin: clampNumber(particleSource.speedMin ?? particleSource.velSpeedMin, 0, 100, particleDefaults.speedMin),
+      speedMax: clampNumber(particleSource.speedMax ?? particleSource.velSpeedMax, 0, 100, particleDefaults.speedMax),
       visibleRange: clampInt(particleSource.visibleRange, 1, 10000, 128)
     },
     physics: {
@@ -1127,9 +1168,9 @@ function normalizeRootLifecycle(raw = {}) {
   };
 }
 
-function normalizeEmitterType(raw) {
-  const id = String(raw || 'sphere');
-  return EMITTER_TYPES.some((item) => item.id === id) ? id : 'sphere';
+function normalizeEmitterType(raw, fallback = 'point') {
+  const id = String(raw || fallback);
+  return EMITTER_TYPES.some((item) => item.id === id) ? id : fallback;
 }
 
 function normalizeBillboardMode(raw) {
@@ -1337,6 +1378,12 @@ function normalizeOpacityCurve(raw, fallbackCurve, legacyPercentUnit = false, re
 function toNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function normalizeFiniteNumberCandidate(value, fallback = 0) {
+  if (value === undefined) return fallback;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : value;
 }
 
 function clampNumber(value, min, max, fallback = 0) {

@@ -44,14 +44,17 @@ import {
     saveCompositionPreferencesToStorage,
     saveCompositionStateToStorage
 } from "./preferences.js?v=20260729_3";
-import { loadLatestAutoStatePayload } from "../../points_builder/js/io.js?v=20260826_1";
+import {
+    getAutoStateStorageKey,
+    loadLatestAutoStatePayload
+} from "../../points_builder/js/io.js?v=20260826_3";
 import {
     getCompositionKotlinTarget,
     normalizeCompositionMapping
 } from "./kotlin_mapping.js?v=20260720_1";
 import { createExpressionRuntime } from "./expression_runtime.js?v=20260729_3";
 import { APP_THEME_KEY, watchAppTheme, writeAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
-import { createAdaptiveGrid } from "../../shared/js/adaptive-grid.js?v=20260825_14";
+import { createAdaptiveGrid } from "../../shared/js/adaptive-grid.js?v=20260826_18";
 import { InlineCodeEditor, mergeCompletionGroups } from "./code_editor.js?v=20260725_1";
 import {
     normalizeAlphaHelperConfig,
@@ -134,6 +137,13 @@ function compositionReferenceStateRevision(state) {
         hash = Math.imul((hash ^ source.charCodeAt(index)) >>> 0, 0x01000193) >>> 0;
     }
     return `${hash.toString(16).padStart(8, "0")}:${source.length}`;
+}
+
+function compositionBuilderSandboxStorageKey(cardId, target = "root") {
+    return getAutoStateStorageKey({
+        cardId: String(cardId || "").trim(),
+        target: normalizeBuilderTarget(target)
+    }, CPB_STATE_KEY);
 }
 
 function compositionReferenceNodeId(cardId, path = []) {
@@ -7020,7 +7030,7 @@ class CompositionBuilderApp {
                 </label>
             </div>
             ${bindMode === "point" ? `
-                <div class="grid3">
+                <div class="grid3 vector-axes">
                     <label class="field"><span>X</span><input class="input" type="number" step="${step}" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-field="pointX" value="${esc(formatNumberCompact(node.point.x))}"/></label>
                     <label class="field"><span>Y</span><input class="input" type="number" step="${step}" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-field="pointY" value="${esc(formatNumberCompact(node.point.y))}"/></label>
                     <label class="field"><span>Z</span><input class="input" type="number" step="${step}" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-field="pointZ" value="${esc(formatNumberCompact(node.point.z))}"/></label>
@@ -7214,7 +7224,7 @@ class CompositionBuilderApp {
                     <div class="${valueClass}">
                         ${codegenNote}
                         <select class="input expr-input" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-pinit-idx="${pIdx}" ${fieldPrefix}="${codegenOnly ? "codegenExprPreset" : "exprPreset"}">${valuePresetOptions}</select>
-                        <input class="input expr-input mono ${manualVisible ? "" : "pinit-manual-hidden"}" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-pinit-idx="${pIdx}" ${fieldPrefix}="${codegenOnly ? "codegenExpr" : "expr"}" value="${esc(manualValue)}" placeholder="${esc(manualPlaceholder)}"/>
+                        <input class="input expr-input mono ${manualVisible ? "" : "pinit-manual-hidden"}" data-card-id="${cardId}" data-tree-path="${tp}" data-tree-node-pinit-idx="${pIdx}" ${fieldPrefix}="${codegenOnly ? "codegenExpr" : "expr"}" data-pb-expression-input="1" data-pb-value-type="Double" value="${esc(manualValue)}" placeholder="${esc(manualPlaceholder)}"/>
                         ${colorPicker}
                     </div>
                     <button class="btn small" data-act="remove-tree-node-pinit" data-card-id="${cardId}" data-tree-path="${tp}" data-idx="${pIdx}">删除</button>
@@ -7347,7 +7357,7 @@ class CompositionBuilderApp {
             <div class="grid2">
                 <label class="field">
                     <span>起始曲线 RelativeLocation(x,y,z)</span>
-                    <div class="grid3">
+                    <div class="grid3 vector-axes">
                         <input class="input" type="number" step="${this.state.settings.paramStep}" ${cardAttr} ${fieldAttr}="c1x" value="${esc(formatNumberCompact(scale.c1x))}" placeholder="x"/>
                         <input class="input" type="number" step="${this.state.settings.paramStep}" ${cardAttr} ${fieldAttr}="c1y" value="${esc(formatNumberCompact(scale.c1y))}" placeholder="y"/>
                         <input class="input" type="number" step="${this.state.settings.paramStep}" ${cardAttr} ${fieldAttr}="c1z" value="${esc(formatNumberCompact(scale.c1z))}" placeholder="z"/>
@@ -7916,7 +7926,7 @@ class CompositionBuilderApp {
                     <div class="${valueClass}">
                         ${codegenNote}
                         <select class="input expr-input" data-card-id="${card.id}" data-pinit-idx="${pIdx}" data-pinit-field="${codegenOnly ? "codegenExprPreset" : "exprPreset"}">${valuePresetOptions}</select>
-                        <input class="input expr-input mono ${manualVisible ? "" : "pinit-manual-hidden"}" data-card-id="${card.id}" data-pinit-idx="${pIdx}" data-pinit-field="${codegenOnly ? "codegenExpr" : "expr"}" value="${esc(manualValue)}" placeholder="${esc(manualPlaceholder)}"/>
+                        <input class="input expr-input mono ${manualVisible ? "" : "pinit-manual-hidden"}" data-card-id="${card.id}" data-pinit-idx="${pIdx}" data-pinit-field="${codegenOnly ? "codegenExpr" : "expr"}" data-pb-expression-input="1" data-pb-value-type="Double" value="${esc(manualValue)}" placeholder="${esc(manualPlaceholder)}"/>
                         ${colorPicker}
                     </div>
                     <button class="btn small" data-act="remove-pinit" data-card-id="${card.id}" data-idx="${pIdx}">删除</button>
@@ -8334,7 +8344,7 @@ class CompositionBuilderApp {
                         ${card.bindMode === "point" ? `
                             <div class="subgroup" data-section-key="source">
                                 <div class="subgroup-title">点位来源</div>
-                                <div class="grid3">
+                                <div class="grid3 vector-axes">
                                     <label class="field"><span>X</span><input class="input" type="number" step="${this.state.settings.paramStep}" data-card-id="${card.id}" data-card-point-field="x" value="${esc(String(card.point.x))}"/></label>
                                     <label class="field"><span>Y</span><input class="input" type="number" step="${this.state.settings.paramStep}" data-card-id="${card.id}" data-card-point-field="y" value="${esc(String(card.point.y))}"/></label>
                                     <label class="field"><span>Z</span><input class="input" type="number" step="${this.state.settings.paramStep}" data-card-id="${card.id}" data-card-point-field="z" value="${esc(String(card.point.z))}"/></label>
@@ -11859,7 +11869,7 @@ class CompositionBuilderApp {
         if (card) {
             try {
                 const latest = await loadLatestAutoStatePayload({
-                    storageKey: CPB_STATE_KEY,
+                    storageKey: compositionBuilderSandboxStorageKey(card.id, target),
                     expectedContext: {
                         cardId: card.id,
                         target,
@@ -11902,7 +11912,8 @@ class CompositionBuilderApp {
         try {
             const normalizedTarget = normalizeBuilderTarget(target);
             const builderState = this.resolveCardBuilderState(card, normalizedTarget);
-            localStorage.setItem(CPB_STATE_KEY, JSON.stringify({
+            const sandboxStorageKey = compositionBuilderSandboxStorageKey(card.id, normalizedTarget);
+            localStorage.setItem(sandboxStorageKey, JSON.stringify({
                 state: normalizeBuilderState(builderState),
                 context: {
                     cardId: String(card.id || ""),
@@ -11911,6 +11922,7 @@ class CompositionBuilderApp {
                 },
                 ts: Date.now()
             }));
+            if (sandboxStorageKey !== CPB_STATE_KEY) localStorage.removeItem(CPB_STATE_KEY);
             localStorage.setItem(CPB_PROJECT_KEY, sanitizeFileBase(card.name || this.state.projectName || "Builder"));
             /*
              * 不在此处写入主题。该键现在属于应用级全局主题；若每次打开内嵌
@@ -12435,7 +12447,7 @@ class CompositionBuilderApp {
 
     readBuilderSandboxState(expectedCardId = "", expectedTarget = "root", expectedRevision = "") {
         try {
-            const raw = localStorage.getItem(CPB_STATE_KEY);
+            const raw = localStorage.getItem(compositionBuilderSandboxStorageKey(expectedCardId, expectedTarget));
             if (!raw) return null;
             const parsed = JSON.parse(raw);
             if (expectedCardId) {

@@ -54,9 +54,11 @@ test('PointsBuilder model keeps a new or imported empty root empty', () => {
   });
 
   assert.deepEqual(created, {
-    root: { id: 'root', kind: 'ROOT', children: [] }
+    root: { id: 'root', kind: 'ROOT', children: [] },
+    guides: []
   });
   assert.deepEqual(normalized.root.children, []);
+  assert.deepEqual(normalized.guides, []);
 });
 
 test('PointsBuilder state normalization can preserve the legacy direct-root guard', () => {
@@ -67,7 +69,8 @@ test('PointsBuilder state normalization can preserve the legacy direct-root guar
   assert.deepEqual(normalizePointsBuilderState({
     root: { id: 'root', kind: 'ROOT', children: [] }
   }, { requireDirectRoot: true }), {
-    root: { id: 'root', kind: 'ROOT', children: [] }
+    root: { id: 'root', kind: 'ROOT', children: [] },
+    guides: []
   });
 });
 
@@ -85,7 +88,7 @@ test('PointsBuilder state normalization preserves embedded extension fields', ()
 
   const normalized = normalizePointsBuilderState(source);
 
-  assert.deepEqual(normalized, source.state);
+  assert.deepEqual(normalized, { ...source.state, guides: [] });
   assert.notEqual(normalized, source.state);
   assert.notEqual(normalized.root, source.state.root);
 });
@@ -104,6 +107,7 @@ test('PointsBuilder state normalization delegates optional preset and variable p
   assert.deepEqual(normalized.presets, [{ id: 'preset-a' }]);
   assert.deepEqual(normalized.variables, { scalar: { radius: 3 } });
   assert.deepEqual(normalized.settings, { keep: true });
+  assert.deepEqual(normalized.guides, []);
 });
 
 test('PointsBuilder variable normalization keeps array and legacy scoped definitions for completion', () => {

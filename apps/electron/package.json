@@ -1,8 +1,9 @@
 {
-  "name": "@coo-particles-tools/electron-shell",
+  "name": "coo-particles-api-tools",
   "version": "0.1.0",
   "private": true,
   "description": "Electron shell for the CooParticlesAPI Tools Python local client.",
+  "author": "CooStack",
   "main": "src/main.js",
   "type": "commonjs",
   "engines": {
@@ -12,10 +13,71 @@
     "ensure": "node scripts/ensure-electron.js",
     "dev": "node scripts/ensure-electron.js && electron .",
     "start": "node scripts/ensure-electron.js && electron .",
+    "build:web": "pnpm --dir ../web build",
+    "build:backend": "node scripts/build-backend.js",
+    "build:win": "pnpm run dist:win",
+    "dist:win": "pnpm run build:web && pnpm run build:backend && electron-builder --win nsis --x64",
     "test": "node --test tests/*.test.js",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/app-menu.js && node --check src/atomic-text-file.js && node --check src/project-auto-save.js && node --check src/preferences-store.js && node --check src/project-close-guard.js && node --check src/project-preset-files.js && node --check src/legacy-navigation.js && node --check scripts/ensure-electron.js"
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/app-menu.js && node --check src/atomic-text-file.js && node --check src/backend-launch.js && node --check src/project-auto-save.js && node --check src/preferences-store.js && node --check src/project-close-guard.js && node --check src/project-preset-files.js && node --check src/legacy-navigation.js && node --check scripts/build-backend.js && node --check scripts/ensure-electron.js"
   },
   "devDependencies": {
-    "electron": "^43.1.0"
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "cn.coostack.coo-particles-api-tools",
+    "productName": "CooParticlesAPI Tools",
+    "asar": true,
+    "directories": {
+      "output": "../../dist/windows"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../../build/backend/coo-particles-backend",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../web/dist",
+        "to": "backend/runtime/web-dist",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../../plugins",
+        "to": "backend/plugins",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "CooParticlesAPI-Tools-${version}-Setup.${ext}",
+      "executableName": "CooParticlesAPI Tools"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "CooParticlesAPI Tools",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    }
   }
 }

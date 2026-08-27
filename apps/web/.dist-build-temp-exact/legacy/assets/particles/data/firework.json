@@ -1,0 +1,14 @@
+{
+  "name": "ControlableFireworkEffect",
+  "displayName": "Firework",
+  "textures": [
+    "assets/particles/firework/spark_7.png",
+    "assets/particles/firework/spark_6.png",
+    "assets/particles/firework/spark_5.png",
+    "assets/particles/firework/spark_4.png",
+    "assets/particles/firework/spark_3.png",
+    "assets/particles/firework/spark_2.png",
+    "assets/particles/firework/spark_1.png",
+    "assets/particles/firework/spark_0.png"
+  ]
+}

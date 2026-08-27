@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>PointsBuilder 可视化构建器</title>
-    <link rel="stylesheet" href="./assets/points_builder/css/style.css?v=20260825_4"/>
+    <link rel="stylesheet" href="./assets/points_builder/css/style.css?v=20260827_3"/>
     <link rel="stylesheet" href="./assets/shared/css/glass-theme.css?v=20260825_1"/>
     <link rel="stylesheet" href="./assets/shared/css/custom-select.css?v=20260825_2"/>
     <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
@@ -40,7 +40,6 @@
                 <div class="topbar-submenu">
                     <button id="btnSavePreset" class="btn" type="button">保存预设</button>
                     <button id="btnApplyPreset" class="btn" type="button">应用预设</button>
-                    <button id="btnOpenPresetRingToolMenu" class="btn" type="button">环形放置</button>
                     <button id="btnExportPresets" class="btn" type="button">导出预设</button>
                     <button id="btnImportPresets" class="btn" type="button">导入预设</button>
                 </div>
@@ -79,9 +78,16 @@
 
     <main class="layout">
         <aside class="panel left">
-            <div class="panel-title">构建列</div>
-            <div id="cardsRoot" class="cards"></div>
-            <div class="panel-footnote">
+            <div class="panel-title builder-column-title">
+                <span id="builderColumnTitleLabel">构建列</span>
+                <div id="builderColumnTabs" class="builder-column-tabs" role="tablist" aria-label="构建列页面">
+                    <button id="btnBuilderColumnTab" class="builder-column-tab active" type="button" role="tab" aria-selected="true">Builder</button>
+                    <button id="btnReferenceGuidesTab" class="builder-column-tab" type="button" role="tab" aria-selected="false">参考线</button>
+                </div>
+            </div>
+            <div id="cardsRoot" class="cards" role="tabpanel" aria-label="Builder 编辑器"></div>
+            <div id="referenceGuidesRoot" class="reference-guides-root" role="tabpanel" aria-label="参考线" hidden></div>
+            <div id="builderColumnFootnote" class="panel-footnote">
                 拖拽 ≡ 排序；长按左键可框选多卡片；子元素可放入父卡片。
             </div>
         </aside>
@@ -103,6 +109,10 @@
                     <label class="chk">
                         <input id="chkSnapParticle" type="checkbox" checked>
                         吸附粒子
+                    </label>
+                    <label class="chk">
+                        <input id="chkSnapReferenceEndpoints" type="checkbox" checked/>
+                        吸附参考端点
                     </label>
                     <label class="chk">
                         <span style="opacity:.7;">吸附平面</span>
@@ -149,8 +159,6 @@
                      aria-labelledby="btnRightPresetsTab">
                 <div class="preset-library-head">
                     <div id="presetLibraryStatus" class="preset-library-status"></div>
-                    <button id="btnOpenPresetRingTool" class="btn preset-ring-open-btn" type="button"
-                            title="环形放置预设">环形</button>
                     <button id="btnPresetCreateLibraryGroup" class="btn icon preset-library-add-group-btn" type="button"
                             title="新建分组" aria-label="新建分组">
                         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l2 2h5.5A2.5 2.5 0 0 1 20 9.5v7A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9ZM12 10v6m-3-3h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -159,8 +167,8 @@
                 <div id="presetRingTool" class="preset-ring-tool hidden">
                     <div class="preset-ring-head">
                         <div>
-                            <div class="preset-ring-title">环形放置</div>
-                            <div id="presetRingStatus" class="preset-ring-status">圆点模式</div>
+                            <div class="preset-ring-title">环形阵列实例</div>
+                            <div id="presetRingStatus" class="preset-ring-status">选择参数化实例卡片后编辑</div>
                         </div>
                         <button id="btnPresetRingClose" class="btn icon" type="button" aria-label="收起">
                             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
@@ -170,7 +178,7 @@
                         <label><span>数量</span><input id="presetRingCount" class="input" type="number" min="1" step="1" value="12"/></label>
                         <label><span>半径</span><input id="presetRingRadius" class="input" type="number" step="0.1" value="3"/></label>
                         <label><span>起角</span><input id="presetRingStartDeg" class="input" type="number" step="1" value="0"/></label>
-                        <label><span>总组</span><input id="presetRingGroupLabel" class="input" value="环形预设组"/></label>
+                        <label><span>名称</span><input id="presetRingGroupLabel" class="input" value="环形阵列实例"/></label>
                     </div>
                     <div class="preset-ring-vector">
                         <span>圆心</span>
@@ -200,7 +208,7 @@
                     <div id="presetRingSlots" class="preset-ring-slots"></div>
                     <div class="preset-ring-actions">
                         <button id="btnPresetRingSyncSlots" class="btn" type="button">同步槽位</button>
-                        <button id="btnPresetRingApply" class="btn primary" type="button">应用</button>
+                        <button id="btnPresetRingApply" class="btn primary" type="button">保存更改</button>
                     </div>
                 </div>
                 <div id="presetLibraryList" class="preset-library-list"></div>
@@ -490,6 +498,6 @@
       }
     }
 </script>
-<script type="module" src="./assets/src/js/pages/pointsbuilder.page.js?v=20260826_2"></script>
+<script type="module" src="./assets/src/js/pages/pointsbuilder.page.js?v=20260827_1"></script>
 </body>
 </html>
