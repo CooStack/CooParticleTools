@@ -127,9 +127,20 @@ function makeNumericSvg(path) {
 }
 
 function enhanceNumericInput(input) {
-    if (!(input instanceof HTMLInputElement)
-        || input.dataset.cpNumber === 'on'
-        || input.dataset.cpNumberSkip === 'on'
+    if (!(input instanceof HTMLInputElement)) return null;
+    if (input.dataset.cpNumber === 'on') {
+        // Cloned inspector fields carry the marker but not the live scrubber
+        // instance. Unwrap those stale wrappers so the enhancer can bind a new
+        // custom numeric control.
+        const hasLiveInstance = [...liveNumericInstances].some((item) => item.input === input);
+        if (hasLiveInstance) return null;
+        const staleRoot = input.closest('.cp-number');
+        if (staleRoot) staleRoot.replaceWith(input);
+        input.removeAttribute('data-cp-number');
+        input.classList.remove('cp-number-native');
+        input.tabIndex = 0;
+    }
+    if (input.dataset.cpNumberSkip === 'on'
         || (input.type !== 'number' && !input.hasAttribute('data-pb-expression-input'))
         || input.closest('.numeric-input')
         || input.closest('.cp-number')) return null;
@@ -273,8 +284,30 @@ function readModel(select) {
     return rows;
 }
 
+function sameModel(left, right) {
+    if (left.length !== right.length) return false;
+    return left.every((row, index) => {
+        const other = right[index];
+        return row.type === other?.type
+            && row.value === other.value
+            && row.label === other.label
+            && row.disabled === other.disabled;
+    });
+}
+
 function enhance(select) {
-    if (select.dataset.cpSelect === 'on') return null;
+    if (select.dataset.cpSelect === 'on') {
+        // A cloned inspector card copies the enhanced native select, but DOM
+        // cloning does not copy this module's event listeners or WeakMap entry.
+        // Treat that markup as a stale enhancement and rebuild it in place.
+        if (instances.has(select)) return null;
+        const staleRoot = select.closest('.cp-select');
+        if (staleRoot) staleRoot.replaceWith(select);
+        select.removeAttribute('data-cp-select');
+        select.classList.remove('cp-select-native');
+        select.removeAttribute('aria-hidden');
+        select.tabIndex = 0;
+    }
     select.dataset.cpSelect = 'on';
 
     const root = document.createElement('div');
@@ -358,9 +391,9 @@ function enhance(select) {
         }
     };
 
-    const render = () => {
+    const render = (nextRows = readModel(select)) => {
         const previousActiveValue = rows[activeIndex]?.value;
-        rows = readModel(select);
+        rows = nextRows;
         panel.textContent = '';
         optionEls = [];
 
@@ -496,14 +529,16 @@ function enhance(select) {
             instance.destroy();
             return;
         }
+        const nextRows = readModel(select);
+        const modelChanged = !sameModel(rows, nextRows);
         const selectedLabel = select.options[select.selectedIndex]?.textContent?.trim() || '';
         const valueChanged = select.value !== lastValue;
         const labelChanged = selectedLabel !== lastLabel;
         const disabledChanged = select.disabled !== lastDisabled;
         if (valueChanged || labelChanged) syncTriggerText();
         if (disabledChanged) syncDisabledState();
-        if (openInstance === instance && (valueChanged || labelChanged || disabledChanged)) {
-            render();
+        if (openInstance === instance && (modelChanged || valueChanged || labelChanged || disabledChanged)) {
+            render(nextRows);
             place();
         }
         lastValue = select.value;
@@ -614,8 +649,7 @@ function enhance(select) {
      */
     if (typeof MutationObserver === 'function') {
         modelObserver = new MutationObserver(() => {
-            render();
-            if (openInstance === instance) place();
+            syncState();
         });
         modelObserver.observe(select, {
             attributes: true,
@@ -737,5 +771,5 @@ export function refreshCustomSelects(root = document) {
  * panel would still show the old rows.
  */
 export function refreshCustomSelect(select) {
-    instances.get(select)?.render();
+    instances.get(select)?.syncState();
 }

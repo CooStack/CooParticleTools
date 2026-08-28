@@ -251,7 +251,6 @@ const selectedNodeLabel = computed(() => {
 const previewHint = computed(() => `Three.js 预览 · 网格 ${settings.value.showGrid ? '开' : '关'} · 坐标轴 ${settings.value.showAxes ? '开' : '关'}`);
 const hotkeyCount = computed(() => Object.values(hotkeys.value.actions || {}).filter(Boolean).length);
 const saveButtonLabel = computed(() => props.allowRepositorySave ? '保存到仓库' : '保存到发射器');
-
 function showToast(message) {
   toastMessage.value = message;
   clearTimeout(toastTimer);

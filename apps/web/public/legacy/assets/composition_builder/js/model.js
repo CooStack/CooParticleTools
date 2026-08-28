@@ -1,4 +1,4 @@
-import { normalizePointsBuilderState } from "../../points_builder/js/model.js";
+import { normalizePointsBuilderState } from "../../points_builder/js/model.js?v=20260827_2";
 import {
     normalizeAlphaHelperConfig,
     normalizeCParticleAlphaConfig
@@ -789,6 +789,13 @@ export function createCompositionProject(init = {}, options = {}) {
 export function normalizeCompositionProject(raw, options = {}) {
     const project = cloneJson(raw && typeof raw === "object" ? raw : {}) || {};
     project.settings = project.settings && typeof project.settings === "object" ? project.settings : {};
+    if (project.projectSettings && typeof project.projectSettings === "object") {
+        delete project.projectSettings.autoSaveIntervalsMinutes;
+        if (!Object.keys(project.projectSettings).length) delete project.projectSettings;
+    } else {
+        delete project.projectSettings;
+    }
+    delete project.settings.autoSaveIntervalsMinutes;
     project.hotkeys = project.hotkeys && typeof project.hotkeys === "object" ? project.hotkeys : {};
     project.hotkeys.actions = project.hotkeys.actions && typeof project.hotkeys.actions === "object"
         ? project.hotkeys.actions

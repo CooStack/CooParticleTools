@@ -21,6 +21,7 @@ test('desktop project creation requires a user-selected file location', async ()
   assert.match(electronMain, /ipcMain\.handle\('shell:chooseProjectFile'/);
   assert.match(preload, /autoSaveProjectFile: \(payload\) => ipcRenderer\.invoke\('shell:autoSaveProjectFile'/);
   assert.match(electronMain, /ipcMain\.handle\('shell:autoSaveProjectFile'/);
+  assert.match(electronMain, /writableFilePath: getProjectRecoveryPath\(filePath\)/);
   assert.match(electronMain, /writeProjectAutoSave/);
 });
 
@@ -32,9 +33,11 @@ test('generator and legacy editors autosave file-backed project changes', async 
 
   assert.match(generator, /watch\(project,[\s\S]*?scheduleIndexedProjectSave\(\)/);
   assert.match(generator, /!loadedProjectId\.value && !currentProjectPath\.value/);
-  assert.match(generator, /shell\.autoSaveProjectFile\(\{ filePath, text \}\)/);
+  assert.match(generator, /shell\.autoSaveProjectFile\(\{[\s\S]*?filePath,[\s\S]*?text,[\s\S]*?intervals: readAutoSaveIntervals\(\)/);
+  assert.match(generator, /currentBackupEnabled: readCurrentBackupEnabled\(\)/);
   assert.match(generator, /title: '自动保存 Generator 项目',[\s\S]*?filePath/);
   assert.match(generator, /shell\.readTextFile\(filePath, \{ addToRecent: false \}\)/);
+  assert.match(generator, /filePath = String\(result\.writableFilePath \|\| filePath\)/);
   assert.match(generator, /shell\.readTextFile\(filePath, \{ addToRecent: false \}\);\s*if \(token !== projectLoadToken\) return false;/);
   assert.match(generator, /if \(pending\?\.text\) \{\s*projectLoadToken \+= 1;/);
   assert.match(generator, /onBeforeUnmount\(\(\) => \{\s*projectLoadToken \+= 1;/);
@@ -43,10 +46,12 @@ test('generator and legacy editors autosave file-backed project changes', async 
   assert.match(generator, /if \(projectId\) \{[\s\S]*?return;\s*\}\s*projectLoadToken \+= 1;\s*loadedProjectId\.value = '';/);
   assert.match(legacyFrame, /setInterval\(observeLegacyProjectChanges, AUTO_SAVE_POLL_MS\)/);
   assert.match(legacyFrame, /scheduleProjectAutoSave\(\)/);
-  assert.match(legacyFrame, /shell\.autoSaveProjectFile\(\{ filePath, text \}\)/);
+  assert.match(legacyFrame, /shell\.autoSaveProjectFile\(\{[\s\S]*?filePath,[\s\S]*?text,[\s\S]*?intervals: readAutoSaveIntervals\(\)/);
+  assert.match(legacyFrame, /currentBackupEnabled: readCurrentBackupEnabled\(\)/);
   assert.match(legacyFrame, /title: '自动保存项目',[\s\S]*?filePath/);
   assert.match(legacyFrame, /shell\.readTextFile\(filePath, \{ addToRecent: false \}\)/);
   assert.match(legacyFrame, /shell\.readTextFile\(filePath, \{ addToRecent: false \}\);\s*if \(token !== projectLoadToken\) return false;/);
+  assert.match(legacyFrame, /filePath = String\(result\.writableFilePath \|\| filePath\)/);
   assert.match(legacyFrame, /onBeforeUnmount\(\(\) => \{\s*projectLoadToken \+= 1;/);
   assert.match(legacyFrame, /onBeforeRouteLeave\(async \(\) => \{\s*projectLoadToken \+= 1;/);
   assert.match(legacyFrame, /onBeforeRouteUpdate\(async \(\) => \{\s*projectLoadToken \+= 1;/);

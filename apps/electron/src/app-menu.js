@@ -45,6 +45,8 @@ function buildMenuModel({ recentProjects = [] } = {}) {
         { id: 'save-as-project', label: '另存为...', accelerator: 'CommandOrControl+Shift+S' },
         { id: 'export-kotlin', label: '导出 Kotlin...', accelerator: 'CommandOrControl+E' },
         SEPARATOR,
+        { id: 'open-preferences', label: '首选项...', accelerator: 'CommandOrControl+,' },
+        SEPARATOR,
         { id: 'goto-workbench', label: '项目' },
         SEPARATOR,
         { id: 'quit', label: '退出', role: 'quit' },

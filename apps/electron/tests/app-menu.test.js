@@ -64,6 +64,7 @@ test('the accelerators that existed before the custom title bar are preserved', 
   assert.equal(accelerators.get('save-project'), 'CommandOrControl+S');
   assert.equal(accelerators.get('save-as-project'), 'CommandOrControl+Shift+S');
   assert.equal(accelerators.get('export-kotlin'), 'CommandOrControl+E');
+  assert.equal(accelerators.get('open-preferences'), 'CommandOrControl+,');
 });
 
 test('runMenuCommand handles every actionable id in the model', () => {

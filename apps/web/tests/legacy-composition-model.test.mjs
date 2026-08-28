@@ -160,6 +160,18 @@ test('Composition projects preserve explicit mappings and migrate legacy files t
   assert.equal(normalizeCompositionProject({ projectName: 'Legacy', cards: [] }).mapping, 'mojmap');
 });
 
+test('Composition strips legacy project auto-save settings', () => {
+  const created = createCompositionProject();
+  assert.equal(Object.hasOwn(created, 'projectSettings'), false);
+  const normalized = normalizeCompositionProject({
+    settings: { autoSaveIntervalsMinutes: [30, 1, 1] },
+    projectSettings: { autoSaveIntervalsMinutes: [], preserved: true }
+  });
+  assert.equal(Object.hasOwn(normalized.settings, 'autoSaveIntervalsMinutes'), false);
+  assert.equal(Object.hasOwn(normalized.projectSettings, 'autoSaveIntervalsMinutes'), false);
+  assert.equal(normalized.projectSettings.preserved, true);
+});
+
 test('Composition local variable names reject runtime names, globals, duplicates, and Kotlin keywords', () => {
   const reserved = new Set(['globalSpeed']);
   const existing = new Set(['speed']);

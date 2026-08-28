@@ -8440,7 +8440,7 @@ function setColorLifecycleSection($card, enabled) {
                 toggleEmitterSyncTarget(card);
                 return;
             }
-            if ($(e.target).closest(".btnFold, .btnDup, .btnDel, .dragHandle, .emitInput, .builder-actions, .btnOpenEmitterBuilder, .btnImportEmitterBuilder, .btnExportEmitterBuilder, .btnClearEmitterBuilder").length) {
+            if ($(e.target).closest(".btnFold, .btnDup, .btnDel, .dragHandle, .emitInput, .cp-select, .cp-select-panel, .builder-actions, .btnOpenEmitterBuilder, .btnImportEmitterBuilder, .btnExportEmitterBuilder, .btnClearEmitterBuilder").length) {
                 return;
             }
             const id = String($(this).data("id") || "");

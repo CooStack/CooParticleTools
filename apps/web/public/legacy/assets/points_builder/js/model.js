@@ -718,6 +718,7 @@ export function normalizePointsBuilderState(source, options = {}) {
                 origin: normalizeVariableVector(raw.origin),
                 variables: raw.variables && typeof raw.variables === "object" ? cloneJson(raw.variables) : null,
                 staticOverrides: raw.staticOverrides && typeof raw.staticOverrides === "object" ? cloneJson(raw.staticOverrides) : null,
+                privateConstants: raw.privateConstants && typeof raw.privateConstants === "object" ? cloneJson(raw.privateConstants) : {},
                 children: Array.isArray(raw.children) ? cloneJson(raw.children) : [],
                 revision: Math.max(1, Math.trunc(Number(raw.revision) || 1)),
                 createdAt: Number(raw.createdAt) || Date.now(),

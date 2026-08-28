@@ -37,7 +37,8 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         getCompositionControllerVariableNameError,
         normalizeCompositionControllerVariableName,
         COMPOSITION_LAMBDA_RESERVED_NAMES,
-        DEFAULT_EFFECT_CLASS
+        DEFAULT_EFFECT_CLASS,
+        createBuilderKotlinEmitContext
     } = deps;
 
     if (!CompositionBuilderApp || !CompositionBuilderApp.prototype) {
@@ -110,14 +111,25 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         const body = [];
         body.push("@CooAutoRegister");
         body.push(`class ${className}(position: ${mappingTarget.vec3Type}, world: ${mappingTarget.worldType}? = null) : ${baseClass}(position, world) {`);
-        const fields = this.buildClassFields(className);
-        if (fields) body.push(fields);
-        const initBlock = this.buildInitBlock(className, sequencedRoot);
-        if (initBlock) body.push(initBlock);
-        body.push(this.buildParticlesMethod(className, sequencedRoot));
-        const removeMethod = this.buildRemoveMethod();
-        if (removeMethod) body.push(removeMethod);
-        body.push(this.buildOnDisplayMethod(className));
+        const previousBuilderContext = this.builderCodegenContext;
+        this.builderCodegenContext = typeof createBuilderKotlinEmitContext === "function"
+            ? createBuilderKotlinEmitContext(this.state)
+            : null;
+        try {
+            const fields = this.buildClassFields(className);
+            if (fields) body.push(fields);
+            const initBlock = this.buildInitBlock(className, sequencedRoot);
+            if (initBlock) body.push(initBlock);
+            const particlesMethod = this.buildParticlesMethod(className, sequencedRoot);
+            const builderCompanion = this.buildBuilderCompanionObject();
+            if (builderCompanion) body.push(builderCompanion);
+            body.push(particlesMethod);
+            const removeMethod = this.buildRemoveMethod();
+            if (removeMethod) body.push(removeMethod);
+            body.push(this.buildOnDisplayMethod(className));
+        } finally {
+            this.builderCodegenContext = previousBuilderContext || null;
+        }
         body.push("}");
 
         const head = packageName ? [`package ${packageName}`, ""] : [];
@@ -304,6 +316,21 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         return lines.join("\n");
     }
 
+    buildBuilderCompanionObject() {
+        const ctx = this.builderCodegenContext;
+        if (!ctx || !(ctx.referenceDecls instanceof Map)) return "";
+        const constants = ctx.constants instanceof Map ? Array.from(ctx.constants.values()) : [];
+        const declarations = Array.from(ctx.referenceDecls.values());
+        if (!constants.length && !declarations.length) return "";
+        const lines = ["    private companion object {"];
+        constants.forEach((line) => lines.push(`        ${line}`));
+        declarations.forEach((declaration) => {
+            lines.push(indentText(String(declaration), "        "));
+        });
+        lines.push("    }");
+        return lines.join("\n");
+    }
+
     buildInitBlock(className, sequencedRoot) {
         const lines = [];
         const axisExpr = this.rewriteRelativeTargetExpr(
@@ -344,7 +371,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
         if (sequencedRoot) {
             lines.push("    override fun getParticleSequenced(): SortedMap<CompositionData, RelativeLocation> {");
             lines.push("        val result: SortedMap<CompositionData, RelativeLocation> = TreeMap()");
-            lines.push("        var orderCounter = 0");
+            lines.push("        var cardOrder = 0");
         } else {
             lines.push("    override fun getParticles(): Map<CompositionData, RelativeLocation> {");
             lines.push("        val result = LinkedHashMap<CompositionData, RelativeLocation>()");
@@ -726,7 +753,7 @@ export function installKotlinCodegenMethods(CompositionBuilderApp, deps = {}) {
             }
             : null;
         if (sequencedRoot) {
-            lines.push(`${indentBase}CompositionData().apply { order = orderCounter++ }`);
+            lines.push(`${indentBase}CompositionData().apply { order = cardOrder++ }`);
         } else {
             lines.push(`${indentBase}CompositionData()`);
         }

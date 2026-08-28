@@ -4,6 +4,8 @@ import test from 'node:test';
 
 import { installKotlinCodegenMethods } from '../public/legacy/assets/composition_builder/js/kotlin_codegen_mixin.js';
 import { installTargetPresetMethods } from '../public/legacy/assets/composition_builder/js/target_preset_mixin.js';
+import { createBuilderTools } from '../public/legacy/assets/points_builder/js/builder.js';
+import { createKindDefs } from '../public/legacy/assets/points_builder/js/kinds.js';
 import {
   createCompositionCard,
   findCompositionNestedShapePaths,
@@ -32,6 +34,29 @@ function defaultLiteral(type) {
 function translateBlock(value, indent = '') {
   return String(value || '').split('\n').map((line) => `${indent}${line}`).join('\n');
 }
+
+const legacyBuilderU = {
+  fmt(value) {
+    const number = Number(value);
+    return Number.isInteger(number) ? `${number}.0` : String(number);
+  },
+  v: (x, y, z) => ({ x, y, z })
+};
+const legacyBuilderNum = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+const legacyBuilderInt = (value, fallback = 0) => Math.trunc(legacyBuilderNum(value, fallback));
+const legacyBuilderRelExpr = (x, y, z) => `RelativeLocation(${legacyBuilderU.fmt(legacyBuilderNum(x))}, ${legacyBuilderU.fmt(legacyBuilderNum(y))}, ${legacyBuilderU.fmt(legacyBuilderNum(z))})`;
+const legacyBuilderKinds = createKindDefs({
+  U: legacyBuilderU,
+  num: legacyBuilderNum,
+  int: legacyBuilderInt,
+  relExpr: legacyBuilderRelExpr
+});
+const legacyBuilderTools = createBuilderTools({
+  KIND: legacyBuilderKinds,
+  U: legacyBuilderU,
+  getState: () => ({ root: { children: [] } }),
+  getKotlinEndMode: () => 'builder'
+});
 
 class CompositionCodegenFixture {
   constructor(card, projectAlpha = { type: 'none' }) {
@@ -93,6 +118,13 @@ installKotlinCodegenMethods(CompositionCodegenFixture, {
   COMPOSITION_LAMBDA_RESERVED_NAMES: new Set(),
   isCompositionShapeType,
   findCompositionNestedShapePaths,
+  createBuilderKotlinEmitContext: (state) => {
+    const snapshots = {};
+    for (const card of state.cards || []) {
+      Object.assign(snapshots, card?.builderState?.builderSnapshots || {});
+    }
+    return { snapshots, staticContainer: true };
+  },
   DEFAULT_EFFECT_CLASS: 'ControlableEndRodEffect'
 });
 
@@ -299,6 +331,70 @@ test('Composition global GPU single card emits CParticle Kotlin', () => {
   assert.match(kotlin, /\.addCParticleInstanceInit \{/);
   assert.match(kotlin, /randomAgePreTick = true/);
   assert.doesNotMatch(kotlin, /ParticleDisplayer\.withSingle|addParticleInstanceInit/);
+});
+
+test('Legacy Composition emits PointsBuilder instances in its companion object', () => {
+  const sourceCard = createCompositionCard(0);
+  sourceCard.bindMode = 'builder';
+  sourceCard.builderState = {
+    builderSnapshots: {
+      rune: {
+        id: 'rune',
+        children: [{
+          id: 'circle-template',
+          kind: 'add_circle',
+          params: { r: 2, count: 8 },
+          children: [],
+          terms: []
+        }]
+      }
+    },
+    root: { id: 'root-source', kind: 'ROOT', children: [] }
+  };
+  const referenceCard = createCompositionCard(1);
+  referenceCard.bindMode = 'builder';
+  referenceCard.builderState = {
+    root: {
+      id: 'root-reference',
+      kind: 'ROOT',
+      children: [{
+        id: 'rune-instance',
+        kind: 'builder_reference',
+        params: {
+          snapshotId: 'rune',
+          instanceMode: 'static',
+          ox: 1,
+          oy: 2,
+          oz: 3,
+          scale: 1,
+          rotationDeg: 0,
+          rotationAxisX: 0,
+          rotationAxisY: 1,
+          rotationAxisZ: 0
+        },
+        children: [],
+        terms: []
+      }]
+    }
+  };
+  const fixture = new CompositionCodegenFixture(sourceCard);
+  fixture.state.cards = [sourceCard, referenceCard];
+  fixture.emitBuilderExprFromState = function emitBuilderExprFromState(builderState) {
+    return legacyBuilderTools.emitKotlinParts(builderState, {
+      emitCtx: this.builderCodegenContext,
+      staticContainer: true,
+      endMode: 'builder'
+    }).expression;
+  };
+  fixture.emitBuilderExpr = function emitBuilderExpr(targetCard) {
+    return this.emitBuilderExprFromState(targetCard.builderState);
+  };
+
+  const kotlin = fixture.generateKotlin();
+
+  assert.match(kotlin, /private companion object \{[\s\S]*?private val builderInstanceRune: PointsBuilder = PointsBuilder\(\)/);
+  assert.match(kotlin, /\.addBuilder\(RelativeLocation\(1\.0, 2\.0, 3\.0\), builderInstanceRune\)/);
+  assert.equal((kotlin.match(/private val builderInstanceRune/g) || []).length, 1);
 });
 
 test('Composition GPU parent preserves nested Composition leaves on the GPU', () => {

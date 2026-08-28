@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { createPointsBuilderReferenceGuide } from "./model.js?v=20260826_5";
+import { createPointsBuilderReferenceGuide } from "./model.js?v=20260827_2";
 
 const AXIS_KEYS = {
     X: "x",

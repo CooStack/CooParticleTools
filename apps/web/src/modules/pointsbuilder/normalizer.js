@@ -311,6 +311,7 @@ export function normalizePointsBuilderProject(source, tool = 'pointsbuilder') {
       }
     }
   };
+  delete normalized.settings.autoSaveIntervalsMinutes;
 
   if (!normalized.state.root.children.length && !hasExplicitNodeList) {
     normalized.state.root.children.push(createNodeByKind('add_circle'));

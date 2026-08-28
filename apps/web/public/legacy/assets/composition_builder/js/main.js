@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { createKindDefs } from "../../points_builder/js/kinds.js?v=20260820_2";
-import { createBuilderTools } from "../../points_builder/js/builder.js";
+import { createKindDefs } from "../../points_builder/js/kinds.js?v=20260828_1";
+import { createBuilderTools } from "../../points_builder/js/builder.js?v=20260828_1";
 import {
     COMPOSITION_CARD_SECTION_KEYS as CARD_SECTION_KEYS,
     COMPOSITION_CONTROLLER_ACTION_TYPES as CONTROLLER_ACTION_TYPES,
@@ -35,7 +35,7 @@ import {
     isCompositionCardUsingCParticle,
     compositionShapeNodeHasParticleLeaf,
     findCompositionNestedShapePaths
-} from "./model.js?v=20260826_8";
+} from "./model.js?v=20260827_2";
 import {
     applyCompositionPreferences,
     extractCompositionPreferences,
@@ -48,6 +48,7 @@ import {
     getAutoStateStorageKey,
     loadLatestAutoStatePayload
 } from "../../points_builder/js/io.js?v=20260826_3";
+import { applyPointsBuilderInstanceOverrides } from "../../points_builder/js/model.js?v=20260827_2";
 import {
     getCompositionKotlinTarget,
     normalizeCompositionMapping
@@ -88,9 +89,9 @@ import {
     formatAngleValue
 } from "./angle_offset_utils.js";
 import { installPreviewRuntimeMethods } from "./preview_runtime_mixin.js?v=20260825_3";
-import { installKotlinCodegenMethods } from "./kotlin_codegen_mixin.js?v=20260826_10";
+import { installKotlinCodegenMethods } from "./kotlin_codegen_mixin.js?v=20260827_3";
 import { compositionVectorApiTypeDeclaration } from "./composition_vector_expression.js?v=20260729_3";
-import { installCodeOutputMethods } from "./code_output_mixin.js";
+import { installCodeOutputMethods } from "./code_output_mixin.js?v=20260827_2";
 import { installExpressionEditorMethods } from "./expression_editor_mixin.js?v=20260729_3";
 import { installCodeCompileMethods } from "./code_compile_mixin.js?v=20260826_1";
 import { installTargetPresetMethods } from "./target_preset_mixin.js?v=20260727_1";
@@ -110,6 +111,10 @@ import {
 import { createPreviewDistanceTool } from "../../src/js/shared/preview-distance-tool.js";
 import { normalizeWorkbenchTheme } from "./theme.js";
 import { putCompositionReferenceSnapshot } from "../../shared/js/composition-reference-storage.js?v=20260825_1";
+import {
+    applyBuilderInstanceRenamesToCompositionState,
+    collectCompositionBuilderInstanceRegistry
+} from "../../points_builder/js/instance-registry.js?v=20260828_2";
 
 const U = globalThis.Utils;
 if (!U) throw new Error("Utils 未加载：请先加载 points_builder/utils.js");
@@ -121,8 +126,9 @@ const CPB_PROJECT_KEY = `${CPB_PREFIX}pb_project_name_v1`;
 const CPB_RETURN_CARD_KEY = `${CPB_PREFIX}return_card_v1`;
 const CPB_RETURN_TARGET_KEY = `${CPB_PREFIX}return_target_v1`;
 const CPB_COMP_CONTEXT_KEY = `${CPB_PREFIX}pb_comp_context_v1`;
+const CPB_INSTANCE_RENAMES_KEY = `${CPB_PREFIX}pb_instance_registry_renames_v1`;
 // Isolate persisted reference data when the sampling contract or Composition changes.
-const COMPOSITION_REFERENCE_BUILD_VERSION = "20260825_22";
+const COMPOSITION_REFERENCE_BUILD_VERSION = "20260828_1";
 const COMPOSITION_REFERENCE_STORAGE_PREFIX = "composition-reference-v3:";
 
 function compositionReferenceStateRevision(state) {
@@ -725,16 +731,28 @@ const builderU = Object.assign({}, U, {
     }
 });
 
-const KIND = createKindDefs({ U: builderU, num: builderNum, int: builderInt, relExpr: builderRelExpr, rotatePointsToPointUpright });
+const KIND = createKindDefs({
+    U: builderU,
+    num: builderNum,
+    int: builderInt,
+    relExpr: builderRelExpr,
+    rotatePointsToPointUpright,
+    applyPointsBuilderInstanceOverrides
+});
 let builderEvalState = { root: { id: "root", kind: "ROOT", children: [] } };
 const builderTools = createBuilderTools({
     KIND,
     U: builderU,
     getState: () => builderEvalState,
     getKotlinEndMode: () => "builder",
-    rotatePointsToPointUpright
+    rotatePointsToPointUpright,
+    applyPointsBuilderInstanceOverrides
 });
-const { evalBuilderWithMeta, emitKotlin: emitPointsBuilderKotlin } = builderTools;
+const {
+    evalBuilderWithMeta,
+    emitKotlin: emitPointsBuilderKotlin,
+    emitKotlinParts: emitPointsBuilderKotlinParts
+} = builderTools;
 
 class CompositionBuilderApp {
     constructor() {
@@ -2967,7 +2985,8 @@ class CompositionBuilderApp {
                 || act === "export-builder-json"
                 || act === "export-node-builder-json"
                 || act === "shape-tree-drill-into"
-                || act === "shape-tree-navigate-breadcrumb";
+                || act === "shape-tree-navigate-breadcrumb"
+                || act === "delete-card";
             if (act === "delete-card") {
                 const card = this.getCardById(cardId);
                 const cardName = String(card?.name || "该卡片").trim() || "该卡片";
@@ -4314,6 +4333,7 @@ class CompositionBuilderApp {
     deleteCardById(cardId) {
         const idx = this.getCardIndexById(cardId);
         if (idx < 0) return;
+        this.pushHistory();
         this.state.cards.splice(idx, 1);
         if (!this.state.cards.length) this.state.cards.push(createDefaultCard(0));
         const fallback = this.state.cards[Math.max(0, idx - 1)] || this.state.cards[0];
@@ -5005,6 +5025,7 @@ class CompositionBuilderApp {
                     cards: compositionCards,
                     revision: compositionRevision
                 },
+                builderInstanceRegistry: collectCompositionBuilderInstanceRegistry(this.state),
                 compositionReferenceRevision: compositionRevision,
                 compositionReference,
                 compositionReferenceStatus
@@ -6521,7 +6542,6 @@ class CompositionBuilderApp {
             </div>
         `).join("");
         const displayRows = s.displayActions.map((a, i) => this.renderDisplayActionRow(a, i)).join("");
-
         this.dom.projectSection.innerHTML = `
             <div class="section-block">
                 <div class="section-title">项目设置</div>
@@ -11891,6 +11911,19 @@ class CompositionBuilderApp {
         // Do not silently change a card that was using manual point semantics.
         if (options?.pushHistory === true) this.pushHistory();
         this.setCardBuilderState(card, target, state, { activateBinding: false });
+        let pendingRenames = [];
+        try {
+            const raw = localStorage.getItem(CPB_INSTANCE_RENAMES_KEY);
+            const payload = raw ? JSON.parse(raw) : null;
+            if (!payload?.compositionRevision
+                || String(payload.compositionRevision) === String(expectedRevision)) {
+                pendingRenames = Array.isArray(payload?.renames) ? payload.renames : [];
+            }
+            localStorage.removeItem(CPB_INSTANCE_RENAMES_KEY);
+        } catch {
+            pendingRenames = [];
+        }
+        const renameResult = applyBuilderInstanceRenamesToCompositionState(this.state, pendingRenames);
         this.focusedCardId = card.id;
         this.selectedCardIds = new Set([card.id]);
         this.selectionAnchorCardId = card.id;
@@ -11905,12 +11938,15 @@ class CompositionBuilderApp {
         if (/^tree_node:/.test(target)) {
             msg = "已返回并加载子节点 Builder";
         }
+        if (renameResult.applied.length) msg += `，并同步重命名 ${renameResult.applied.length} 个实例 ID`;
+        if (renameResult.conflicts.length) msg += `；${renameResult.conflicts.length} 个重命名因 ID 冲突被跳过`;
         this.showToast(msg, "success");
     }
 
     seedBuilderSandbox(card, target = "root") {
         try {
             const normalizedTarget = normalizeBuilderTarget(target);
+            localStorage.removeItem(CPB_INSTANCE_RENAMES_KEY);
             const builderState = this.resolveCardBuilderState(card, normalizedTarget);
             const sandboxStorageKey = compositionBuilderSandboxStorageKey(card.id, normalizedTarget);
             localStorage.setItem(sandboxStorageKey, JSON.stringify({
@@ -12738,7 +12774,7 @@ class CompositionBuilderApp {
         if (sequencedRoot) {
             lines.push("    override fun getParticleSequenced(): SortedMap<CompositionData, RelativeLocation> {");
             lines.push("        val result: SortedMap<CompositionData, RelativeLocation> = TreeMap()");
-            lines.push("        var orderCounter = 0");
+            lines.push("        var cardOrder = 0");
         } else {
             lines.push("    override fun getParticles(): Map<CompositionData, RelativeLocation> {");
             lines.push("        val result = LinkedHashMap<CompositionData, RelativeLocation>()");
@@ -12809,29 +12845,24 @@ class CompositionBuilderApp {
 
     emitCompositionDataExpr(card, className, sequencedRoot, indentBase = "                ") {
         const lines = [];
-        let headIndent = indentBase;
         if (sequencedRoot) {
-            lines.push(`${indentBase}run {`);
-            lines.push(`${indentBase}    val order = orderCounter++`);
-            headIndent = `${indentBase}    `;
-            lines.push(`${headIndent}CompositionData().apply { order = order }`);
+            lines.push(`${indentBase}CompositionData().apply { order = cardOrder++ }`);
         } else {
-            lines.push(`${headIndent}CompositionData()`);
+            lines.push(`${indentBase}CompositionData()`);
         }
-        lines.push(`${headIndent}    .setDisplayerSupplier {`);
+        lines.push(`${indentBase}    .setDisplayerSupplier {`);
         if (card.dataType === "single") {
-            lines.push(`${headIndent}        ParticleDisplayer.withSingle(${sanitizeKotlinIdentifier(card.singleEffectClass || DEFAULT_EFFECT_CLASS, DEFAULT_EFFECT_CLASS)}(it))`);
+            lines.push(`${indentBase}        ParticleDisplayer.withSingle(${sanitizeKotlinIdentifier(card.singleEffectClass || DEFAULT_EFFECT_CLASS, DEFAULT_EFFECT_CLASS)}(it))`);
         } else if (card.dataType === "particle_shape") {
-            lines.push(indentText(this.buildShapeDisplayerExpr(card, className, "particle_shape"), `${headIndent}        `));
+            lines.push(indentText(this.buildShapeDisplayerExpr(card, className, "particle_shape"), `${indentBase}        `));
         } else {
-            lines.push(indentText(this.buildShapeDisplayerExpr(card, className, "sequenced_shape"), `${headIndent}        `));
+            lines.push(indentText(this.buildShapeDisplayerExpr(card, className, "sequenced_shape"), `${indentBase}        `));
         }
-        lines.push(`${headIndent}    }`);
+        lines.push(`${indentBase}    }`);
 
         if (card.dataType === "single") {
-            lines.push(this.buildSingleDataChain(card, className, `${headIndent}    `));
+            lines.push(this.buildSingleDataChain(card, className, `${indentBase}    `));
         }
-        if (sequencedRoot) lines.push(`${indentBase}}`);
         return lines.join("\n");
     }
 
@@ -13378,11 +13409,134 @@ function emitBuilderKotlinFromState(builderState) {
     }
 }
 
+function emitBuilderKotlinPartsFromState(builderState, emitCtx = null) {
+    const state = normalizeBuilderState(builderState);
+    const symbolPrefix = typeof emitCtx?.builderStateSymbolPrefix === "function"
+        ? emitCtx.builderStateSymbolPrefix(builderState)
+        : "";
+    const localSnapshots = state?.builderSnapshots
+        || state?.state?.builderSnapshots
+        || {};
+    return emitPointsBuilderKotlinParts(state, {
+        emitCtx,
+        staticContainer: true,
+        endMode: "builder",
+        symbolPrefix,
+        snapshots: {
+            ...(emitCtx?.snapshots || {}),
+            ...localSnapshots
+        }
+    });
+}
+
+function createBuilderKotlinEmitContext(state) {
+    const snapshots = {};
+    const snapshotSymbols = new Map();
+    const conflictingSnapshotIds = new Set();
+    const stateRecords = [];
+    const snapshotSymbolKey = (id) => {
+        const parts = String(id || "").trim().replace(/[^A-Za-z0-9]+/g, " ").split(/\s+/).filter(Boolean);
+        if (!parts.length) return "snapshot";
+        return parts.map((part, index) => index === 0
+            ? part.charAt(0).toLowerCase() + part.slice(1)
+            : part.charAt(0).toUpperCase() + part.slice(1)).join("");
+    };
+    const visitBuilderState = (builderState, prefix = "") => {
+        if (!builderState || typeof builderState !== "object") return;
+        const source = builderState.builderSnapshots
+            || builderState.state?.builderSnapshots
+            || {};
+        stateRecords.push({ builderState, prefix, ids: new Set(Object.keys(source)) });
+        for (const [id, snapshot] of Object.entries(source)) {
+            if (!snapshots[id]) snapshots[id] = snapshot;
+            const symbol = snapshotSymbolKey(id);
+            const fingerprint = JSON.stringify({
+                id,
+                children: snapshot?.children || [],
+                variables: snapshot?.variables || null,
+                staticOverrides: snapshot?.staticOverrides || null,
+                privateConstants: snapshot?.privateConstants || {}
+            });
+            const previous = snapshotSymbols.get(symbol);
+            if (previous && previous.fingerprint !== fingerprint) {
+                conflictingSnapshotIds.add(previous.id);
+                conflictingSnapshotIds.add(id);
+            } else if (!previous) {
+                snapshotSymbols.set(symbol, { id, fingerprint });
+            }
+        }
+        const visitNode = (node) => {
+            if (!node || typeof node !== "object") return;
+            visitBuilderState(node.builderState, prefix);
+            for (const child of Array.isArray(node.children) ? node.children : []) visitNode(child);
+        };
+        visitNode(builderState.root);
+    };
+    const cards = Array.isArray(state?.cards) ? state.cards : [];
+    cards.forEach((card, cardIndex) => {
+        const cardPrefix = `card${cardIndex + 1}`;
+        visitBuilderState(card?.builderState, cardPrefix);
+        visitBuilderState(card?.shapeBuilderState, `${cardPrefix}Shape`);
+        let shapeIndex = 0;
+        for (const node of Array.isArray(card?.shapeChildren) ? card.shapeChildren : []) {
+            const walk = (item) => {
+                const nestedPrefix = `${cardPrefix}Shape${++shapeIndex}`;
+                visitBuilderState(item?.builderState, nestedPrefix);
+                for (const child of Array.isArray(item?.children) ? item.children : []) walk(child);
+            };
+            walk(node);
+        }
+    });
+    const prefixesBySnapshot = new Map();
+    for (const record of stateRecords) {
+        if ([...record.ids].some((id) => conflictingSnapshotIds.has(id))) {
+            const source = record.builderState?.builderSnapshots
+                || record.builderState?.state?.builderSnapshots
+                || {};
+            for (const [id, snapshot] of Object.entries(source)) {
+                if (!conflictingSnapshotIds.has(id)) continue;
+                const fingerprint = JSON.stringify({
+                    id,
+                    children: snapshot?.children || [],
+                    variables: snapshot?.variables || null,
+                    staticOverrides: snapshot?.staticOverrides || null,
+                    privateConstants: snapshot?.privateConstants || {}
+                });
+                prefixesBySnapshot.set(`${id}:${fingerprint}`, record.prefix);
+            }
+        }
+    }
+    return {
+        snapshots,
+        staticContainer: true,
+        builderStateSymbolPrefix(builderState) {
+            const source = builderState?.builderSnapshots
+                || builderState?.state?.builderSnapshots
+                || {};
+            for (const [id, snapshot] of Object.entries(source)) {
+                if (!conflictingSnapshotIds.has(id)) continue;
+                const fingerprint = JSON.stringify({
+                    id,
+                    children: snapshot?.children || [],
+                    variables: snapshot?.variables || null,
+                    staticOverrides: snapshot?.staticOverrides || null,
+                    privateConstants: snapshot?.privateConstants || {}
+                });
+                const prefix = prefixesBySnapshot.get(`${id}:${fingerprint}`);
+                if (prefix) return prefix;
+            }
+            return "";
+        }
+    };
+}
+
 installCodeOutputMethods(CompositionBuilderApp, {
     sanitizeKotlinClassName,
     sanitizeFileBase,
     relExpr,
-    emitBuilderKotlinFromState
+    emitBuilderKotlinFromState,
+    emitBuilderKotlinPartsFromState,
+    createBuilderKotlinEmitContext
 });
 
 installExpressionEditorMethods(CompositionBuilderApp, {
@@ -13444,6 +13598,7 @@ installKotlinCodegenMethods(CompositionBuilderApp, {
     isCompositionShapeType,
     compositionShapeNodeHasParticleLeaf,
     findCompositionNestedShapePaths,
+    createBuilderKotlinEmitContext,
     DEFAULT_EFFECT_CLASS
 });
 

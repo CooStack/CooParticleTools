@@ -4,7 +4,7 @@ import { createNodeByKind, cloneNodeDeep } from './node-helpers.js';
 
 export const BUILDER_REFERENCE_KIND = 'builder_reference';
 export const EFFECT_RING_KIND = 'effect_ring';
-export const EFFECT_GROUP_LABEL = '参数化实例';
+export const EFFECT_GROUP_LABEL = '组效果';
 export const BUILDER_REFERENCE_SCHEMA_VERSION = 1;
 
 const BUILDER_SNAPSHOT_CACHE = new Map();
@@ -384,7 +384,7 @@ export function createEffectRingNode(init = {}, options = {}) {
       ...deepClone(init.params || {})
     }
   });
-  node.label = init.label || '环形阵列实例';
+  node.label = init.label || '环形放置';
   node.children = [];
   return node;
 }

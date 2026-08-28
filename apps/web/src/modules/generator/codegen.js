@@ -20,6 +20,7 @@ import {
   generatorExpressionToKotlin
 } from './expression-runtime.js';
 import { generatePointsBuilderKotlin, generatePointsBuilderKotlinParts } from '../pointsbuilder/codegen.js';
+import { normalizeBuilderSnapshots } from '../pointsbuilder/references.js';
 
 function safeIdent(raw, fallback = 'GeneratedEmitter') {
   const text = String(raw || '').trim().replace(/[^A-Za-z0-9_]/g, '_');
@@ -425,6 +426,38 @@ function emitPointsBuilderExpressionParts(parts) {
   ].join('\n');
 }
 
+function inspectEmitterBuilderSnapshotRegistry(emitters) {
+  const merged = {};
+  const symbols = new Map();
+  const conflictIds = new Set();
+  for (const card of Array.isArray(emitters) ? emitters : []) {
+    const state = card?.emitter?.builderState;
+    const snapshots = normalizeBuilderSnapshots(state?.state?.builderSnapshots || state?.builderSnapshots);
+    for (const [id, snapshot] of Object.entries(snapshots)) {
+      if (!merged[id]) merged[id] = snapshot;
+      const symbol = String(id || '').trim().replace(/[^A-Za-z0-9]+/g, ' ').split(/\s+/).filter(Boolean)
+        .map((part, index) => index === 0
+          ? part.charAt(0).toLowerCase() + part.slice(1)
+          : part.charAt(0).toUpperCase() + part.slice(1)).join('') || 'snapshot';
+      const fingerprint = JSON.stringify({
+        id,
+        children: snapshot.children || [],
+        variables: snapshot.variables || null,
+        staticOverrides: snapshot.staticOverrides || null,
+        privateConstants: snapshot.privateConstants || {}
+      });
+      const previous = symbols.get(symbol);
+      if (previous && previous.fingerprint !== fingerprint) {
+        conflictIds.add(previous.id);
+        conflictIds.add(id);
+      } else if (!previous) {
+        symbols.set(symbol, { id, fingerprint });
+      }
+    }
+  }
+  return { merged, conflictIds };
+}
+
 function createPointsBuilderCoercer(bindingResolver) {
   const externalValues = collectGeneratorValueEntries(bindingResolver.parameters).map(({ value }) => value);
   const externalIntNames = new Set(externalValues
@@ -827,7 +860,7 @@ function commandMaskLiteral(value) {
   return String(signed);
 }
 
-function emitCParticleConstants(project, constantMaps, extraConstants = []) {
+function emitCParticleConstants(project, constantMaps, extraConstants = [], extraDeclarations = []) {
   const lines = [];
   for (const item of constantMaps.signs.values()) {
     lines.push(`private const val ${item.constant} = ${fmtI(item.value)}`);
@@ -836,6 +869,9 @@ function emitCParticleConstants(project, constantMaps, extraConstants = []) {
     lines.push(`private const val ${item.constant} = ${commandMaskLiteral(item.value)}`);
   }
   lines.push(...extraConstants);
+  for (const declaration of Array.isArray(extraDeclarations) ? extraDeclarations : []) {
+    lines.push(...String(declaration || '').split('\n'));
+  }
   if (!lines.length) return '';
   return [
     'private companion object {',
@@ -1768,14 +1804,25 @@ export function generateEmitterKotlin(rawProject) {
   const emitterVariablePlan = createEmitterVariablePlan(project, enabledEmitters);
   const pointsBuilderCoercer = createPointsBuilderCoercer(bindingResolver);
   const pointsBuilderStaticReferenceResolver = createPointsBuilderStaticReferenceResolver(project.parameters);
-  const emitterPointsBuilderParts = enabledEmitters.map((card) => (
+  const snapshotRegistry = inspectEmitterBuilderSnapshotRegistry(enabledEmitters);
+  const sharedBuilderSnapshots = snapshotRegistry.merged;
+  const emitterPointsBuilderParts = enabledEmitters.map((card, index) => (
     card.emitter.type === 'points_builder'
       ? generatePointsBuilderKotlinParts({
           ...(card.emitter.builderState || {}),
           kotlinEndMode: 'builder'
         }, {
           coerceDoubleExpression: pointsBuilderCoercer,
-          resolveStaticReference: pointsBuilderStaticReferenceResolver
+          resolveStaticReference: pointsBuilderStaticReferenceResolver,
+          staticContainer: true,
+          snapshots: {
+            ...sharedBuilderSnapshots,
+            ...normalizeBuilderSnapshots(card.emitter.builderState?.state?.builderSnapshots || card.emitter.builderState?.builderSnapshots)
+          },
+          symbolPrefix: Object.keys(normalizeBuilderSnapshots(card.emitter.builderState?.state?.builderSnapshots || card.emitter.builderState?.builderSnapshots))
+            .some((id) => snapshotRegistry.conflictIds.has(id))
+            ? `emitter${index + 1}`
+            : ''
         })
       : null
   ));
@@ -1784,11 +1831,9 @@ export function generateEmitterKotlin(rawProject) {
   ));
   const pointsBuilderDeclarations = Array.from(new Map(
     emitterPointsBuilderParts
-      .flatMap((parts) => parts?.declarations || [])
-      .map((declaration) => {
-        const match = declaration.match(/^private (val|fun)\s+([A-Za-z_][A-Za-z0-9_]*)/);
-        return [match ? `${match[1]}:${match[2]}` : declaration, declaration];
-      })
+      .flatMap((parts) => Array.isArray(parts?.declarationEntries)
+        ? parts.declarationEntries.map((entry) => [entry.key, entry.text])
+        : (parts?.declarations || []).map((declaration) => [declaration, declaration]))
   ).values());
   const lines = [];
   if (packageName) {
@@ -1848,7 +1893,7 @@ export function generateEmitterKotlin(rawProject) {
   lines.push('');
   lines.push('@CooAutoRegister');
   lines.push(`class ${className}(pos: ${target.vec3Type}, world: ${target.worldType}?) : ${baseClass}(pos, world) {`);
-  const cparticleConstants = emitCParticleConstants(project, constantMaps, pointsBuilderConstants);
+  const cparticleConstants = emitCParticleConstants(project, constantMaps, pointsBuilderConstants, pointsBuilderDeclarations);
   if (cparticleConstants) {
     lines.push(indent(cparticleConstants, 4));
     lines.push('');
@@ -1860,10 +1905,6 @@ export function generateEmitterKotlin(rawProject) {
   const parameterDeclarations = emitProjectParameterDeclarations(project, target.vec3Type);
   if (parameterDeclarations) {
     lines.push(indent(parameterDeclarations, 4));
-    lines.push('');
-  }
-  if (pointsBuilderDeclarations.length) {
-    lines.push(...pointsBuilderDeclarations.map((declaration) => indent(declaration, 4)));
     lines.push('');
   }
   const emitterDataDeclarations = emitEmitterParameterDeclarations(bindingResolver, emitterVariablePlan, target, constantMaps, 'data');

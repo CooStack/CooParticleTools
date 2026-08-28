@@ -102,7 +102,7 @@ export async function openProjectResult(router, result) {
   stashPendingProject({
     action: 'open',
     projectType: type,
-    filePath: result.filePath || '',
+    filePath: result.writableFilePath || result.filePath || '',
     name: result.name || '',
     text: JSON.stringify(payload)
   });

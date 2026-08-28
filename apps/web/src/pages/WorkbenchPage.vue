@@ -12,6 +12,7 @@
       <nav class="rail-nav" aria-label="项目导航">
         <RouterLink :to="{ name: 'workbench' }">项目</RouterLink>
         <RouterLink :to="{ name: 'plugins' }">插件</RouterLink>
+        <button type="button" @click="openAppPreferences">首选项</button>
       </nav>
 
       <label class="rail-theme">
@@ -66,7 +67,7 @@
         <div>
           <span class="workbench-kicker">Project Studio</span>
           <h1>项目</h1>
-          <p>{{ projectItems.length }} 个已索引项目</p>
+          <p>{{ uniqueProjectItems.length }} 个已索引项目</p>
         </div>
         <div class="workbench-actions">
           <button class="primary-action" type="button" @click="showCreateDialog">新建项目</button>
@@ -86,11 +87,21 @@
             <h2 id="project-index-title">项目索引</h2>
             <small>项目文件与旧版本机项目</small>
           </div>
-          <button type="button" class="text-button" @click="loadProjectIndex">刷新</button>
+          <div class="project-index-actions">
+            <label class="project-filter-field">
+              <span>类型</span>
+              <select v-model="projectTypeFilter" class="project-filter-select" aria-label="按项目类型筛选">
+                <option v-for="option in projectTypeFilters" :key="option.value || 'all'" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+            <button type="button" class="text-button" @click="loadProjectIndex">刷新</button>
+          </div>
         </div>
 
-        <div v-if="projectItems.length" class="project-list">
-          <article v-for="item in projectItems" :key="`${item.tool}:${item.id}`" class="project-row">
+        <div v-if="filteredProjectItems.length" class="project-list">
+          <article v-for="item in filteredProjectItems" :key="`${item.tool}:${item.id}`" class="project-row">
             <button class="project-open" type="button" @click="openIndexedProject(item)">
               <span class="project-type-mark">{{ typeInitial(item.tool) }}</span>
               <span class="project-copy">
@@ -105,8 +116,9 @@
           </article>
         </div>
         <div v-else class="empty-state">
-          <strong>还没有项目</strong>
-          <button type="button" @click="showCreateDialog">新建项目</button>
+          <strong>{{ uniqueProjectItems.length ? '没有符合当前类型的项目' : '还没有项目' }}</strong>
+          <button v-if="uniqueProjectItems.length" type="button" @click="projectTypeFilter = ''">显示全部</button>
+          <button v-else type="button" @click="showCreateDialog">新建项目</button>
         </div>
       </section>
 
@@ -225,6 +237,12 @@ import {
   parseProjectText,
   projectNameForTypeChange
 } from '../modules/projects/project-types.js';
+import {
+  PROJECT_TYPE_FILTERS,
+  dedupeProjectItems,
+  filterProjectItems,
+  normalizeProjectFilePath
+} from '../modules/projects/project-index.js';
 import { getProjectRepository } from '../services/repositories/project-repository.js';
 import {
   getElectronShell,
@@ -247,7 +265,9 @@ const route = useRoute();
 const router = useRouter();
 const projectRepository = getProjectRepository();
 const projectTypes = PROJECT_TYPES;
+const projectTypeFilters = PROJECT_TYPE_FILTERS;
 const projectItems = ref([]);
+const projectTypeFilter = ref('');
 const recentFiles = ref([]);
 const pageError = ref('');
 const fileInputRef = ref(null);
@@ -323,21 +343,31 @@ onBeforeUnmount(() => {
 });
 
 const supportsPackageConfig = computed(() => ['generator', 'composition'].includes(selectedProjectType.value));
+const uniqueProjectItems = computed(() => dedupeProjectItems(projectItems.value));
+const filteredProjectItems = computed(() => filterProjectItems(uniqueProjectItems.value, projectTypeFilter.value));
 const unindexedRecentFiles = computed(() => {
   const indexedPaths = new Set(
-    projectItems.value
-      .map((item) => String(item.filePath || '').toLowerCase())
+    uniqueProjectItems.value
+      .map((item) => normalizeProjectFilePath(item.filePath))
       .filter(Boolean)
   );
-  return recentFiles.value.filter((item) => !indexedPaths.has(String(item.filePath || '').toLowerCase()));
+  return recentFiles.value.filter((item) => !indexedPaths.has(normalizeProjectFilePath(item.filePath)));
 });
 
 function typeLabel(rawType) {
-  return getProjectType(rawType)?.label || String(rawType || '未知类型');
+  const type = normalizeProjectType(rawType);
+  if (type === 'generator') return 'Emitter';
+  return getProjectType(type)?.label || String(rawType || '未知类型');
 }
 
 function typeInitial(rawType) {
   return getProjectType(rawType)?.initial || '?';
+}
+
+function openAppPreferences() {
+  window.dispatchEvent(new CustomEvent('coo-shell-command', {
+    detail: { type: 'open-preferences' }
+  }));
 }
 
 function setError(error) {
@@ -460,7 +490,7 @@ async function openIndexedProject(item) {
   pageError.value = '';
   try {
     const record = await projectRepository.get(item.tool, item.id);
-    const filePath = String(record?.filePath || item.filePath || '');
+    let filePath = String(record?.filePath || item.filePath || '');
     let projectData = classifyProjectData(record || item);
     if (filePath) {
       const shell = getElectronShell();
@@ -468,6 +498,7 @@ async function openIndexedProject(item) {
         const result = await shell.readTextFile(filePath);
         if (!result?.ok) throw new Error(result?.message || '无法读取项目文件。');
         projectData = parseProjectText(result.text, filePath);
+        filePath = String(result.writableFilePath || filePath);
       }
     }
     const { type, payload } = projectData;
@@ -498,7 +529,10 @@ async function deleteIndexedProject(item) {
     : `删除项目“${item.name}”？`;
   if (!window.confirm(prompt)) return;
   try {
-    await projectRepository.remove(item.tool, item.id);
+    const records = Array.isArray(item.indexRecords) && item.indexRecords.length
+      ? item.indexRecords
+      : [item];
+    await Promise.all(records.map((record) => projectRepository.remove(record.tool, record.id)));
     await loadProjectIndex();
   } catch (error) {
     setError(error);
@@ -694,18 +728,24 @@ onMounted(() => {
   gap: 4px;
 }
 
-.rail-nav a {
+.rail-nav a,
+.rail-nav button {
   min-height: 36px;
   display: flex;
   align-items: center;
   padding: 0 10px;
+  border: 0;
   border-radius: var(--radius2);
   color: var(--muted);
+  background: transparent;
+  font-size: inherit;
+  text-align: left;
   transition: background var(--speed) ease, color var(--speed) ease;
 }
 
 .rail-nav a.router-link-active,
-.rail-nav a:hover {
+.rail-nav a:hover,
+.rail-nav button:hover {
   color: var(--text);
   background: var(--hover-veil);
 }
@@ -868,6 +908,36 @@ button:disabled {
 
 .section-head {
   align-items: flex-end;
+}
+
+.project-index-actions,
+.project-filter-field {
+  display: flex;
+  align-items: center;
+}
+
+.project-index-actions {
+  gap: 10px;
+}
+
+.project-filter-field {
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-filter-select {
+  width: 156px;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius3);
+  color: var(--text);
+  background: var(--input-bg);
+}
+
+.project-filter-field :deep(.cp-select) {
+  width: 156px;
 }
 
 .section-head h2 {
@@ -1351,7 +1421,8 @@ button:disabled {
     display: flex;
   }
 
-  .rail-nav a {
+  .rail-nav a,
+  .rail-nav button {
     min-height: 36px;
   }
 
@@ -1380,6 +1451,45 @@ button:disabled {
 
   .workbench-header {
     display: grid;
+  }
+
+  .section-head {
+    align-items: flex-start;
+  }
+
+  .project-index-actions {
+    align-items: flex-end;
+  }
+
+  .project-filter-field {
+    display: grid;
+    gap: 5px;
+  }
+
+  .project-section > .section-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .project-section > .section-head > .text-button {
+    justify-self: end;
+  }
+
+  .project-index-actions {
+    width: 100%;
+  }
+
+  .project-filter-field {
+    flex: 1 1 auto;
+  }
+
+  .project-filter-select,
+  .project-filter-field :deep(.cp-select) {
+    width: 100%;
+  }
+
+  .project-index-actions .text-button {
+    white-space: nowrap;
   }
 
   .workbench-actions {

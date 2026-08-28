@@ -356,7 +356,7 @@ export function createBuilderTools(ctx) {
 
         const resolveSnapshot = (snapshotId, referenceNode = null) => {
             const snapshot = snapshots?.[String(snapshotId || "")];
-            if (!snapshot) return { points: [], axis: U.v(0, 1, 0) };
+            if (!snapshot) return { points: [], axis: U.v(0, 1, 0), origin: U.v(0, 0, 0) };
             const overrides = referenceNode?.params?.instanceMode === "construct"
                 ? referenceNode?.params?.overrides || null
                 : snapshot.staticOverrides || referenceNode?.params?.overrides || null;
@@ -368,7 +368,8 @@ export function createBuilderTools(ctx) {
             const result = evalBuilderWithMeta(children, U.v(0, 1, 0), { snapshots, referenceCache });
             const value = {
                 points: (result.points || []).map((p) => ({ x: num(p.x), y: num(p.y), z: num(p.z) })),
-                axis: U.clone(result.axis || U.v(0, 1, 0))
+                axis: U.clone(result.axis || U.v(0, 1, 0)),
+                origin: U.clone(snapshot.origin || U.v(0, 0, 0))
             };
             referenceCache.set(key, value);
             return value;
@@ -383,14 +384,29 @@ export function createBuilderTools(ctx) {
             const start = num(p.startDeg) * Math.PI / 180;
             const origin = U.v(num(p.originX), num(p.originY), num(p.originZ));
             const offset = U.v(num(p.offsetX), num(p.offsetY), num(p.offsetZ));
+            const rawAxis = U.v(num(p.axisX), num(p.axisY), num(p.axisZ, 1));
+            const axisLength = U.len(rawAxis);
+            const ringAxis = axisLength > 1e-9
+                ? U.v(rawAxis.x / axisLength, rawAxis.y / axisLength, rawAxis.z / axisLength)
+                : U.v(0, 0, 1);
             const points = [];
             for (let index = 0; index < count; index += 1) {
                 const source = resolveSnapshot(ids[index % ids.length]);
                 const angle = start + Math.PI * 2 * index / count;
-                const center = U.v(origin.x + Math.cos(angle) * radius + offset.x, origin.y + offset.y, origin.z + Math.sin(angle) * radius + offset.z);
-                const target = p.reverse ? U.sub(center, origin) : U.sub(origin, center);
-                const rotated = source.points.map((item) => ({ ...item }));
-                if (p.faceCenter) rotatePointsToPointUpright(rotated, target, source.axis || U.v(0, 1, 0));
+                const ringPoint = U.v(origin.x + Math.cos(angle) * radius, origin.y, origin.z + Math.sin(angle) * radius);
+                const center = U.v(ringPoint.x + offset.x, ringPoint.y + offset.y, ringPoint.z + offset.z);
+                const target = p.reverse ? U.sub(ringPoint, origin) : U.sub(origin, ringPoint);
+                const sourceOrigin = source.origin || U.v(0, 0, 0);
+                const rotated = source.points.map((item) => ({
+                    ...item,
+                    x: num(item?.x) - num(sourceOrigin.x),
+                    y: num(item?.y) - num(sourceOrigin.y),
+                    z: num(item?.z) - num(sourceOrigin.z)
+                }));
+                if (p.faceCenter) {
+                    if (typeof U.rotatePointsToPoint === "function") U.rotatePointsToPoint(rotated, target, ringAxis);
+                    else rotatePointsToPointUpright(rotated, target, ringAxis);
+                }
                 for (const item of rotated) points.push({ x: item.x + center.x, y: item.y + center.y, z: item.z + center.z });
             }
             return points;
@@ -637,29 +653,70 @@ export function createBuilderTools(ctx) {
         return lines;
     }
 
-    function emitKotlin() {
-        const state = (typeof getState === "function") ? getState() : (ctx && ctx.state) || { root: { children: [] } };
-        const emitCtx = { decls: [], referenceDecls: [], snapshots: state.builderSnapshots || {} };
+    function createKotlinEmitContext(state, options = {}) {
+        const provided = options.emitCtx && typeof options.emitCtx === "object" ? options.emitCtx : null;
+        const sharedCtx = provided || {};
+        if (!(sharedCtx.referenceDecls instanceof Map)) {
+            sharedCtx.referenceDecls = new Map(Array.isArray(sharedCtx.referenceDecls)
+                ? sharedCtx.referenceDecls.map((text) => [String(text), text])
+                : []);
+        }
+        if (!(sharedCtx.referenceNames instanceof Set)) sharedCtx.referenceNames = new Set();
+        if (!(sharedCtx.referenceTemplates instanceof Map)) sharedCtx.referenceTemplates = new Map();
+        if (!(sharedCtx.referenceStack instanceof Set)) sharedCtx.referenceStack = new Set();
+        if (!(sharedCtx.referenceNameByKey instanceof Map)) sharedCtx.referenceNameByKey = new Map();
+        if (!(sharedCtx.referenceNameOwners instanceof Map)) sharedCtx.referenceNameOwners = new Map();
+        if (!(sharedCtx.constants instanceof Map)) sharedCtx.constants = new Map();
+        if (options.snapshots) sharedCtx.snapshots = options.snapshots;
+        if (!sharedCtx.snapshots) sharedCtx.snapshots = state?.builderSnapshots || {};
+        if (options.staticContainer === true) sharedCtx.staticContainer = true;
+        if (typeof options.resolveStaticReference === "function") sharedCtx.resolveStaticReference = options.resolveStaticReference;
+        if (typeof options.coerceNodes === "function") sharedCtx.coerceNodes = options.coerceNodes;
+        if (options.symbolPrefix !== undefined) sharedCtx.symbolPrefix = String(options.symbolPrefix || "").trim();
+
+        const emitCtx = provided ? { ...sharedCtx, decls: [] } : sharedCtx;
+        if (!Array.isArray(emitCtx.decls)) emitCtx.decls = [];
+        return emitCtx;
+    }
+
+    function emitKotlinParts(builderState = null, options = {}) {
+        const fallbackState = (typeof getState === "function") ? getState() : (ctx && ctx.state) || { root: { children: [] } };
+        const state = builderState && typeof builderState === "object" ? builderState : fallbackState;
+        const emitCtx = createKotlinEmitContext(state, options);
         const lines = [];
-        const endMode = (typeof getKotlinEndMode === "function") ? getKotlinEndMode() : (ctx && ctx.kotlinEndMode) || "builder";
+        const endMode = options.endMode
+            || ((typeof getKotlinEndMode === "function") ? getKotlinEndMode() : (ctx && ctx.kotlinEndMode) || "builder");
         lines.push("PointsBuilder()");
-        lines.push(...emitNodesKotlinLines(state.root.children, "  ", emitCtx));
+        lines.push(...emitNodesKotlinLines(state?.root?.children || [], "  ", emitCtx));
         if (endMode === "list") {
             lines.push("  .createWithoutClone()");
         } else if (endMode === "clone") {
             lines.push("  .create()");
         }
 
-        const expr = lines.join("\n");
-        const references = Array.isArray(emitCtx.referenceDecls) ? emitCtx.referenceDecls : [];
-        if (!emitCtx.decls.length && !references.length) return expr;
-        return [...references, ...emitCtx.decls, expr].join("\n\n");
+        return {
+            expression: lines.join("\n"),
+            localDeclarations: emitCtx.decls.slice(),
+            constants: Array.from(emitCtx.constants.values()),
+            declarations: Array.from(emitCtx.referenceDecls.values()),
+            declarationEntries: Array.from(emitCtx.referenceDecls.entries()).map(([key, text]) => ({ key, text })),
+            emitCtx
+        };
+    }
+
+    function emitKotlin() {
+        const parts = emitKotlinParts();
+        const references = Array.isArray(parts.declarations) ? parts.declarations : [];
+        const locals = Array.isArray(parts.localDeclarations) ? parts.localDeclarations : [];
+        if (!references.length && !locals.length) return parts.expression;
+        return [...references, ...locals, parts.expression].join("\n\n");
     }
 
     return {
         evalBuilderWithMeta,
         evalBuilder,
         emitNodesKotlinLines,
+        emitKotlinParts,
         emitKotlin
     };
 }

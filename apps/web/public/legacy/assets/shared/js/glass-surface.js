@@ -21,7 +21,7 @@
  * the Vue shell can both consume it.
  */
 
-import { installCustomSelects } from './custom-select.js?v=20260827_2';
+import { installCustomSelects } from './custom-select.js?v=20260828_1';
 
 export const GLASS_SURFACE_KEY = 'coo-particles:glass-surface';
 

@@ -62,7 +62,9 @@ export function createPickerModule(ctx = {}) {
         btnModalCardsTab?.setAttribute("aria-selected", pickerMode === "cards" ? "true" : "false");
         btnModalPresetsTab?.classList.toggle("active", pickerMode === "presets");
         btnModalPresetsTab?.setAttribute("aria-selected", pickerMode === "presets" ? "true" : "false");
-        if (modalTitle) modalTitle.textContent = pickerMode === "presets" ? "添加预设" : "添加元素";
+        if (modalTitle) modalTitle.textContent = pickerMode === "presets"
+            ? "添加预设"
+            : "添加元素";
         if (cardSearch) {
             cardSearch.placeholder = pickerMode === "presets"
                 ? "搜索预设：名字 / 分组"
@@ -108,7 +110,7 @@ export function createPickerModule(ctx = {}) {
             keepFocusId: ownerNodeId || null,
             allowedKinds: Array.isArray(options?.allowedKinds) ? new Set(options.allowedKinds) : null,
         };
-        const mode = options && options.mode === "presets" ? "presets" : "cards";
+        const mode = options?.mode === "presets" ? "presets" : "cards";
         showModal(mode);
     }
 
@@ -247,6 +249,50 @@ export function createPickerModule(ctx = {}) {
         }
     }
 
+    function insertKindFromPicker(kind) {
+        if (addTarget.allowedKinds && !addTarget.allowedKinds.has(kind)) return;
+        const stateObj = (typeof getState === "function") ? getState() : null;
+        const rootList = stateObj && stateObj.root && Array.isArray(stateObj.root.children) ? stateObj.root.children : [];
+        const list = addTarget.list || rootList;
+        const atRaw = addTarget.insertIndex;
+        if (typeof historyCapture === "function") historyCapture("add_" + kind);
+        const nn = (typeof makeNode === "function") ? makeNode(kind) : null;
+        if (!nn) return;
+        if (atRaw === null || atRaw === undefined) {
+            list.push(nn);
+        } else {
+            const at = Math.max(0, Math.min(atRaw, list.length));
+            list.splice(at, 0, nn);
+            addTarget.insertIndex = at + 1;
+        }
+        if (typeof ensureAxisEverywhere === "function") ensureAxisEverywhere();
+
+        const focusAfter = (addTarget.keepFocusId && typeof findNodeContextById === "function" && findNodeContextById(addTarget.keepFocusId))
+            ? addTarget.keepFocusId
+            : nn.id;
+
+        hideModal();
+        if (typeof renderAll === "function") renderAll();
+
+        let creationHandled = false;
+        if (typeof onNodeCreated === "function") {
+            creationHandled = onNodeCreated(nn, {
+                kind,
+                list,
+                index: list.indexOf(nn),
+                ownerNodeId: addTarget.keepFocusId || ""
+            }) === true;
+        }
+
+        if (!creationHandled) {
+            requestAnimationFrame(() => {
+                if (typeof setSuppressFocusHistory === "function") setSuppressFocusHistory(true);
+                if (typeof focusCardById === "function") focusCardById(focusAfter, false, true);
+                if (typeof setSuppressFocusHistory === "function") setSuppressFocusHistory(false);
+            });
+        }
+    }
+
     function renderPicker(filterText) {
         if (!cardPicker) return;
         if (pickerMode === "presets") {
@@ -261,7 +307,8 @@ export function createPickerModule(ctx = {}) {
         cardPicker.classList.remove("preset-picker");
         const entries = Object.entries(KIND || {})
             .map(([kind, def], order) => ({ kind, def, order }))
-            .filter((entry) => !addTarget.allowedKinds || addTarget.allowedKinds.has(entry.kind));
+            .filter((entry) => !addTarget.allowedKinds || addTarget.allowedKinds.has(entry.kind))
+            .filter((entry) => entry.kind !== "effect_ring" && entry.kind !== "add_with");
 
         const shown = [];
         for (const it of entries) {
@@ -342,8 +389,8 @@ export function createPickerModule(ctx = {}) {
             groups.get(group).push(entry);
         }
         const orderedGroups = Array.from(groups.entries()).sort(([a], [b]) => {
-            if (a === "参数化实例") return -1;
-            if (b === "参数化实例") return 1;
+            if (a === "组效果") return -1;
+            if (b === "组效果") return 1;
             return 0;
         });
 
@@ -395,48 +442,7 @@ export function createPickerModule(ctx = {}) {
             });
             div.appendChild(setBtn);
 
-            div.addEventListener("click", () => {
-                if (addTarget.allowedKinds && !addTarget.allowedKinds.has(it.kind)) return;
-                const stateObj = (typeof getState === "function") ? getState() : null;
-                const rootList = stateObj && stateObj.root && Array.isArray(stateObj.root.children) ? stateObj.root.children : [];
-                const list = addTarget.list || rootList;
-                const atRaw = addTarget.insertIndex;
-                if (typeof historyCapture === "function") historyCapture("add_" + it.kind);
-                const nn = (typeof makeNode === "function") ? makeNode(it.kind) : null;
-                if (!nn) return;
-                if (atRaw === null || atRaw === undefined) {
-                    list.push(nn);
-                } else {
-                    const at = Math.max(0, Math.min(atRaw, list.length));
-                    list.splice(at, 0, nn);
-                    // 连续添加时，保持插入点向后移动
-                    addTarget.insertIndex = at + 1;
-                }
-                if (typeof ensureAxisEverywhere === "function") ensureAxisEverywhere();
-
-                // 子 builder 内新增：默认保持聚焦在 addBuilder 上；否则聚焦到新卡片
-                const focusAfter = (addTarget.keepFocusId && typeof findNodeContextById === "function" && findNodeContextById(addTarget.keepFocusId))
-                    ? addTarget.keepFocusId
-                    : nn.id;
-
-                hideModal();
-                if (typeof renderAll === "function") renderAll();
-
-                if (typeof onNodeCreated === "function") {
-                    onNodeCreated(nn, {
-                        kind: it.kind,
-                        list,
-                        index: list.indexOf(nn),
-                        ownerNodeId: addTarget.keepFocusId || ""
-                    });
-                }
-
-                requestAnimationFrame(() => {
-                    if (typeof setSuppressFocusHistory === "function") setSuppressFocusHistory(true);
-                    if (typeof focusCardById === "function") focusCardById(focusAfter, false, true);
-                    if (typeof setSuppressFocusHistory === "function") setSuppressFocusHistory(false);
-                });
-            });
+            div.addEventListener("click", () => insertKindFromPicker(it.kind));
             items.appendChild(div);
         }
             cardPicker.appendChild(section);
@@ -509,24 +515,27 @@ export function createPickerModule(ctx = {}) {
         list.splice(idx, 0, nn);
         if (typeof ensureAxisEverywhere === "function") ensureAxisEverywhere();
         if (typeof renderAll === "function") renderAll();
+        let creationHandled = false;
         if (typeof onNodeCreated === "function") {
-            onNodeCreated(nn, {
+            creationHandled = onNodeCreated(nn, {
                 kind,
                 list,
                 index: idx,
                 ownerNodeId: inCtx?.ownerNode?.id || ""
-            });
+            }) === true;
         }
 
-        // 若是在 addBuilder 内新增，则保持聚焦在 addBuilder；否则聚焦新卡片
-        const focusAfter = (inCtx && inCtx.ownerNode && typeof isBuilderContainerKind === "function" && isBuilderContainerKind(inCtx.ownerNode.kind))
-            ? inCtx.ownerNode.id
-            : nn.id;
-        requestAnimationFrame(() => {
-            if (typeof setSuppressFocusHistory === "function") setSuppressFocusHistory(true);
-            if (typeof focusCardById === "function") focusCardById(focusAfter, false, true);
-            if (typeof setSuppressFocusHistory === "function") setSuppressFocusHistory(false);
-        });
+        if (!creationHandled) {
+            // 若是在 addBuilder 内新增，则保持聚焦在 addBuilder；否则聚焦新卡片
+            const focusAfter = (inCtx && inCtx.ownerNode && typeof isBuilderContainerKind === "function" && isBuilderContainerKind(inCtx.ownerNode.kind))
+                ? inCtx.ownerNode.id
+                : nn.id;
+            requestAnimationFrame(() => {
+                if (typeof setSuppressFocusHistory === "function") setSuppressFocusHistory(true);
+                if (typeof focusCardById === "function") focusCardById(focusAfter, false, true);
+                if (typeof setSuppressFocusHistory === "function") setSuppressFocusHistory(false);
+            });
+        }
     }
 
     btnCloseModal?.addEventListener("click", hideModal);
@@ -543,7 +552,6 @@ export function createPickerModule(ctx = {}) {
         setPickerMode("presets");
         cardSearch?.focus();
     });
-
     return {
         showSettingsModal,
         hideSettingsModal,

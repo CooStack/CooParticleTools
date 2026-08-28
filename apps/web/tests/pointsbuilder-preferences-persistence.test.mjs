@@ -59,14 +59,17 @@ test('PointsBuilder preset preferences survive an Electron origin change', async
   );
 });
 
-test('PointsBuilder current-origin preset arrays override stale durable arrays', async () => {
+test('PointsBuilder current-origin preset entries merge with stale durable arrays', async () => {
   const definition = getProjectDefinition('pointsbuilder');
   const durable = new Map([[
     'pb_presets_v1',
-    { presets: [{ id: 'old', name: '旧预设' }], groups: ['旧分组'] }
+    {
+      presets: [{ id: 'old', name: '旧预设', updatedAt: 10 }],
+      groups: ['旧分组']
+    }
   ]]);
   const current = {
-    presets: [{ id: 'new', name: '新预设' }],
+    presets: [{ id: 'new', name: '新预设', updatedAt: 20 }],
     groups: ['新分组']
   };
   const storage = new MemoryStorage({ pb_presets_v1: JSON.stringify(current) });
@@ -77,8 +80,57 @@ test('PointsBuilder current-origin preset arrays override stale durable arrays',
     createShell(durable)
   );
 
-  assert.deepEqual(preferences, current);
-  assert.deepEqual(durable.get('pb_presets_v1'), current);
+  assert.deepEqual(preferences, {
+    presets: [
+      { id: 'old', name: '旧预设', updatedAt: 10 },
+      { id: 'new', name: '新预设', updatedAt: 20 }
+    ],
+    groups: ['旧分组', '新分组']
+  });
+  assert.deepEqual(durable.get('pb_presets_v1'), preferences);
+});
+
+test('PointsBuilder empty current-origin arrays do not erase durable presets', async () => {
+  const definition = getProjectDefinition('pointsbuilder');
+  const durablePreferences = {
+    presets: [{ id: 'durable', name: '保留预设', updatedAt: 100 }],
+    groups: ['默认分组']
+  };
+  const storage = new MemoryStorage({
+    pb_presets_v1: JSON.stringify({ presets: [], groups: [] })
+  });
+  const durable = new Map([['pb_presets_v1', durablePreferences]]);
+
+  const preferences = await hydrateLegacyPreferences(
+    definition.legacy,
+    storage,
+    createShell(durable)
+  );
+
+  assert.deepEqual(preferences, durablePreferences);
+  assert.deepEqual(durable.get('pb_presets_v1'), durablePreferences);
+});
+
+test('PointsBuilder duplicate presets prefer the newer snapshot', async () => {
+  const definition = getProjectDefinition('pointsbuilder');
+  const durable = new Map([['pb_presets_v1', {
+    presets: [{ id: 'same', name: '旧名称', updatedAt: 10 }],
+    groups: ['默认分组']
+  }]]);
+  const storage = new MemoryStorage({
+    pb_presets_v1: JSON.stringify({
+      presets: [{ id: 'same', name: '新名称', updatedAt: 20 }],
+      groups: ['默认分组']
+    })
+  });
+
+  const preferences = await hydrateLegacyPreferences(
+    definition.legacy,
+    storage,
+    createShell(durable)
+  );
+
+  assert.equal(preferences.presets[0].name, '新名称');
 });
 
 test('embedded PointsBuilder pages hydrate the shared durable preset library', async () => {
@@ -90,4 +142,13 @@ test('embedded PointsBuilder pages hydrate the shared durable preset library', a
   assert.match(source, /composition_pointsbuilder\.html/);
   assert.match(source, /POINTS_BUILDER_PREFERENCES_ADAPTER/);
   assert.match(source, /for \(const adapter of getLegacyPreferenceAdapters\(\)\)/);
+});
+
+test('PointsBuilder renders dirty preset groups after the hidden preset page becomes active', async () => {
+  const source = await readFile(
+    new URL('../public/legacy/assets/points_builder/js/main.js', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(source, /if \(presetsActive\) schedulePresetLibraryRender\(\);/);
 });

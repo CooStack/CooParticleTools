@@ -236,8 +236,8 @@ export const POINTS_NODE_KINDS = {
     apply() {}
   },
   effect_ring: {
-    title: '环形阵列实例',
-    group: '参数化实例',
+    title: '环形放置',
+    group: '组效果',
     description: '沿圆环重复放置项目内的实例原型。',
     defaultParams: {
       snapshotIds: [],
@@ -1102,7 +1102,26 @@ export const POINTS_NODE_KINDS = {
       const mode = node.params.kotlinMode;
       if (mode === 'newRel') return `.pointsOnEach { it.add(RelativeLocation(${dx}, ${dy}, ${dz})) }`;
       if (mode === 'valRel') {
-        const variableName = `rel_${node.id.slice(0, 6)}`;
+        const rawScope = String(emitCtx?.symbolPrefix || '').trim();
+        if (!rawScope) {
+          const legacyId = String(node.id || 'rel').replace(/[^A-Za-z0-9_]/g, '_');
+          const variableName = `rel_${legacyId.slice(0, 6)}`;
+          emitCtx.decls.push(`val ${variableName} = RelativeLocation(${dx}, ${dy}, ${dz})`);
+          return `.pointsOnEach { it.add(${variableName}) }`;
+        }
+        const scope = rawScope
+          ? rawScope.replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+            .map((part, index) => index === 0
+              ? part.charAt(0).toLowerCase() + part.slice(1)
+              : part.charAt(0).toUpperCase() + part.slice(1))
+            .join('')
+          : '';
+        const nodePart = String(node.id || 'rel').replace(/[^A-Za-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+          .map((part, index) => index === 0
+            ? part.charAt(0).toLowerCase() + part.slice(1)
+            : part.charAt(0).toUpperCase() + part.slice(1))
+            .join('') || 'rel';
+        const variableName = `rel${scope.charAt(0).toUpperCase()}${scope.slice(1)}${nodePart.charAt(0).toUpperCase()}${nodePart.slice(1)}`;
         emitCtx.decls.push(`val ${variableName} = RelativeLocation(${dx}, ${dy}, ${dz})`);
         return `.pointsOnEach { it.add(${variableName}) }`;
       }
@@ -1127,7 +1146,7 @@ export const POINTS_NODE_KINDS = {
   },
   add_with: {
     title: '旋转重复',
-    group: '容器',
+    group: '组效果',
     description: '围绕多边形顶点重复子 Builder。',
     defaultParams: {
       r: 3,

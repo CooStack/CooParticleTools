@@ -3,7 +3,8 @@ export function installCodeOutputMethods(CompositionBuilderApp, deps = {}) {
         sanitizeKotlinClassName,
         sanitizeFileBase,
         relExpr,
-        emitBuilderKotlinFromState
+        emitBuilderKotlinFromState,
+        emitBuilderKotlinPartsFromState
     } = deps;
 
     if (!CompositionBuilderApp || !CompositionBuilderApp.prototype) {
@@ -74,7 +75,21 @@ export function installCodeOutputMethods(CompositionBuilderApp, deps = {}) {
         }
 
         emitBuilderExprFromState(builderState) {
-            return emitBuilderKotlinFromState(builderState);
+            if (this.builderCodegenContext && typeof emitBuilderKotlinPartsFromState === "function") {
+                const parts = emitBuilderKotlinPartsFromState(builderState, this.builderCodegenContext);
+                const expression = String(parts?.expression || "PointsBuilder()");
+                const locals = Array.isArray(parts?.localDeclarations) ? parts.localDeclarations : [];
+                if (!locals.length) return expression;
+                return [
+                    "run {",
+                    ...locals.map((line) => String(line).split("\n").map((item) => `    ${item}`).join("\n")),
+                    ...expression.split("\n").map((line) => `    ${line}`),
+                    "}"
+                ].join("\n");
+            }
+            return typeof emitBuilderKotlinFromState === "function"
+                ? emitBuilderKotlinFromState(builderState)
+                : "PointsBuilder()";
         }
     }
 

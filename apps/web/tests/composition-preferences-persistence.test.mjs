@@ -179,6 +179,8 @@ test('Composition legacy project adapter keeps preferences outside project paylo
     assert.equal(Object.hasOwn(value, 'settings'), false);
     assert.equal(Object.hasOwn(value, 'hotkeys'), false);
   }
+  assert.equal(Object.hasOwn(preferences.settings, 'autoSaveIntervalsMinutes'), false);
+  assert.equal(Object.hasOwn(draft, 'projectSettings'), false);
 });
 
 test('Electron durable preferences survive an origin change', async () => {

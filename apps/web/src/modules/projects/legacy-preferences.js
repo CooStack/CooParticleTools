@@ -12,11 +12,61 @@ function readPreferences(adapter, storage) {
   }
 }
 
-function mergePreferences(...sources) {
+function presetTimestamp(preset) {
+  const updatedAt = Number(preset?.updatedAt);
+  if (Number.isFinite(updatedAt)) return updatedAt;
+  const createdAt = Number(preset?.createdAt);
+  return Number.isFinite(createdAt) ? createdAt : 0;
+}
+
+function mergePresetArrays(sources) {
+  const merged = [];
+  const indexes = new Map();
+  const sourceIndexes = new Map();
+  for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
+    const presets = sources[sourceIndex];
+    if (!Array.isArray(presets)) continue;
+    for (const preset of presets) {
+      if (!preset || typeof preset !== 'object' || Array.isArray(preset)) {
+        merged.push(preset);
+        continue;
+      }
+      const id = String(preset.id || '').trim();
+      if (!id || !indexes.has(id)) {
+        if (id) indexes.set(id, merged.length);
+        sourceIndexes.set(id, sourceIndex);
+        merged.push({ ...preset });
+        continue;
+      }
+      const index = indexes.get(id);
+      const previous = merged[index];
+      const previousSourceIndex = sourceIndexes.get(id) ?? -1;
+      if (
+        presetTimestamp(preset) > presetTimestamp(previous)
+        || (presetTimestamp(preset) === presetTimestamp(previous) && sourceIndex >= previousSourceIndex)
+      ) {
+        merged[index] = { ...preset };
+        sourceIndexes.set(id, sourceIndex);
+      }
+    }
+  }
+  return merged;
+}
+
+export function mergePreferences(...sources) {
   const merged = {};
   for (const source of sources) {
     if (!isRecord(source)) continue;
     for (const [key, value] of Object.entries(source)) {
+      if (key === 'presets') {
+        merged[key] = mergePresetArrays([merged[key], value]);
+        continue;
+      }
+      if (key === 'groups') {
+        const previous = Array.isArray(merged[key]) ? merged[key] : [];
+        merged[key] = [...new Set([...previous, ...(Array.isArray(value) ? value : [])])];
+        continue;
+      }
       if (Array.isArray(value)) {
         merged[key] = value.slice();
         continue;

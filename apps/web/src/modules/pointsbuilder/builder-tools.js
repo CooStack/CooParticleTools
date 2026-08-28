@@ -20,7 +20,6 @@ import {
   applyBuilderReferenceOverrides,
   builderReferenceCacheKey,
   builderReferenceInstanceMode,
-  builderReferenceParameterId,
   getBuilderReferenceOverrideValues,
   getBuilderSnapshotVariableEntries,
   kotlinPrivateParameterConstantName,
@@ -150,36 +149,31 @@ function evaluateEffectRing(node, resolveSnapshot) {
   const offset = v(num(params.offsetX), num(params.offsetY), num(params.offsetZ));
   const rawAxis = v(num(params.axisX), num(params.axisY), num(params.axisZ, 1));
   const axisLength = Math.hypot(rawAxis.x, rawAxis.y, rawAxis.z);
-  const normal = axisLength > 1e-9 ? v(rawAxis.x / axisLength, rawAxis.y / axisLength, rawAxis.z / axisLength) : v(0, 0, 1);
-  const reference = Math.abs(normal.y) < 0.9 ? v(0, 1, 0) : v(1, 0, 0);
-  const basisU0 = v(
-    reference.y * normal.z - reference.z * normal.y,
-    reference.z * normal.x - reference.x * normal.z,
-    reference.x * normal.y - reference.y * normal.x
-  );
-  const basisULength = Math.hypot(basisU0.x, basisU0.y, basisU0.z);
-  const basisU = basisULength > 1e-9 ? v(basisU0.x / basisULength, basisU0.y / basisULength, basisU0.z / basisULength) : v(1, 0, 0);
-  const basisV = v(
-    normal.y * basisU.z - normal.z * basisU.y,
-    normal.z * basisU.x - normal.x * basisU.z,
-    normal.x * basisU.y - normal.y * basisU.x
-  );
+  const ringAxis = axisLength > 1e-9
+    ? v(rawAxis.x / axisLength, rawAxis.y / axisLength, rawAxis.z / axisLength)
+    : v(0, 0, 1);
   const points = [];
   for (let index = 0; index < count; index += 1) {
     const snapshotId = ids.length ? ids[index % ids.length] : '';
     const base = resolveSnapshot(snapshotId);
     const angle = start + (Math.PI * 2 * index / count);
     const radial = v(
-      basisU.x * Math.cos(angle) * radius + basisV.x * Math.sin(angle) * radius,
-      basisU.y * Math.cos(angle) * radius + basisV.y * Math.sin(angle) * radius,
-      basisU.z * Math.cos(angle) * radius + basisV.z * Math.sin(angle) * radius
+      Math.cos(angle) * radius,
+      0,
+      Math.sin(angle) * radius
     );
     const center = v(origin.x + radial.x + offset.x, origin.y + radial.y + offset.y, origin.z + radial.z + offset.z);
+    const sourceOrigin = base?.origin || v(0, 0, 0);
     const source = base?.points || [];
-    let oriented = source.map((point) => ({ ...point }));
+    let oriented = source.map((point) => ({
+      ...point,
+      x: num(point?.x) - num(sourceOrigin.x),
+      y: num(point?.y) - num(sourceOrigin.y),
+      z: num(point?.z) - num(sourceOrigin.z)
+    }));
     if (params.faceCenter) {
       const target = params.reverse ? radial : v(-radial.x, -radial.y, -radial.z);
-      oriented = rotatePointsToPointUpright(oriented, target, base?.axis || v(0, 1, 0));
+      oriented = rotatePointsToPointUpright(oriented, target, ringAxis);
     }
     for (const point of oriented) {
       points.push(clonePointWithOffset(point, center));
@@ -259,20 +253,99 @@ function indentText(text, spaces) {
   return String(text || '').split('\n').map((line) => `${prefix}${line}`).join('\n');
 }
 
-function registerReferenceParameterConstant(node, emitCtx) {
-  const parameterId = builderReferenceParameterId(node, node?.params?.snapshotId || node?.id);
-  const constantName = kotlinPrivateParameterConstantName(parameterId);
-  if (!emitCtx.constants) emitCtx.constants = new Map();
-  emitCtx.constants.set(constantName, `private const val ${constantName} = ${JSON.stringify(parameterId)}`);
+function lowerCamelIdentifier(value, fallback = 'instance') {
+  const parts = String(value || '')
+    .trim()
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) return fallback;
+  const [first, ...rest] = parts;
+  const head = first.charAt(0).toLowerCase() + first.slice(1);
+  const tail = rest.map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('');
+  const result = `${head}${tail}`;
+  return /^[A-Za-z_]/.test(result) ? result : `v${result}`;
+}
+
+function scopedIdentifier(value, emitCtx, fallback = 'instance') {
+  const base = lowerCamelIdentifier(value, fallback);
+  const scope = String(emitCtx?.symbolPrefix || '').trim();
+  return scope ? `${lowerCamelIdentifier(scope, 'scope')}${base.charAt(0).toUpperCase()}${base.slice(1)}` : base;
+}
+
+function capitalizeIdentifier(value) {
+  const text = String(value || '');
+  return text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : text;
+}
+
+function scopedSnapshotName(snapshotId, emitCtx) {
+  return `builderInstance${capitalizeIdentifier(scopedIdentifier(snapshotId || 'snapshot', emitCtx, 'snapshot'))}`;
+}
+
+function snapshotTemplateName(snapshot, mode, emitCtx) {
+  const ownerKey = `${mode}:${String(snapshot?.id || 'snapshot')}`;
+  if (!emitCtx.referenceNameByKey) emitCtx.referenceNameByKey = new Map();
+  if (!emitCtx.referenceNameOwners) emitCtx.referenceNameOwners = new Map();
+  const existing = emitCtx.referenceNameByKey.get(ownerKey);
+  if (existing) return existing;
+
+  const base = scopedSnapshotName(snapshot?.id, emitCtx);
+  let name = base;
+  let suffix = 2;
+  while (true) {
+    const owners = emitCtx.referenceNameOwners.get(name);
+    if (!owners || !owners.has(mode) || owners.get(mode) === ownerKey) break;
+    name = `${base}${suffix++}`;
+  }
+  emitCtx.referenceNameByKey.set(ownerKey, name);
+  const owners = emitCtx.referenceNameOwners.get(name) || new Map();
+  owners.set(mode, ownerKey);
+  emitCtx.referenceNameOwners.set(name, owners);
+  return name;
+}
+
+function snapshotScopePrefix(snapshot, mode, emitCtx) {
+  const base = `${String(emitCtx?.symbolPrefix || '').trim() || 'instance'}_${snapshot?.id || 'snapshot'}`;
+  if (!emitCtx.symbolScopeOwners) emitCtx.symbolScopeOwners = new Map();
+  const ownerKey = `${mode}:${String(snapshot?.id || 'snapshot')}`;
+  let suffix = 1;
+  let scope = base;
+  while (true) {
+    const normalized = lowerCamelIdentifier(scope, 'instance');
+    const owner = emitCtx.symbolScopeOwners.get(normalized);
+    if (!owner || owner === ownerKey) {
+      emitCtx.symbolScopeOwners.set(normalized, ownerKey);
+      return scope;
+    }
+    suffix += 1;
+    scope = `${base}_${suffix}`;
+  }
+}
+
+function reserveConstantName(base, ownerKey, emitCtx) {
+  if (!emitCtx.constantNameOwners) emitCtx.constantNameOwners = new Map();
+  let name = base;
+  let suffix = 2;
+  while (true) {
+    const owner = emitCtx.constantNameOwners.get(name);
+    if (!owner || owner === ownerKey) {
+      emitCtx.constantNameOwners.set(name, ownerKey);
+      return name;
+    }
+    name = `${base}_${suffix++}`;
+  }
 }
 
 function registerSnapshotPrivateConstants(snapshot, emitCtx) {
   if (!emitCtx.constants) emitCtx.constants = new Map();
-  const prefix = kotlinPrivateParameterConstantName(snapshot?.id || 'snapshot');
+  const constantId = String(emitCtx?.symbolPrefix || '').trim()
+    ? scopedIdentifier(snapshot?.id || 'snapshot', emitCtx, 'snapshot')
+    : snapshot?.id || 'snapshot';
+  const prefix = kotlinPrivateParameterConstantName(constantId);
   for (const [key, value] of Object.entries(snapshot?.privateConstants || {})) {
     if ((typeof value !== 'string' && typeof value !== 'number') || !String(key || '').trim()) continue;
     const safeKey = String(key).replace(/[^A-Za-z0-9_]/g, '_').toUpperCase();
-    const name = `${prefix}_${safeKey}`;
+    const name = reserveConstantName(`${prefix}_${safeKey}`, `snapshot:${snapshot?.id || 'snapshot'}:${key}`, emitCtx);
     const rendered = typeof value === 'number' && Number.isFinite(value)
       ? fmtDouble(value)
       : JSON.stringify(String(value));
@@ -289,14 +362,14 @@ function registerSnapshotTemplate(snapshot, referenceNode, emitCtx, emitNodesKot
   const existing = emitCtx.referenceTemplates.get(key);
   if (existing) return existing;
 
-  const safeId = String(snapshot.id || 'snapshot').replace(/[^A-Za-z0-9_]/g, '_');
-  const name = `builderInstance_${safeId}`;
+  const name = snapshotTemplateName(snapshot, mode, emitCtx);
   emitCtx.referenceStack.add(key);
   registerSnapshotPrivateConstants(snapshot, emitCtx);
 
   const childContext = {
     ...emitCtx,
-    decls: []
+    decls: [],
+    symbolPrefix: snapshotScopePrefix(snapshot, mode, emitCtx)
   };
   const entries = getBuilderSnapshotVariableEntries(snapshot);
   const syntheticOverrides = {
@@ -331,8 +404,9 @@ function registerSnapshotTemplate(snapshot, referenceNode, emitCtx, emitNodesKot
     const parameters = entries.flatMap((entry) => (
       entry.type === 'vector'
         ? [`${entry.name}X: Double`, `${entry.name}Y: Double`, `${entry.name}Z: Double`]
-        : [`${entry.name}: Double`]
+      : [`${entry.name}: Double`]
     )).join(', ');
+    if (emitCtx.staticContainer) declaration.push('@JvmStatic');
     declaration.push(`private fun ${name}(${parameters}): PointsBuilder {`);
     for (const local of childContext.decls) declaration.push(indentText(local, 2));
     declaration.push('  return PointsBuilder()');
@@ -369,7 +443,6 @@ function emitNodeKotlinLines(node, emitCtx, indent, emitNodesKotlinLines) {
     const snapshotId = String(node.params?.snapshotId || '').trim();
     const snapshot = emitCtx?.snapshots?.[snapshotId];
     if (!snapshot) return [];
-    registerReferenceParameterConstant(node, emitCtx);
     const template = registerSnapshotTemplate(snapshot, node, emitCtx, emitNodesKotlinLines);
     const params = node.params || {};
     const offset = relExpr(params.ox, params.oy, params.oz);
@@ -403,24 +476,51 @@ function emitNodeKotlinLines(node, emitCtx, indent, emitNodesKotlinLines) {
     const params = node.params || {};
     const ids = Array.isArray(params.snapshotIds) ? params.snapshotIds.map(String).filter(Boolean) : [];
     if (!ids.length) return [];
-    registerReferenceParameterConstant(node, emitCtx);
-    const names = ids.map((id) => {
+    const entries = ids.map((id) => {
       const snapshot = emitCtx?.snapshots?.[id];
-      if (!snapshot) return '';
-      return registerSnapshotTemplate(snapshot, { params: { instanceMode: 'static' } }, emitCtx, emitNodesKotlinLines).name;
+      if (!snapshot) return null;
+      return {
+        name: registerSnapshotTemplate(snapshot, { params: { instanceMode: 'static' } }, emitCtx, emitNodesKotlinLines).name,
+        origin: snapshot.origin || v(0, 0, 0)
+      };
     }).filter(Boolean);
+    const names = entries.map((entry) => entry.name);
     if (!names.length) return [];
+    const startRadian = `${fmtDouble(params.startDeg)} * PI / 180.0`;
     const lines = [
       `${indent}.addBuilder(${relExpr(params.offsetX, params.offsetY, params.offsetZ)}, PointsBuilder()`,
       `${indent}  .addWith {`,
       `${indent}  val res = arrayListOf<RelativeLocation>()`,
-      `${indent}  getPolygonInCircleVertices(${int(params.count, 12)}, ${fmtDouble(params.radius)})`,
+      `${indent}  getRadianXZ(${fmtDouble(params.radius)}, ${int(params.count, 12)}, 0.0, 2 * PI, ${startRadian})`,
       `${indent}    .forEachIndexed { index, it ->`,
       `${indent}      val source = when (index % ${names.length}) {`
     ];
-    names.forEach((name, index) => lines.push(`${indent}        ${index} -> ${name}.cloneBuilder()`));
+    const seenNames = new Set();
+    names.forEach((name, index) => {
+      if (!seenNames.has(name)) {
+        lines.push(`${indent}        ${index} -> ${name}.cloneBuilder()`);
+        seenNames.add(name);
+        return;
+      }
+      lines.push(
+        `${indent}        ${index} -> ${name}.let {`,
+        `${indent}          val duplicateId = it`,
+        `${indent}          val res = PointsBuilder()`,
+        `${indent}          res.addBuilder(RelativeLocation(0.0, 0.0, 0.0), duplicateId)`,
+        `${indent}          return@let res`,
+        `${indent}        }`
+      );
+    });
     lines.push(`${indent}        else -> ${names[0]}.cloneBuilder()`, `${indent}      }`);
+    if (entries.some((entry) => Math.abs(num(entry.origin?.x)) > 1e-9 || Math.abs(num(entry.origin?.y)) > 1e-9 || Math.abs(num(entry.origin?.z)) > 1e-9)) {
+      lines.push(`${indent}      val sourceOrigin = when (index % ${entries.length}) {`);
+      entries.forEach((entry, index) => lines.push(`${indent}        ${index} -> ${relExpr(entry.origin?.x, entry.origin?.y, entry.origin?.z)}`));
+      lines.push(`${indent}        else -> ${relExpr(entries[0].origin?.x, entries[0].origin?.y, entries[0].origin?.z)}`);
+      lines.push(`${indent}      }`);
+      lines.push(`${indent}      source.pointsOnEach { rel -> rel.add(-sourceOrigin.x, -sourceOrigin.y, -sourceOrigin.z) }`);
+    }
     if (params.faceCenter) {
+      lines.push(`${indent}      source.axis(${relExpr(num(params.axisX), num(params.axisY), num(params.axisZ, 1))})`);
       lines.push(`${indent}      source.rotateTo(${params.reverse ? 'it' : '-it'})`);
     }
     lines.push(`${indent}      res.addAll(source.pointsOnEach { rel -> rel.add(it).add(${fmtDouble(params.originX)}, ${fmtDouble(params.originY)}, ${fmtDouble(params.originZ)}) }.createWithoutClone())`);
@@ -463,7 +563,8 @@ export function evalBuilderWithMeta(nodes, initialAxis = v(0, 1, 0), options = {
     const result = evalBuilderWithMeta(children, v(0, 1, 0), { snapshots, referenceCache, referenceStack, resolveExpressions: options.resolveExpressions });
     const frozen = {
       points: (result.points || []).map((item) => ({ x: num(item.x), y: num(item.y), z: num(item.z) })),
-      axis: clone(result.axis || v(0, 1, 0))
+      axis: clone(result.axis || v(0, 1, 0)),
+      origin: clone(snapshot.origin || v(0, 0, 0))
     };
     referenceCache.set(key, frozen);
     referenceStack.delete(key);
@@ -581,11 +682,17 @@ export function emitNodesKotlinLines(nodes, indent = '  ', emitCtx = { decls: []
 export function emitKotlinParts(project, options = {}) {
   const emitCtx = {
     decls: [],
-    snapshots: normalizeBuilderSnapshots(project?.state?.builderSnapshots || project?.builderSnapshots),
+    snapshots: normalizeBuilderSnapshots(options.snapshots || project?.state?.builderSnapshots || project?.builderSnapshots),
     constants: new Map(),
     referenceDecls: new Map(),
     referenceTemplates: new Map(),
     referenceStack: new Set(),
+    referenceNameByKey: new Map(),
+    referenceNameOwners: new Map(),
+    symbolScopeOwners: new Map(),
+    constantNameOwners: new Map(),
+    symbolPrefix: String(options.symbolPrefix || '').trim(),
+    staticContainer: options.staticContainer === true,
     coerceNodes: options.coerceNodes,
     resolveStaticReference: options.resolveStaticReference
   };
@@ -603,7 +710,9 @@ export function emitKotlinParts(project, options = {}) {
     expression: lines.join('\n'),
     localDeclarations: emitCtx.decls.slice(),
     constants: Array.from(emitCtx.constants.values()),
-    declarations: Array.from(emitCtx.referenceDecls.values())
+    declarations: Array.from(emitCtx.referenceDecls.values()),
+    declarationKeys: Array.from(emitCtx.referenceDecls.keys()),
+    declarationEntries: Array.from(emitCtx.referenceDecls.entries()).map(([key, text]) => ({ key, text }))
   };
 }
 

@@ -633,6 +633,7 @@ import {
   openProjectResult,
   sanitizeFileBase
 } from '../services/shell/electron-shell.js';
+import { readAutoSaveIntervals, readCurrentBackupEnabled } from '../modules/preferences/auto-save.js';
 import { classifyProjectData, parseProjectText } from '../modules/projects/project-types.js';
 import { getProjectRepository } from '../services/repositories/project-repository.js';
 import { evaluatePointsProject } from '../modules/pointsbuilder/evaluator.js';
@@ -2211,7 +2212,12 @@ async function saveIndexedProject() {
     if (filePath) {
       const text = JSON.stringify(snapshot, null, 2);
       if (shell.autoSaveProjectFile) {
-        const backup = await shell.autoSaveProjectFile({ filePath, text });
+        const backup = await shell.autoSaveProjectFile({
+          filePath,
+          text,
+          intervals: readAutoSaveIntervals(),
+          currentBackupEnabled: readCurrentBackupEnabled()
+        });
         if (!backup?.ok) {
           throw new Error(backup?.message || 'Generator 项目自动备份失败。');
         }
@@ -2671,7 +2677,7 @@ async function loadIndexedProject(projectId) {
     if (!record?.payload) {
       throw new Error('找不到该 Generator 项目，请返回项目页重新打开。');
     }
-    const filePath = String(record.filePath || '');
+    let filePath = String(record.filePath || '');
     const shell = getElectronShell();
     let projectData = classifyProjectData(record);
     if (filePath && shell?.readTextFile) {
@@ -2679,6 +2685,7 @@ async function loadIndexedProject(projectId) {
       if (token !== projectLoadToken) return false;
       if (!result?.ok) throw new Error(result?.message || '无法读取 Generator 项目文件。');
       projectData = parseProjectText(result.text, filePath);
+      filePath = String(result.writableFilePath || filePath);
     }
     const { type, payload } = projectData;
     if (type !== 'generator') {

@@ -335,7 +335,7 @@ test('Composition and Emitter load the versioned shared PointsBuilder kinds', ()
     'utf8'
   );
 
-  assert.match(compositionSource, /points_builder\/js\/kinds\.js\?v=20260820_2/);
-  assert.match(emitterBridgeSource, /points_builder\/js\/kinds\.js\?v=20260820_2/);
+  assert.match(compositionSource, /points_builder\/js\/kinds\.js\?v=20260828_1/);
+  assert.match(emitterBridgeSource, /points_builder\/js\/kinds\.js\?v=20260828_1/);
   assert.match(emitterBridgeSource, /normalizePointsBuilderState/);
 });

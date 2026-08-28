@@ -15,7 +15,10 @@ export function generatePointsBuilderKotlin(project, options = {}) {
   coerceExternalDoubleExpressions(normalized.state.root.children, options.coerceDoubleExpression);
   return emitKotlin(normalized, {
     coerceNodes: (nodes) => coerceExternalDoubleExpressions(nodes, options.coerceDoubleExpression),
-    resolveStaticReference: options.resolveStaticReference
+    resolveStaticReference: options.resolveStaticReference,
+    snapshots: options.snapshots,
+    symbolPrefix: options.symbolPrefix,
+    staticContainer: options.staticContainer
   });
 }
 
@@ -23,7 +26,13 @@ export function generatePointsBuilderKotlinParts(project, options = {}) {
   const normalized = normalizePointsBuilderProject(project, project?.tool || 'pointsbuilder');
   const coerceNodes = (nodes) => coerceExternalDoubleExpressions(nodes, options.coerceDoubleExpression);
   coerceNodes(normalized.state.root.children);
-  return emitKotlinParts(normalized, { coerceNodes, resolveStaticReference: options.resolveStaticReference });
+  return emitKotlinParts(normalized, {
+    coerceNodes,
+    resolveStaticReference: options.resolveStaticReference,
+    snapshots: options.snapshots,
+    symbolPrefix: options.symbolPrefix,
+    staticContainer: options.staticContainer
+  });
 }
 
 function coerceExternalDoubleExpressions(nodes, coerceDoubleExpression) {

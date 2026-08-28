@@ -1,4 +1,5 @@
 import { normalizePointsBuilderProject } from '../pointsbuilder/defaults.js';
+import { readAutoSaveIntervals, readCurrentBackupEnabled } from '../preferences/auto-save.js';
 import {
   collectGeneratorValueEntries,
   isGeneratorNumericType
@@ -113,7 +114,12 @@ export async function saveGeneratorPointsBuilderProject({
     }
     const text = JSON.stringify(snapshot, null, 2);
     if (shell.autoSaveProjectFile) {
-      const backup = await shell.autoSaveProjectFile({ filePath, text });
+      const backup = await shell.autoSaveProjectFile({
+        filePath,
+        text,
+        intervals: readAutoSaveIntervals(),
+        currentBackupEnabled: readCurrentBackupEnabled()
+      });
       if (!backup?.ok) {
         throw new Error(backup?.message || 'Generator 项目自动备份失败。');
       }

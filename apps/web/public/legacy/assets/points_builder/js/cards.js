@@ -669,6 +669,7 @@ export function createCardInputs(ctx) {
         const exprMode = true;
         const suggestMode = exprModeEnabled();
         const modalNavigation = !!options.modalNavigation;
+        const commitOnChange = !!options.commitOnChange;
         const onNavigate = typeof options.onNavigate === "function" ? options.onNavigate : null;
         i.type = "text";
         i.dataset.pbExpressionInput = "1";
@@ -683,6 +684,13 @@ export function createCardInputs(ctx) {
             ? 0
             : value;
         i.value = String(initialValue);
+        let lastCommittedValue = i.value;
+        const commitValue = () => {
+            const nextValue = String(i.value ?? "");
+            if (nextValue === lastCommittedValue) return;
+            onInput(nextValue);
+            lastCommittedValue = nextValue;
+        };
         i.placeholder = i.placeholder || "支持变量/表达式";
         i.autocomplete = "off";
         i.spellcheck = false;
@@ -725,6 +733,12 @@ export function createCardInputs(ctx) {
                 if (onNavigate) onNavigate(e.key, i, e);
                 return;
             }
+            if (commitOnChange && e.key === "Enter") {
+                e.preventDefault();
+                commitValue();
+                i.blur();
+                return;
+            }
             if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
             const liveStep = (typeof getParamStep === "function") ? getParamStep() : null;
             if (!Number.isFinite(liveStep) || liveStep <= 0) return;
@@ -738,11 +752,13 @@ export function createCardInputs(ctx) {
             const fixed = Number.isFinite(next) ? Number(next.toFixed(Math.min(12, precision + 2))) : next;
             i.value = String(fixed);
             i.dispatchEvent(new Event("input", { bubbles: true }));
+            if (commitOnChange) commitValue();
         });
         i.addEventListener("input", () => {
-            onInput(String(i.value ?? ""));
+            if (!commitOnChange) onInput(String(i.value ?? ""));
             if (suggestMode) openExprSuggestion(i, false);
         });
+        if (commitOnChange) i.addEventListener("change", commitValue);
         i.addEventListener("focus", () => {
             const liveStep = (typeof getParamStep === "function") ? getParamStep() : null;
             if (Number.isFinite(liveStep) && liveStep > 0) i.dataset.cpNumberStep = String(liveStep);
@@ -3017,7 +3033,7 @@ export function initCardSystem(ctx = {}) {
         badge.className = "badge2";
         badge.textContent = node.kind === "builder_reference"
             ? (node.params?.instanceMode === "construct" ? "构造实例" : "静态实例")
-            : (node.kind === "effect_ring" ? "参数化实例" : node.kind);
+            : (node.kind === "effect_ring" ? "组效果" : node.kind);
 
         if (!renderCardParamsInline && canContainChildren(node)) {
             const treeCollapsed = node.treeCollapsed === true;
@@ -3234,7 +3250,15 @@ export function initCardSystem(ctx = {}) {
 
         const delBtn = iconBtn("🗑", () => {
             historyCapture("delete_card");
+            const remainingSelectionIds = Array.from(selectedNodeIds).filter((id) => id !== node.id);
             siblings.splice(idx, 1);
+            setSelectedNodeIds(remainingSelectionIds, {
+                replace: true,
+                focus: false,
+                recordHistory: false,
+                syncWithParamSync: true,
+                syncStrictKind: false
+            });
             // 如果删的是当前聚焦卡片：把焦点挪到更合理的位置（不额外写历史）
             if (getFocusedNodeId() === node.id) {
                 const next = pickReasonableFocusAfterDelete({ parentList: siblings, index: idx, parentNode: ownerNode });
@@ -3533,6 +3557,10 @@ export function initCardSystem(ctx = {}) {
         const opts = options || {};
         if (typeof setTipKind === "function") setTipKind(node.kind);
         switch (node.kind) {
+            case "effect_ring":
+                ctx.renderEffectRingParams?.(body, node);
+                break;
+
             case "builder_reference":
                 const instanceIdInput = document.createElement("input");
                 instanceIdInput.type = "text";

@@ -72,11 +72,92 @@ installKotlinCodegenMethods(CompositionCodegenFixture, {
   normalizeParticleFloatAssignmentExpr: (_target, value) => String(value || ''),
   DEFAULT_EFFECT_CLASS: 'ControlableEndRodEffect'
 });
+const buildCompositionParticlesMethod = CompositionCodegenFixture.prototype.buildParticlesMethod;
 CompositionCodegenFixture.prototype.buildParticlesMethod = () => [
   '    override fun getParticles(): Map<CompositionData, RelativeLocation> {',
   '        return emptyMap()',
   '    }'
 ].join('\n');
+
+test('Sequenced Composition emits cards directly in visible card order', () => {
+  const app = new CompositionCodegenFixture('mojmap');
+  const cards = [{ name: '上层卡片' }, { name: '下层卡片' }];
+  const calls = [];
+  app.state.cards = cards;
+  app.emitCardPut = (card, _className, sequencedRoot, cardIndex) => {
+    calls.push({ name: card.name, sequencedRoot, cardIndex });
+    return `        result[CompositionData().apply { order = cardOrder++ }] = RelativeLocation(${cardIndex}.0, 0.0, 0.0)`;
+  };
+
+  const first = buildCompositionParticlesMethod.call(app, 'MappedComposition', true);
+  assert.deepEqual(calls.map((call) => call.name), ['上层卡片', '下层卡片']);
+  assert.ok(first.indexOf('// 上层卡片') < first.indexOf('// 下层卡片'));
+  assert.match(first, /getParticleSequenced\(\)[\s\S]*?var cardOrder = 0[\s\S]*?\/\/ 上层卡片/);
+  assert.equal((first.match(/order = cardOrder\+\+/g) || []).length, 2);
+  assert.doesNotMatch(first, /cardEntries\d+|orderCounter|\.forEach \{ \(data, relative\)/);
+  assert.ok(calls.every((call) => call.sequencedRoot));
+
+  calls.length = 0;
+  app.state.cards = cards.slice().reverse();
+  const swapped = buildCompositionParticlesMethod.call(app, 'MappedComposition', true);
+  assert.deepEqual(calls.map((call) => call.name), ['下层卡片', '上层卡片']);
+  assert.ok(swapped.indexOf('// 下层卡片') < swapped.indexOf('// 上层卡片'));
+});
+
+test('Sequenced Composition assigns one local cardOrder entry to each of 11 shape point cards', () => {
+  const app = new CompositionCodegenFixture('mojmap');
+  app.buildShapeDisplayerExpr = () => 'ParticleShapeComposition(it)';
+  app.state.cards = Array.from({ length: 11 }, (_, index) => ({
+    name: `卡片 ${index + 1}`,
+    dataType: 'particle_shape',
+    bindMode: 'point',
+    point: { x: index, y: 0, z: 0 },
+    shapeChildren: [],
+    useCParticle: false
+  }));
+
+  const source = buildCompositionParticlesMethod.call(app, 'MappedComposition', true);
+  assert.match(source, /val result: SortedMap<CompositionData, RelativeLocation> = TreeMap\(\)\s*var cardOrder = 0/);
+  assert.match(source, /result\[\s*CompositionData\(\)\.apply \{ order = cardOrder\+\+ \}/);
+  assert.equal((source.match(/order = cardOrder\+\+/g) || []).length, 11);
+  assert.equal((source.match(/^\s*\/\/ 卡片 \d+$/gm) || []).length, 11);
+  assert.doesNotMatch(source, /cardEntries\d+|orderCounter|\.forEach \{ \(data, relative\)/);
+});
+
+test('Sequenced Composition increments cardOrder for every data emitted by Builder and repeat paths', () => {
+  const app = new CompositionCodegenFixture('mojmap');
+  app.emitBuilderExpr = () => 'PointsBuilder().addLine(RelativeLocation.ZERO, RelativeLocation.xAxis(), 3)';
+  app.buildShapeDisplayerExpr = () => 'ParticleShapeComposition(it)';
+  app.state.cards = [
+    {
+      name: 'Builder 多点',
+      dataType: 'single',
+      bindMode: 'builder',
+      builderState: { root: { children: [] } },
+      particleInit: [],
+      controllerVars: [],
+      controllerActions: [],
+      singleEffectClass: 'ControlableEndRodEffect'
+    },
+    {
+      name: 'Point 重复',
+      dataType: 'particle_shape',
+      bindMode: 'point',
+      point: { x: 1, y: 2, z: 3 },
+      shapeChildren: [],
+      useCParticle: false,
+      angleOffsetEnabled: true,
+      angleOffsetCount: 2,
+      angleOffsetValue: 90,
+      angleOffsetUnit: 'deg'
+    }
+  ];
+
+  const source = buildCompositionParticlesMethod.call(app, 'MappedComposition', true);
+  assert.match(source, /result\.putAll\([\s\S]*?\.createWithCompositionData \{ rel ->\s*CompositionData\(\)\.apply \{ order = cardOrder\+\+ \}/);
+  assert.match(source, /repeat\(angleOffsetCount2\) \{ index ->[\s\S]*?result\[\s*CompositionData\(\)\.apply \{ order = cardOrder\+\+ \}/);
+  assert.doesNotMatch(source, /cardEntries\d+|orderCounter|\.forEach \{ \(data, relative\)/);
+});
 
 test('Composition mapping targets Yarn and Mojmap symbols', () => {
   assert.equal(normalizeCompositionMapping('yarn'), 'yarn');
@@ -297,14 +378,16 @@ test('Composition runtime modules use cache-busted Vec3d-aware sources', async (
   assert.match(htmlSource, /composition-builder\.page\.js\?v=[0-9_]+/);
   assert.match(htmlSource, /composition_builder\/css\/style\.css\?v=20260823_1/);
   assert.match(pageSource, /main\.js\?v=[0-9_]+/);
-  assert.match(mainSource, /model\.js\?v=20260826_8/);
+  assert.match(mainSource, /model\.js\?v=20260827_2/);
+  assert.match(mainSource, /kotlin_codegen_mixin\.js\?v=20260827_3/);
+  assert.match(mainSource, /code_output_mixin\.js\?v=20260827_2/);
   assert.match(mainSource, /preferences\.js\?v=20260729_3/);
   assert.match(mainSource, /alpha_helper_utils\.js\?v=20260729_1/);
   assert.match(mainSource, /composition_preset_mixin\.js\?v=20260729_4/);
   assert.match(mainSource, /expression_runtime\.js\?v=20260729_3/);
   assert.match(mainSource, /vector_value_utils\.js\?v=20260720_1/);
   assert.match(mainSource, /preview_runtime_mixin\.js\?v=20260825_3/);
-  assert.match(mainSource, /kotlin_codegen_mixin\.js\?v=20260826_10/);
+  assert.match(mainSource, /kotlin_codegen_mixin\.js\?v=20260827_3/);
   assert.match(mainSource, /expression_editor_mixin\.js\?v=20260729_3/);
   assert.match(mainSource, /composition_vector_expression\.js\?v=20260729_3/);
   assert.match(modelSource, /alpha_helper_utils\.js\?v=20260729_1/);

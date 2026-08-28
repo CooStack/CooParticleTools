@@ -10,6 +10,7 @@ import {
   watchGlassSurface
 } from './modules/theme/glass-surface.js';
 import { installShellCustomSelects } from './modules/theme/custom-select.js';
+import { hydrateAutoSaveIntervals, hydrateCurrentBackupEnabled } from './modules/preferences/auto-save.js';
 import './assets/styles/base.css';
 import './assets/styles/theme.css';
 import './assets/styles/layout.css';
@@ -20,6 +21,8 @@ import './assets/styles/layout.css';
 // port), which empties localStorage.
 applyAppTheme();
 void hydrateAppTheme();
+void hydrateCurrentBackupEnabled();
+void hydrateAutoSaveIntervals();
 
 // Same two steps for the glass material's blur / frost, then the pointer rim
 // light. watchGlassSurface also carries changes made inside a builder iframe

@@ -1,4 +1,5 @@
 import { generatePointsBuilderKotlin, generatePointsBuilderKotlinParts } from '../pointsbuilder/codegen.js';
+import { normalizeBuilderSnapshots } from '../pointsbuilder/references.js';
 import { createCompositionPreviewRuntime } from './preview-runtime.js';
 import { normalizeCompositionProject } from './normalizer.js';
 
@@ -78,6 +79,56 @@ function emitPointsBuilderExpressionParts(parts) {
     indentBlock(expression, 2),
     '}'
   ].join('\n');
+}
+
+function collectCompositionBuilderStates(project) {
+  const states = [];
+  const visitShape = (shape) => {
+    if (!shape || typeof shape !== 'object') return;
+    if (shape.builderState) states.push(shape.builderState);
+    (shape.children || []).forEach(visitShape);
+  };
+  (project?.cards || []).forEach((card) => {
+    if (card?.builderState) states.push(card.builderState);
+    (card?.shapeChildren || []).forEach(visitShape);
+  });
+  return states;
+}
+
+function builderSnapshotSymbolKey(id) {
+  const parts = String(id || '').trim().replace(/[^A-Za-z0-9]+/g, ' ').split(/\s+/).filter(Boolean);
+  if (!parts.length) return 'snapshot';
+  return parts.map((part, index) => index === 0
+    ? part.charAt(0).toLowerCase() + part.slice(1)
+    : part.charAt(0).toUpperCase() + part.slice(1)).join('');
+}
+
+function inspectBuilderSnapshotRegistry(states) {
+  const merged = {};
+  const symbols = new Map();
+  const conflictIds = new Set();
+  for (const state of states) {
+    const snapshots = normalizeBuilderSnapshots(state?.state?.builderSnapshots || state?.builderSnapshots);
+    for (const [id, snapshot] of Object.entries(snapshots)) {
+      if (!merged[id]) merged[id] = snapshot;
+      const symbol = builderSnapshotSymbolKey(id);
+      const fingerprint = JSON.stringify({
+        id,
+        children: snapshot.children || [],
+        variables: snapshot.variables || null,
+        staticOverrides: snapshot.staticOverrides || null,
+        privateConstants: snapshot.privateConstants || {}
+      });
+      const previous = symbols.get(symbol);
+      if (previous && previous.fingerprint !== fingerprint) {
+        conflictIds.add(previous.id);
+        conflictIds.add(id);
+      } else if (!previous) {
+        symbols.set(symbol, { id, fingerprint });
+      }
+    }
+  }
+  return { merged, conflictIds };
 }
 
 function emitGlobalVar(item) {
@@ -240,25 +291,37 @@ export function collectCompositionPreviewPoints(project, tick = 0) {
 export function generateCompositionKotlin(rawProject) {
   const project = normalizeCompositionProject(rawProject);
   const resolveStaticReference = createStaticCompositionReferenceResolver(project);
-  const builderPartsByCard = project.cards.map((card) => (
-    card.bindMode === 'point' ? null : generatePointsBuilderKotlinParts(card.builderState, { resolveStaticReference })
+  const snapshotRegistry = inspectBuilderSnapshotRegistry(collectCompositionBuilderStates(project));
+  const sharedSnapshots = snapshotRegistry.merged;
+  const builderPartsByCard = project.cards.map((card, index) => (
+    card.bindMode === 'point' ? null : generatePointsBuilderKotlinParts(card.builderState, {
+      resolveStaticReference,
+      staticContainer: true,
+      snapshots: {
+        ...sharedSnapshots,
+        ...normalizeBuilderSnapshots(card.builderState?.state?.builderSnapshots || card.builderState?.builderSnapshots)
+      },
+      symbolPrefix: Object.keys(normalizeBuilderSnapshots(card.builderState?.state?.builderSnapshots || card.builderState?.builderSnapshots))
+        .some((id) => snapshotRegistry.conflictIds.has(id))
+        ? `card${index + 1}`
+        : ''
+    })
   ));
   const builderConstants = Array.from(new Set(
     builderPartsByCard.flatMap((parts) => parts?.constants || [])
   ));
   const builderDeclarations = Array.from(new Map(
     builderPartsByCard
-      .flatMap((parts) => parts?.declarations || [])
-      .map((declaration) => {
-        const match = declaration.match(/^private (val|fun)\s+([A-Za-z_][A-Za-z0-9_]*)/);
-        return [match ? `${match[1]}:${match[2]}` : declaration, declaration];
-      })
+      .flatMap((parts) => Array.isArray(parts?.declarationEntries)
+        ? parts.declarationEntries.map((entry) => [entry.key, entry.text])
+        : (parts?.declarations || []).map((declaration) => [declaration, declaration]))
   ).values());
   const lines = [];
   lines.push(`class ${project.name || 'NewComposition'} {`);
-  if (builderConstants.length) {
+  if (builderConstants.length || builderDeclarations.length) {
     lines.push('  private companion object {');
     builderConstants.forEach((constant) => lines.push(`    ${constant}`));
+    builderDeclarations.forEach((declaration) => lines.push(indentBlock(declaration, 4)));
     lines.push('  }');
     lines.push('');
   }
@@ -272,14 +335,6 @@ export function generateCompositionKotlin(rawProject) {
   });
   project.globalConsts.forEach((item) => {
     lines.push(indentBlock(emitGlobalConst(item), 4));
-  });
-  builderDeclarations.forEach((declaration) => {
-    lines.push(indentBlock(
-      declaration
-        .replace(/^private val /, 'val ')
-        .replace(/^private fun /, 'fun '),
-      4
-    ));
   });
   project.compositionAnimates.forEach((item) => {
     lines.push(indentBlock(emitRootAnimate(item), 4));

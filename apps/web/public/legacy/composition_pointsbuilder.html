@@ -4,7 +4,7 @@
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>CompositionBuilder - PointsBuilder 编辑器</title>
-    <link rel="stylesheet" href="./assets/points_builder/css/style.css?v=20260827_3"/>
+    <link rel="stylesheet" href="./assets/points_builder/css/style.css?v=20260828_3"/>
     <link rel="stylesheet" href="./assets/shared/css/glass-theme.css?v=20260825_1"/>
     <link rel="stylesheet" href="./assets/shared/css/custom-select.css?v=20260825_2"/>
     <script src="./assets/src/js/compat/spa-router-bridge.js?v=20260710_5"></script>
@@ -45,9 +45,6 @@
                 <div class="topbar-submenu">
                     <button id="btnSavePreset" class="btn" type="button">保存预设</button>
                     <button id="btnApplyPreset" class="btn" type="button">应用预设</button>
-                    <button id="btnOpenPresetRingToolMenu" class="btn" type="button">环形放置</button>
-                    <button id="btnExportPresets" class="btn" type="button">导出预设</button>
-                    <button id="btnImportPresets" class="btn" type="button">导入预设</button>
                 </div>
             </div>
             <button id="btnEditVariables" class="btn">变量</button>
@@ -152,6 +149,8 @@
                             aria-selected="true" aria-controls="rightParamsPage">参数</button>
                     <button id="btnRightPresetsTab" class="right-tab" type="button" role="tab"
                             aria-selected="false" aria-controls="rightPresetsPage">预设</button>
+                    <button id="btnRightInstancesTab" class="right-tab" type="button" role="tab"
+                            aria-selected="false" aria-controls="rightInstancesPage">实例 ID</button>
                     <button id="btnRightKotlinTab" class="right-tab" type="button" role="tab"
                             aria-selected="false" aria-controls="rightKotlinPage">Kotlin</button>
                 </div>
@@ -166,18 +165,29 @@
                      aria-labelledby="btnRightPresetsTab">
                 <div class="preset-library-head">
                     <div id="presetLibraryStatus" class="preset-library-status"></div>
-                    <button id="btnOpenPresetRingTool" class="btn preset-ring-open-btn" type="button"
-                            title="环形放置预设">环形</button>
-                    <button id="btnPresetCreateLibraryGroup" class="btn icon preset-library-add-group-btn" type="button"
-                            title="新建分组" aria-label="新建分组">
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l2 2h5.5A2.5 2.5 0 0 1 20 9.5v7A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9ZM12 10v6m-3-3h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    </button>
+                    <div class="preset-library-actions">
+                        <button id="btnPresetExportZip" class="btn" type="button">导出预设</button>
+                        <button id="btnPresetImportFolder" class="btn" type="button">导入文件夹</button>
+                        <button id="btnPresetImportZip" class="btn" type="button">导入 ZIP</button>
+                        <button id="btnPresetCreateLibraryGroup" class="btn icon preset-library-add-group-btn" type="button"
+                                title="新建分组" aria-label="新建分组">
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l2 2h5.5A2.5 2.5 0 0 1 20 9.5v7A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9ZM12 10v6m-3-3h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                    </div>
                 </div>
+                <div id="presetLibraryList" class="preset-library-list"></div>
+            </section>
+            <section id="rightInstancesPage" class="right-page right-instances-page" role="tabpanel"
+                     aria-labelledby="btnRightInstancesTab">
+                <div id="builderInstanceRegistryStatus" class="instance-registry-status"></div>
+                <div id="builderInstanceRegistryList" class="instance-registry-list"></div>
+            </section>
+            <div id="effectRingEditorParking" class="effect-ring-editor-parking" hidden>
                 <div id="presetRingTool" class="preset-ring-tool hidden">
                     <div class="preset-ring-head">
                         <div>
                             <div class="preset-ring-title">环形放置</div>
-                            <div id="presetRingStatus" class="preset-ring-status">圆点模式</div>
+                            <div id="presetRingStatus" class="preset-ring-status">选择环形放置卡片后编辑</div>
                         </div>
                         <button id="btnPresetRingClose" class="btn icon" type="button" aria-label="收起">
                             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
@@ -217,11 +227,9 @@
                     <div id="presetRingSlots" class="preset-ring-slots"></div>
                     <div class="preset-ring-actions">
                         <button id="btnPresetRingSyncSlots" class="btn" type="button">同步槽位</button>
-                        <button id="btnPresetRingApply" class="btn primary" type="button">应用</button>
                     </div>
                 </div>
-                <div id="presetLibraryList" class="preset-library-list"></div>
-            </section>
+            </div>
             <section id="rightKotlinPage" class="right-page right-kotlin-page" role="tabpanel"
                      aria-labelledby="btnRightKotlinTab">
                 <div class="panel-tools kotlin-tools">
@@ -429,14 +437,6 @@
                 <div class="settings-panel">
                     <div class="settings-panel-title">预览</div>
                     <div class="settings-form">
-                        <div class="settings-row">
-                            <div class="settings-label">环形预设预览</div>
-                            <select id="selPresetRingPreviewMode" class="input">
-                                <option value="global">全局显示</option>
-                                <option value="hidden">不显示</option>
-                                <option value="preview">只在预览页显示</option>
-                            </select>
-                        </div>
                         <label class="chk settings-toggle">
                             <input id="chkPointPickPreview" type="checkbox" checked/>
                             <span>点拾取效果预览</span>
@@ -507,6 +507,6 @@
       }
     }
 </script>
-<script type="module" src="./assets/src/js/pages/composition-pointsbuilder.page.js?v=20260827_1"></script>
+<script type="module" src="./assets/src/js/pages/composition-pointsbuilder.page.js?v=20260828_3"></script>
 </body>
 </html>

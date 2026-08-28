@@ -116,7 +116,7 @@ test('Composition narrow layout keeps the page and editor column scrollable', as
   assert.match(styles, /@container \(max-width:\s*920px\)[\s\S]*?\.preview-editor-root\s*{[^}]*overflow-y:\s*auto/s);
 });
 
-test('Composition global and card settings use mutually exclusive editor tabs', async () => {
+test('Composition project and card settings use mutually exclusive editor tabs', async () => {
   const [page, source, styles] = await Promise.all([
     readFile(compositionPageUrl, 'utf8'),
     readFile(compositionMainUrl, 'utf8'),
@@ -124,7 +124,7 @@ test('Composition global and card settings use mutually exclusive editor tabs', 
   ]);
 
   assert.match(page, /class="preview-editor-tabs" role="tablist"/);
-  assert.match(page, /id="btnProjectEditorTab"[\s\S]*?>[\s\S]*?全局设置/);
+  assert.match(page, /id="btnProjectEditorTab"[\s\S]*?>[\s\S]*?项目设置/);
   assert.match(page, /id="btnCardEditorTab"[\s\S]*?>[\s\S]*?卡片设置/);
   assert.match(page, /id="projectSection" class="project-section preview-editor-view hidden"/);
   assert.match(page, /id="cardsRoot" class="cards composition-card-editor-root preview-editor-root preview-editor-view"/);
@@ -281,4 +281,32 @@ test('Composition history hotkeys bypass selects but preserve native text undo',
 
   assert.match(source, /handleCompositionHistoryShortcut\(e, \{/);
   assert.match(source, /textEditing: this\.isTextEditingTarget\(e\.target\)/);
+});
+
+test('deleting a Composition card records its history snapshot at the mutation boundary', async () => {
+  const source = await readFile(
+    new URL('../public/legacy/assets/composition_builder/js/main.js', import.meta.url),
+    'utf8'
+  );
+  const deleteMethod = source.match(/deleteCardById\(cardId\) \{[\s\S]*?\n    \}/)?.[0] || '';
+  assert.match(deleteMethod, /this\.pushHistory\(\);/);
+  assert.match(source, /const skipHistory = [\s\S]*?\|\| act === "delete-card";/);
+});
+
+test('Composition auto-save time slots live only in application preferences', async () => {
+  const [html, source, preferencesModal] = await Promise.all([
+    readFile(new URL('../public/legacy/composition_builder.html', import.meta.url), 'utf8'),
+    readFile(new URL('../public/legacy/assets/composition_builder/js/main.js', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/AppPreferencesModal.vue', import.meta.url), 'utf8')
+  ]);
+  const settingsModal = html.match(/<div id="settingsModal"[\s\S]*?<div id="hkMask"/)?.[0] || '';
+  const projectRenderer = source.match(/renderProjectSection\(\) \{[\s\S]*?\n    renderDisplayActionRow\(/)?.[0] || '';
+
+  assert.match(html, /id="btnProjectEditorTab"[\s\S]*?<span>项目设置<\/span>[\s\S]*?<span class="badge">项目<\/span>/);
+  assert.doesNotMatch(settingsModal, /自动备份|autoSaveIntervalsMinutes|auto-save-interval/);
+  assert.doesNotMatch(projectRenderer, /自动备份|autoSaveIntervalsMinutes|auto-save-interval/);
+  assert.match(preferencesModal, /<strong>当前备份<\/strong>/);
+  assert.match(preferencesModal, /固定备份槽/);
+  assert.match(preferencesModal, /v-for="\(minutes, index\) in autoSaveIntervals"/);
+  assert.match(preferencesModal, /添加时间槽/);
 });

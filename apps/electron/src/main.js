@@ -8,7 +8,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const { createProjectCloseGuard } = require('./project-close-guard');
 const { createProjectPresetFileStore } = require('./project-preset-files');
 const { createPreferencesStore } = require('./preferences-store');
-const { writeProjectAutoSave } = require('./project-auto-save');
+const { getProjectRecoveryPath, writeProjectAutoSave } = require('./project-auto-save');
 const { writeTextFileAtomic } = require('./atomic-text-file');
 const { mapLegacyUrlToAppUrl } = require('./legacy-navigation');
 const { resolveBackendLaunch } = require('./backend-launch');
@@ -416,6 +416,7 @@ async function openProjectFile(event, options = {}) {
   return {
     ok: true,
     filePath,
+    writableFilePath: getProjectRecoveryPath(filePath),
     name: path.basename(filePath),
     text,
   };
@@ -433,6 +434,7 @@ async function readTextFile(rawPath, options = {}) {
   return {
     ok: true,
     filePath,
+    writableFilePath: getProjectRecoveryPath(filePath),
     name: path.basename(filePath),
     text,
   };
@@ -620,6 +622,7 @@ function runMenuCommand(rawId) {
     case 'save-project':
     case 'save-as-project':
     case 'export-kotlin':
+    case 'open-preferences':
       sendShellCommand({ type: id });
       return { ok: true };
     case 'goto-workbench':
@@ -877,10 +880,15 @@ ipcMain.handle('shell:saveProjectFile', (event, payload = {}) => withIpcErrors((
   ...payload,
   addToRecent: payload.addToRecent !== false,
 }, projectFilters)));
-ipcMain.handle('shell:autoSaveProjectFile', (_event, payload = {}) => withIpcErrors(() => writeProjectAutoSave(
-  payload.filePath,
-  payload.text
-)));
+ipcMain.handle('shell:autoSaveProjectFile', (_event, payload = {}) => withIpcErrors(async () => {
+  const currentBackupPreference = await preferencesStore.read('autoSaveCurrentEnabled');
+  return writeProjectAutoSave(payload.filePath, payload.text, {
+    ...payload,
+    currentBackupEnabled: typeof payload.currentBackupEnabled === 'boolean'
+      ? payload.currentBackupEnabled
+      : currentBackupPreference !== false
+  });
+}));
 ipcMain.handle('shell:saveTextFile', (event, payload) => withIpcErrors(() => saveTextFile(event, payload, kotlinFilters)));
 ipcMain.handle('shell:listProjectPresetFolders', (_event, payload) => withIpcErrors(() => listProjectPresetFolders(payload)));
 ipcMain.handle('shell:createProjectPresetFolder', (_event, payload) => withIpcErrors(() => createProjectPresetFolder(payload)));

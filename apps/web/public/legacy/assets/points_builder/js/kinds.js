@@ -3,6 +3,95 @@ import { sampleAdaptiveBezierNodes, sampleAdaptiveCubic } from "./bezier-samplin
 
 export function createKindDefs(ctx) {
     const { U, num, int, relExpr, rotatePointsToPointUpright, applyPointsBuilderInstanceOverrides } = ctx || {};
+    const symbolPrefix = String(ctx?.symbolPrefix || "").trim();
+
+    function lowerCamelIdentifier(value, fallback = "value") {
+        const parts = String(value || "").trim().replace(/[^A-Za-z0-9]+/g, " ").split(/\s+/).filter(Boolean);
+        if (!parts.length) return fallback;
+        const [first, ...rest] = parts;
+        const result = `${first.charAt(0).toLowerCase()}${first.slice(1)}${rest.map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`).join("")}`;
+        return /^[A-Za-z_]/.test(result) ? result : `v${result}`;
+    }
+
+    function scopedName(base, value, emitCtx = null) {
+        const rawValue = String(value || "value");
+        const scope = lowerCamelIdentifier(String(emitCtx?.symbolPrefix ?? symbolPrefix).trim(), "scope");
+        const safeValue = lowerCamelIdentifier(rawValue, "value");
+        if (!String(emitCtx?.symbolPrefix ?? symbolPrefix).trim()) return `${base}${safeValue.charAt(0).toUpperCase()}${safeValue.slice(1)}`;
+        return `${base}${scope.charAt(0).toUpperCase()}${scope.slice(1)}${safeValue.charAt(0).toUpperCase()}${safeValue.slice(1)}`;
+    }
+
+    function referenceNameFor(id, mode, emitCtx) {
+        const scope = lowerCamelIdentifier(String(emitCtx?.symbolPrefix || symbolPrefix).trim(), "");
+        const key = `${mode}:${scope}:${String(id || "").trim()}`;
+        if (!emitCtx.referenceNameByKey) emitCtx.referenceNameByKey = new Map();
+        if (!emitCtx.referenceNameOwners) emitCtx.referenceNameOwners = new Map();
+        const existing = emitCtx.referenceNameByKey.get(key);
+        if (existing) return existing;
+        const base = scopedName("builderInstance", id, emitCtx);
+        let name = base;
+        let suffix = 2;
+        const ownerId = String(id || "").trim();
+        while (true) {
+            const owners = emitCtx.referenceNameOwners.get(name);
+            if (!owners || owners.has(ownerId)) break;
+            name = `${base}${suffix++}`;
+        }
+        emitCtx.referenceNameByKey.set(key, name);
+        const owners = emitCtx.referenceNameOwners.get(name) || new Set();
+        owners.add(ownerId);
+        emitCtx.referenceNameOwners.set(name, owners);
+        return name;
+    }
+
+    function registerReferenceDeclaration(emitCtx, mode, name, text) {
+        if (!(emitCtx.referenceDecls instanceof Map)) emitCtx.referenceDecls = new Map();
+        emitCtx.referenceDecls.set(`${mode}:${name}`, text);
+    }
+
+    function upperSnakeIdentifier(value, fallback = "INSTANCE") {
+        const text = String(value || "").trim()
+            .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+            .replace(/[^A-Za-z0-9]+/g, "_")
+            .replace(/^_+|_+$/g, "")
+            .toUpperCase();
+        return text || fallback;
+    }
+
+    function reserveConstantName(base, ownerKey, emitCtx) {
+        if (!emitCtx.constantNameByKey) emitCtx.constantNameByKey = new Map();
+        if (!emitCtx.constantNameOwners) emitCtx.constantNameOwners = new Map();
+        const existing = emitCtx.constantNameByKey.get(ownerKey);
+        if (existing) return existing;
+        let name = base;
+        let suffix = 2;
+        while (emitCtx.constantNameOwners.has(name) && emitCtx.constantNameOwners.get(name) !== ownerKey) {
+            name = `${base}_${suffix++}`;
+        }
+        emitCtx.constantNameByKey.set(ownerKey, name);
+        emitCtx.constantNameOwners.set(name, ownerKey);
+        return name;
+    }
+
+    function registerSnapshotPrivateConstants(snapshot, emitCtx) {
+        if (!(emitCtx.constants instanceof Map)) emitCtx.constants = new Map();
+        const scope = lowerCamelIdentifier(String(emitCtx?.symbolPrefix || symbolPrefix).trim(), "");
+        for (const [key, value] of Object.entries(snapshot?.privateConstants || {})) {
+            if (!String(key || "").trim() || (typeof value !== "string" && typeof value !== "number")) continue;
+            const snapshotId = scope ? `${scope}_${snapshot?.id || "instance"}` : (snapshot?.id || "instance");
+            const ownerKey = `snapshot:${snapshotId}:constant:${key}`;
+            const name = reserveConstantName(
+                `BUILDER_SNAPSHOT_${upperSnakeIdentifier(snapshotId)}_PARAM_ID_${upperSnakeIdentifier(key, "VALUE")}`,
+                ownerKey,
+                emitCtx
+            );
+            const rendered = typeof value === "number" && Number.isFinite(value)
+                ? renderDouble(value)
+                : JSON.stringify(String(value));
+            emitCtx.constants.set(name, `private const val ${name} = ${rendered}`);
+        }
+    }
+
     const bezierSegmentCache = new Map();
 
     function snapshotVariableEntries(snapshot) {
@@ -651,24 +740,9 @@ export function createKindDefs(ctx) {
                 // 目标向量和轴向为零向量：跳过
                 if (U.len(axis) <= 1e-12 || U.len(toN) <= 1e-12) return;
 
-                // 计算旋转的四元数（根据目标向量来旋转）
-                const q = new THREE.Quaternion();
-                q.setFromUnitVectors(
-                    new THREE.Vector3(axis.x, axis.y, axis.z),
-                    new THREE.Vector3(toN.x, toN.y, toN.z)
-                );
-
-                // 使用四元数旋转所有点
-                const v = new THREE.Vector3();
                 for (const list of [ctx.points, ctx.previewPoints, ctx.maskPreviewPoints]) {
                     if (!Array.isArray(list) || !list.length) continue;
-                    for (let i = 0; i < list.length; i++) {
-                        const p = list[i];
-                        v.set(p.x, p.y, p.z).applyQuaternion(q);  // 使用四元数旋转
-                        p.x = v.x;
-                        p.y = v.y;
-                        p.z = v.z;
-                    }
+                    U.rotatePointsToPoint(list, toN, axis);
                 }
             },
             kotlin(node) {
@@ -1412,7 +1486,10 @@ export function createKindDefs(ctx) {
 
                 if (mode === "newRel") return `.pointsOnEach { it.add(RelativeLocation(${dx}, ${dy}, ${dz})) }`;
                 if (mode === "valRel") {
-                    const varName = `rel_${node.id.slice(0, 6)}`;
+                    const scope = String(emitCtx?.localSymbolPrefix ?? emitCtx?.symbolPrefix ?? symbolPrefix).trim();
+                    const varName = scope
+                        ? scopedName("rel", node.id, { ...emitCtx, symbolPrefix: scope })
+                        : `rel_${String(node.id || "rel").replace(/[^A-Za-z0-9_]/g, "_").slice(0, 6)}`;
                     emitCtx.decls.push(`val ${varName} = RelativeLocation(${dx}, ${dy}, ${dz})`);
                     return `.pointsOnEach { it.add(${varName}) }`;
                 }
@@ -1443,11 +1520,12 @@ export function createKindDefs(ctx) {
                 const p = node.params || {};
                 const mode = p.instanceMode === "construct" ? "construct" : "static";
                 const referenceKey = `${mode}:${id}`;
-                const safe = id.replace(/[^A-Za-z0-9_]/g, "_");
-                const name = `builderInstance_${safe}`;
+                const name = referenceNameFor(id, mode, emitCtx);
+                registerSnapshotPrivateConstants(snapshot, emitCtx);
                 if (!emitCtx.referenceNames) emitCtx.referenceNames = new Set();
-                if (!emitCtx.referenceNames.has(referenceKey)) {
-                    emitCtx.referenceNames.add(referenceKey);
+                const scopedReferenceKey = `${referenceKey}:${name}`;
+                if (!emitCtx.referenceNames.has(scopedReferenceKey)) {
+                    emitCtx.referenceNames.add(scopedReferenceKey);
                     const entries = snapshotVariableEntries(snapshot);
                     const synthetic = {
                         params: {
@@ -1466,10 +1544,14 @@ export function createKindDefs(ctx) {
                     const parameters = entries.flatMap((entry) => entry.type === "vector"
                         ? [`${entry.name}X: Double`, `${entry.name}Y: Double`, `${entry.name}Z: Double`]
                         : [`${entry.name}: Double`]).join(", ");
-                    const childCtx = Object.assign({}, emitCtx, { decls: [] });
+                    const childCtx = Object.assign({}, emitCtx, {
+                        decls: [],
+                        localSymbolPrefix: name
+                    });
                     const childLines = emitNodesKotlinLines(children, "    ", childCtx);
                     const lines = [];
                     if (mode === "construct") {
+                        if (emitCtx.staticContainer) lines.push("@JvmStatic");
                         lines.push(`private fun ${name}(${parameters}): PointsBuilder {`);
                         childCtx.decls.forEach((local) => lines.push(`  ${String(local).replace(/\n/g, "\n  ")}`));
                         lines.push("  return PointsBuilder()", ...childLines, "}");
@@ -1479,8 +1561,7 @@ export function createKindDefs(ctx) {
                             .replace(/^var /, "private var ")));
                         lines.push(`private val ${name}: PointsBuilder = PointsBuilder()`, ...childLines);
                     }
-                    if (Array.isArray(emitCtx.referenceDecls)) emitCtx.referenceDecls.push(lines.join("\n"));
-                    else emitCtx.decls.push(lines.join("\n"));
+                    registerReferenceDeclaration(emitCtx, mode, name, lines.join("\n"));
                 }
                 const base = mode === "construct"
                     ? `${name}(${constructInstanceArguments(snapshot, node).join(", ")})`
@@ -1512,8 +1593,8 @@ export function createKindDefs(ctx) {
         },
 
         effect_ring: {
-            title: "环形阵列实例",
-            group: "参数化实例",
+            title: "环形放置",
+            group: "组效果",
             desc: "沿圆环重复放置项目内的实例原型",
             supportsChildren: false,
             defaultParams: {
@@ -1526,34 +1607,66 @@ export function createKindDefs(ctx) {
             apply() {},
             kotlin(node, emitCtx, indent, emitNodesKotlinLines) {
                 const ids = Array.isArray(node.params?.snapshotIds) ? node.params.snapshotIds : [];
-                const names = ids.map((id) => {
+                const entries = ids.map((id) => {
                     const snapshot = emitCtx?.snapshots?.[id];
-                    if (!snapshot) return "";
-                    const safe = String(id).replace(/[^A-Za-z0-9_]/g, "_");
-                    const name = `builderSnapshot_${safe}`;
+                    if (!snapshot) return null;
+                    const name = referenceNameFor(id, "static", emitCtx);
+                    registerSnapshotPrivateConstants(snapshot, emitCtx);
                     if (!emitCtx.referenceNames) emitCtx.referenceNames = new Set();
-                    if (!emitCtx.referenceNames.has(id)) {
-                        emitCtx.referenceNames.add(id);
-                        const lines = [`private val ${name}: PointsBuilder = PointsBuilder()`];
-                        lines.push(...emitNodesKotlinLines(snapshot.children || [], "    ", emitCtx));
-                        if (Array.isArray(emitCtx.referenceDecls)) emitCtx.referenceDecls.push(lines.join("\n"));
-                        else emitCtx.decls.push(lines.join("\n"));
+                    const scopedReferenceKey = `static:${id}:${name}`;
+                    if (!emitCtx.referenceNames.has(scopedReferenceKey)) {
+                        emitCtx.referenceNames.add(scopedReferenceKey);
+                        const childCtx = Object.assign({}, emitCtx, { decls: [], localSymbolPrefix: name });
+                        const childLines = emitNodesKotlinLines(snapshot.children || [], "    ", childCtx);
+                        const lines = childCtx.decls.map((local) => String(local)
+                            .replace(/^val /, "private val ")
+                            .replace(/^var /, "private var "));
+                        lines.push(`private val ${name}: PointsBuilder = PointsBuilder()`);
+                        lines.push(...childLines);
+                        registerReferenceDeclaration(emitCtx, "static", name, lines.join("\n"));
                     }
-                    return name;
+                    return { name, origin: snapshot.origin || { x: 0, y: 0, z: 0 } };
                 }).filter(Boolean);
+                const names = entries.map((entry) => entry.name);
                 if (!names.length) return [];
                 const p = node.params || {};
+                const startRadian = `${renderDouble(num(p.startDeg))} * PI / 180.0`;
                 const lines = [
                     `${indent}.addBuilder(${relExpr(p.offsetX, p.offsetY, p.offsetZ)}, PointsBuilder()`,
                     `${indent}  .addWith {`,
                     `${indent}  val res = arrayListOf<RelativeLocation>()`,
-                    `${indent}  getPolygonInCircleVertices(${Math.max(1, int(p.count))}, ${U.fmt(num(p.radius))})`,
+                    `${indent}  getRadianXZ(${renderDouble(num(p.radius))}, ${Math.max(1, int(p.count))}, 0.0, 2 * PI, ${startRadian})`,
                     `${indent}    .forEachIndexed { index, it ->`,
                     `${indent}      val source = when (index % ${names.length}) {`
                 ];
-                names.forEach((name, index) => lines.push(`${indent}        ${index} -> ${name}.cloneBuilder()`));
+                const seenNames = new Set();
+                names.forEach((name, index) => {
+                    if (!seenNames.has(name)) {
+                        lines.push(`${indent}        ${index} -> ${name}.cloneBuilder()`);
+                        seenNames.add(name);
+                        return;
+                    }
+                    lines.push(
+                        `${indent}        ${index} -> ${name}.let {`,
+                        `${indent}          val duplicateId = it`,
+                        `${indent}          val res = PointsBuilder()`,
+                        `${indent}          res.addBuilder(RelativeLocation(0.0, 0.0, 0.0), duplicateId)`,
+                        `${indent}          return@let res`,
+                        `${indent}        }`
+                    );
+                });
                 lines.push(`${indent}        else -> ${names[0]}.cloneBuilder()`, `${indent}      }`);
-                if (p.faceCenter) lines.push(`${indent}      source.rotateTo(${p.reverse ? "it" : "-it"})`);
+                if (entries.some((entry) => Math.abs(num(entry.origin?.x)) > 1e-9 || Math.abs(num(entry.origin?.y)) > 1e-9 || Math.abs(num(entry.origin?.z)) > 1e-9)) {
+                    lines.push(`${indent}      val sourceOrigin = when (index % ${entries.length}) {`);
+                    entries.forEach((entry, index) => lines.push(`${indent}        ${index} -> ${relExpr(entry.origin?.x, entry.origin?.y, entry.origin?.z)}`));
+                    lines.push(`${indent}        else -> ${relExpr(entries[0].origin?.x, entries[0].origin?.y, entries[0].origin?.z)}`);
+                    lines.push(`${indent}      }`);
+                    lines.push(`${indent}      source.pointsOnEach { rel -> rel.add(-sourceOrigin.x, -sourceOrigin.y, -sourceOrigin.z) }`);
+                }
+                if (p.faceCenter) {
+                    lines.push(`${indent}      source.axis(${relExpr(num(p.axisX), num(p.axisY), num(p.axisZ, 1))})`);
+                    lines.push(`${indent}      source.rotateTo(${p.reverse ? "it" : "-it"})`);
+                }
                 lines.push(`${indent}      res.addAll(source.pointsOnEach { rel -> rel.add(it).add(${U.fmt(num(p.originX))}, ${U.fmt(num(p.originY))}, ${U.fmt(num(p.originZ))}) }.createWithoutClone())`);
                 lines.push(`${indent}    }`, `${indent}  res`, `${indent}  })`);
                 return lines;
@@ -1562,6 +1675,7 @@ export function createKindDefs(ctx) {
 
         add_with: {
             title: "旋转嵌套组",
+            group: "组效果",
             desc: "按旋转重复嵌套组",
             defaultParams: {
                 r: 3,

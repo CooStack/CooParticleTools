@@ -171,7 +171,8 @@ test('embedded PointsBuilder contexts use the program-wide storage key set', asy
     /localStorage\.setItem\(GENERATOR_POINTS_BUILDER_KOTLIN_END_KEY,\s*snapshot\.kotlinEndMode\)/
   );
   assert.match(pointsBuilderMain, /if \(normalized\) delete normalized\.presets/);
-  assert.match(pointsBuilderMain, /hasSharedPresetList \? loadPresetList\(\) : legacyStatePresets/);
+  assert.match(pointsBuilderMain, /const sharedPresets = hasSharedPresetList \? loadPresetList\(\) : \[\];/);
+  assert.match(pointsBuilderMain, /presetList = dedupePresetList\(\[\.\.\.sharedPresets, \.\.\.legacyStatePresets\]\)/);
   assert.match(pointsBuilderMain, /if \(hadLegacyStatePresets && legacyPresetMigrationComplete\) saveAutoState\(state\)/);
   assert.doesNotMatch(pointsBuilderMain, /state\.presets\s*=/);
   /*
@@ -191,4 +192,35 @@ test('embedded PointsBuilder contexts use the program-wide storage key set', asy
   );
   assert.match(pointsBuilderHtml, /pointsbuilder\.page\.js\?v=[0-9_]+/);
   assert.match(compositionHtml, /composition-pointsbuilder\.page\.js\?v=[0-9_]+/);
+});
+
+test('PointsBuilder preset actions live on the preset page', async () => {
+  const [pointsBuilderHtml, compositionHtml] = await Promise.all([
+    readFile(new URL('../public/legacy/pointsbuilder.html', import.meta.url), 'utf8'),
+    readFile(new URL('../public/legacy/composition_pointsbuilder.html', import.meta.url), 'utf8')
+  ]);
+
+  for (const source of [pointsBuilderHtml, compositionHtml]) {
+    assert.doesNotMatch(source, /id="btnExportPresets"/);
+    assert.doesNotMatch(source, /id="btnImportPresets"/);
+    assert.match(source, /class="preset-library-head"[\s\S]*id="btnPresetExportZip"/);
+    assert.match(source, /class="preset-library-head"[\s\S]*id="btnPresetImportFolder"/);
+    assert.match(source, /class="preset-library-head"[\s\S]*id="btnPresetImportZip"/);
+  }
+});
+
+test('PointsBuilder child group creation preserves an explicit default-group parent', async () => {
+  const source = await readFile(
+    new URL('../public/legacy/assets/points_builder/js/main.js', import.meta.url),
+    'utf8'
+  );
+  const createGroupStart = source.indexOf('function createPresetGroup(rawName = "", parentGroup = "", options = {})');
+  const dragSourceStart = source.indexOf('function getPresetGroupDragSource', createGroupStart);
+  const createGroupSource = source.slice(createGroupStart, dragSourceStart);
+
+  assert.match(
+    createGroupSource,
+    /const normalizedParent = normalizePresetGroup\(parentGroup\);\s+const parent = normalizedParent \? getPresetGroupLabel\(normalizedParent\) : "";/
+  );
+  assert.doesNotMatch(createGroupSource, /isDefaultPresetGroup\(parentLabel\) \? "" : parentLabel/);
 });

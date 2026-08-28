@@ -17,7 +17,7 @@ const pendingRefreshTargets = new Set();
 async function loadInstaller() {
   if (!installerPromise) {
     const moduleUrl = new URL(
-      'legacy/assets/shared/js/custom-select.js?v=20260827_2',
+      'legacy/assets/shared/js/custom-select.js?v=20260828_2',
       document.baseURI
     ).href;
     installerPromise = import(/* @vite-ignore */ moduleUrl)

@@ -51,3 +51,14 @@ test('generator color picker and numeric scrub defer project writes until commit
   assert.match(pageSource, /emit\('commit', state\.lastValue\)/);
   assert.match(pageSource, /&& !getBinding\(card, path\)/);
 });
+
+test('legacy emitter card clicks ignore shared custom-select controls', () => {
+  const legacySource = readFileSync(
+    new URL('../public/legacy/assets/emitter_generator/js/generate.js', import.meta.url),
+    'utf8'
+  );
+  assert.match(
+    legacySource,
+    /closest\(\"[^\"]*\.emitInput, \.cp-select, \.cp-select-panel/
+  );
+});

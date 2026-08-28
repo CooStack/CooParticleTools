@@ -17,6 +17,7 @@ import {
 } from '../modules/projects/project-types.js';
 import {
   hydrateLegacyPreferences,
+  mergePreferences as mergeLegacyPreferences,
   persistLegacyPreferences
 } from '../modules/projects/legacy-preferences.js';
 import { getProjectRepository } from '../services/repositories/project-repository.js';
@@ -26,6 +27,7 @@ import {
   getElectronShell,
   sanitizeFileBase
 } from '../services/shell/electron-shell.js';
+import { readAutoSaveIntervals, readCurrentBackupEnabled } from '../modules/preferences/auto-save.js';
 
 const props = defineProps({
   page: {
@@ -175,29 +177,6 @@ function preserveLegacyPreferences(adapter, incomingPayload) {
   }
 }
 
-function mergeLegacyPreferences(...sources) {
-  const merged = {};
-  for (const source of sources) {
-    if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
-    for (const [key, value] of Object.entries(source)) {
-      if (Array.isArray(value)) {
-        merged[key] = value.slice();
-        continue;
-      }
-      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
-      const previous = merged[key] || {};
-      merged[key] = { ...previous, ...value };
-      if (previous.actions || value.actions) {
-        merged[key].actions = {
-          ...(previous.actions || {}),
-          ...(value.actions || {})
-        };
-      }
-    }
-  }
-  return Object.keys(merged).length ? merged : null;
-}
-
 async function restoreDurableLegacyPreferences() {
   try {
     for (const adapter of getLegacyPreferenceAdapters()) {
@@ -227,7 +206,7 @@ async function restoreIndexedProject(projectId, token) {
   if (!record?.payload) {
     throw new Error('找不到该项目，请返回项目页重新打开。');
   }
-  const filePath = String(record.filePath || '');
+  let filePath = String(record.filePath || '');
   const shell = getElectronShell();
   let projectData = classifyProjectData(record || {});
   if (filePath && shell?.readTextFile) {
@@ -235,6 +214,7 @@ async function restoreIndexedProject(projectId, token) {
     if (token !== projectLoadToken) return false;
     if (!result?.ok) throw new Error(result?.message || '无法读取项目文件。');
     projectData = parseProjectText(result.text, filePath);
+    filePath = String(result.writableFilePath || filePath);
   }
   const { type, payload } = projectData;
   if (type !== target.type) {
@@ -356,7 +336,12 @@ async function saveIndexedProject() {
     if (filePath) {
       const text = JSON.stringify(filePayload, null, 2);
       if (shell.autoSaveProjectFile) {
-        const backup = await shell.autoSaveProjectFile({ filePath, text });
+        const backup = await shell.autoSaveProjectFile({
+          filePath,
+          text,
+          intervals: readAutoSaveIntervals(),
+          currentBackupEnabled: readCurrentBackupEnabled()
+        });
         if (!backup?.ok) throw new Error(backup?.message || '项目自动备份失败。');
       }
       const result = await shell.saveProjectFile({

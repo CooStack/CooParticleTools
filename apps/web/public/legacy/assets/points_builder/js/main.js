@@ -1,11 +1,11 @@
 import * as THREE from "three";
 import {OrbitControls} from "three/addons/controls/OrbitControls.js";
-import { createCardInputs, initCardSystem } from "./cards.js?v=20260825_6";
+import { createCardInputs, initCardSystem } from "./cards.js?v=20260828_2";
 import { initFilterSystem } from "./filters.js?v=20260429_7";
 import { initHotkeysSystem } from "./hotkeys.js?v=20260826_2";
-import { createKindDefs } from "./kinds.js?v=20260825_5";
+import { createKindDefs } from "./kinds.js?v=20260828_1";
 import { ALL_THEMES, APP_THEME_KEY, normalizeTheme, watchAppTheme } from "../../shared/js/app-theme.js?v=20260824_1";
-import { createBuilderTools } from "./builder.js?v=20260825_5";
+import { createBuilderTools } from "./builder.js?v=20260828_1";
 import { sampleAdaptiveBezierNodes } from "./bezier-sampling.js?v=20260826_1";
 import { initLayoutSystem } from "./layout.js?v=20260429_1";
 import { createNodeHelpers } from "./nodes.js?v=20260825_4";
@@ -22,9 +22,9 @@ import {
     reassignPointsBuilderIds,
     BUILDER_REFERENCE_KIND,
     EFFECT_RING_KIND
-} from "./model.js?v=20260826_5";
+} from "./model.js?v=20260827_2";
 import { toggleFullscreen } from "./viewer.js";
-import { createPickerModule } from "./main-picker.js?v=20260825_4";
+import { createPickerModule } from "./main-picker.js?v=20260828_1";
 import { initGlobalShortcuts } from "./main-shortcuts.js?v=20260826_5";
 import { initTopbarAndBoot } from "./main-topbar-boot.js?v=20260505_1";
 import { createPreviewDistanceTool } from "../../src/js/shared/preview-distance-tool.js?v=20260826_4";
@@ -41,6 +41,12 @@ import {
     resolveBezierBoxSelectionLevel,
     shouldUseFocusedPointColor
 } from "./card-selection.js?v=20260825_2";
+import {
+    BUILDER_INSTANCE_RENAME_STORAGE_KEY,
+    collectBuilderInstanceRegistry,
+    renameBuilderInstanceIdInState,
+    syncRegisteredBuilderSnapshotsFromRegistry
+} from "./instance-registry.js?v=20260828_3";
 import {
     sanitizeFileBase,
     loadProjectName,
@@ -147,13 +153,18 @@ function initPointsBuilderMain() {
     const selKotlinEnd = document.getElementById("selKotlinEnd");
     const btnRightParamsTab = document.getElementById("btnRightParamsTab");
     const btnRightPresetsTab = document.getElementById("btnRightPresetsTab");
+    const btnRightInstancesTab = document.getElementById("btnRightInstancesTab");
     const btnRightKotlinTab = document.getElementById("btnRightKotlinTab");
     const rightParamsPage = document.getElementById("rightParamsPage");
     const rightPresetsPage = document.getElementById("rightPresetsPage");
+    const rightInstancesPage = document.getElementById("rightInstancesPage");
     const rightKotlinPage = document.getElementById("rightKotlinPage");
     const paramEditorStatus = document.getElementById("paramEditorStatus");
     const paramEditorSyncHint = document.getElementById("paramEditorSyncHint");
     const paramEditorHost = document.getElementById("paramEditorHost");
+    const builderInstanceRegistryStatus = document.getElementById("builderInstanceRegistryStatus");
+    const builderInstanceRegistryList = document.getElementById("builderInstanceRegistryList");
+    const effectRingEditorParking = document.getElementById("effectRingEditorParking");
     const presetNameInput = document.getElementById("presetNameInput");
     const presetGroupInput = document.getElementById("presetGroupInput");
     const presetGroupList = document.getElementById("presetGroupList");
@@ -198,7 +209,6 @@ function initPointsBuilderMain() {
     const presetRingRandomGroup = document.getElementById("presetRingRandomGroup");
     const presetRingSlots = document.getElementById("presetRingSlots");
     const btnPresetRingSyncSlots = document.getElementById("btnPresetRingSyncSlots");
-    const btnPresetRingApply = document.getElementById("btnPresetRingApply");
 
     const btnSaveJson = document.getElementById("btnSaveJson");
     const btnLoadJson = document.getElementById("btnLoadJson");
@@ -271,7 +281,6 @@ function initPointsBuilderMain() {
     const inpPointSize = document.getElementById("inpPointSize");
     const inpParamStep = document.getElementById("inpParamStep");
     const inpOffsetPreviewLimit = document.getElementById("inpOffsetPreviewLimit");
-    const selPresetRingPreviewMode = document.getElementById("selPresetRingPreviewMode");
     const inpSnapStep = document.getElementById("inpSnapStep");
     const inpRotateSnapDeg = document.getElementById("inpRotateSnapDeg");
     const inpSnapParticleRange = document.getElementById("inpSnapParticleRange");
@@ -298,6 +307,10 @@ function initPointsBuilderMain() {
     let paramEditorRenderRaf = 0;
     let paramEditorHistoryLockTimer = 0;
     let presetLibraryRenderRaf = 0;
+    let presetLibraryDirty = true;
+    let compositionBuilderInstanceRegistry = [];
+    let compositionBuilderInstanceRenames = [];
+    let compositionBuilderInstanceRegistryRevision = "";
     let presetGroupEditState = null;
     let presetItemEditState = null;
     const presetCollapsedGroups = new Set();
@@ -328,6 +341,7 @@ function initPointsBuilderMain() {
     let presetRingRandomPresetIds = [];
     let activeParameterizedInstanceNodeId = "";
     let pendingParameterizedInstancePlacement = null;
+    let presetRingSnapshotSyncTimer = 0;
 
     // -------------------------
     // helpers
@@ -652,8 +666,16 @@ function initPointsBuilderMain() {
             return [
                 makeCreate("add_builder", "普通组"),
                 makeCreate("clear_as_mask", "蒙版组"),
-                makeCreate("add_with", "旋转嵌套组")
+                makeCreate("add_with", "旋转嵌套组"),
+                {
+                    label: "实例化组",
+                    onSelect: () => createInstantiatedGroup(validIds)
+                }
             ];
+        }
+
+        if (sourceNode?.kind === EFFECT_RING_KIND) {
+            return [makeConvert("add_builder", "展开为普通组", { expanded: true })];
         }
 
         const items = [
@@ -687,6 +709,73 @@ function initPointsBuilderMain() {
             items.push(makeConvert("clear_as_mask", "旋转嵌套后的蒙版组", { expanded: true }));
         }
         return items;
+    }
+
+    function createInstantiatedGroup(ids) {
+        const valid = normalizeOutermostActionTargetIds(ids);
+        if (!valid.length) return false;
+        const rows = valid.map((id) => ({ id, ctx: findNodeContextById(id) })).filter((row) => row.ctx?.node && Array.isArray(row.ctx.parentList));
+        if (!rows.length) return false;
+        const parentList = rows[0].ctx.parentList;
+        if (rows.some((row) => row.ctx.parentList !== parentList)) {
+            showToast("创建实例化组失败：只能包裹同一层级的卡片", "error");
+            return false;
+        }
+
+        // 将选中的同层卡片固化为实例原型，并以一个实例引用替换原卡片。
+        const sourceChildren = rows
+            .slice()
+            .sort((a, b) => a.ctx.index - b.ctx.index)
+            .map((row) => clonePlain(row.ctx.node))
+            .filter(Boolean);
+        if (!sourceChildren.length) return false;
+        const sourceNode = {
+            kind: "add_builder",
+            label: "实例化组原型",
+            children: sourceChildren
+        };
+        historyCapture("create_instantiated_group");
+        const snapshot = makeBuilderSnapshotFromNode(sourceNode);
+        if (!snapshot) {
+            showToast("创建实例化组失败：无法建立实例原型", "error");
+            return false;
+        }
+        const reference = makeNode(BUILDER_REFERENCE_KIND, {
+            label: "实例化组",
+            params: {
+                snapshotId: snapshot.id,
+                parameterId: "",
+                instanceMode: "static",
+                instanceBindingMode: "indexed",
+                ox: 0,
+                oy: 0,
+                oz: 0,
+                scale: 1,
+                rotationDeg: 0,
+                rotationAxisX: 0,
+                rotationAxisY: 1,
+                rotationAxisZ: 0,
+                overrides: {}
+            }
+        });
+        if (!reference) return false;
+        reference.params.parameterId = `pb_instance_${reference.id}`;
+        reference.children = [];
+
+        const index = Math.min(...rows.map((row) => row.ctx.index));
+        const selectedIds = new Set(rows.map((row) => row.id));
+        for (let i = parentList.length - 1; i >= 0; i -= 1) {
+            if (selectedIds.has(parentList[i]?.id)) parentList.splice(i, 1);
+        }
+        parentList.splice(Math.max(0, Math.min(index, parentList.length)), 0, reference);
+        normalizeNodeTree(state.root);
+        ensureAxisEverywhere();
+        scheduleAutoSave();
+        renderAll();
+        if (typeof setCardSelectionIds === "function") setCardSelectionIds([reference.id], { replace: true, focus: true });
+        setFocusedNode(reference.id, false);
+        showToast(`已创建实例化组（${sourceChildren.length} 张卡片）`, "success");
+        return true;
     }
 
     function buildGroupActionMenuEntry(ids, options = {}) {
@@ -857,9 +946,93 @@ function initPointsBuilderMain() {
         return outer;
     }
 
+    function buildExpandedEffectRingGroup(node) {
+        const p = node?.params || {};
+        const ids = Array.isArray(p.snapshotIds) ? p.snapshotIds.map((id) => String(id || "").trim()).filter(Boolean) : [];
+        if (!ids.length) return null;
+        const snapshots = ensureBuilderSnapshotState();
+        const count = Math.max(1, Math.trunc(Number(p.count) || 12));
+        const radius = Number(p.radius) || 0;
+        const startDeg = Number(p.startDeg) || 0;
+        const origin = U.v(Number(p.originX) || 0, Number(p.originY) || 0, Number(p.originZ) || 0);
+        const rawAxis = U.v(Number(p.axisX) || 0, Number(p.axisY) || 0, Number.isFinite(Number(p.axisZ)) ? Number(p.axisZ) : 1);
+        const axisLength = U.len(rawAxis);
+        const ringAxis = axisLength > 1e-9
+            ? U.v(rawAxis.x / axisLength, rawAxis.y / axisLength, rawAxis.z / axisLength)
+            : U.v(0, 0, 1);
+        const outer = makeNode("add_builder", {
+            label: node.label || "环形放置",
+            params: {
+                ox: Number(p.offsetX) || 0,
+                oy: Number(p.offsetY) || 0,
+                oz: Number(p.offsetZ) || 0
+            }
+        });
+        copyGroupPresentation(node, outer);
+        outer.children = [];
+        const usedIds = collectNodeIds(state.root);
+
+        for (let index = 0; index < count; index += 1) {
+            const snapshot = snapshots[ids[index % ids.length]];
+            if (!snapshot) return null;
+            const angle = (startDeg + index * 360 / count) * Math.PI / 180;
+            const radial = U.v(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+            const slot = makeNode("add_builder", {
+                label: `${snapshot.name || "预设"} #${index + 1}`,
+                params: {
+                    ox: origin.x + radial.x,
+                    oy: origin.y,
+                    oz: origin.z + radial.z
+                }
+            });
+            slot.children = materializeBuilderReferenceChildren(snapshot, {
+                params: {
+                    instanceMode: "static",
+                    overrides: deepCloneJson(snapshot.staticOverrides || {}) || {}
+                }
+            });
+            const snapshotOrigin = normalizePointValue(snapshot.origin);
+            if (Math.abs(snapshotOrigin.x) > 1e-9 || Math.abs(snapshotOrigin.y) > 1e-9 || Math.abs(snapshotOrigin.z) > 1e-9) {
+                slot.children.push(makeNode("points_on_each_offset", {
+                    params: {
+                        offX: -snapshotOrigin.x,
+                        offY: -snapshotOrigin.y,
+                        offZ: -snapshotOrigin.z,
+                        kotlinMode: "direct3"
+                    }
+                }));
+            }
+            if (p.faceCenter) {
+                const target = p.reverse ? radial : U.v(-radial.x, -radial.y, -radial.z);
+                if (U.len(target) > 1e-9) {
+                    slot.children.push(makeNode("axis", { params: { x: ringAxis.x, y: ringAxis.y, z: ringAxis.z } }));
+                    slot.children.push(makeNode("rotate_to", {
+                        params: {
+                            mode: "toVec",
+                            tox: target.x,
+                            toy: target.y,
+                            toz: target.z,
+                            ox: 0,
+                            oy: 0,
+                            oz: 0,
+                            ex: 0,
+                            ey: 0,
+                            ez: 1
+                        }
+                    }));
+                }
+            }
+            reassignNodeIdsDeep(slot, usedIds);
+            outer.children.push(slot);
+        }
+        return outer;
+    }
+
     function convertSingleGroupNode(sourceNode, targetKind, options = {}) {
         if (!sourceNode || !sourceNode.kind) return false;
-        if (!isBuilderContainerKind(sourceNode.kind) && sourceNode.kind !== BUILDER_REFERENCE_KIND) return false;
+        if (!isBuilderContainerKind(sourceNode.kind)
+            && sourceNode.kind !== BUILDER_REFERENCE_KIND
+            && sourceNode.kind !== EFFECT_RING_KIND) return false;
         const ctx = findNodeContextById(sourceNode.id);
         if (!ctx || !ctx.node || !Array.isArray(ctx.parentList)) return false;
         const parentList = ctx.parentList;
@@ -867,7 +1040,13 @@ function initPointsBuilderMain() {
         if (!Number.isInteger(at) || at < 0 || at >= parentList.length) return false;
 
         let replacement = null;
-        if (sourceNode.kind === BUILDER_REFERENCE_KIND && targetKind === "add_builder") {
+        if (sourceNode.kind === EFFECT_RING_KIND && targetKind === "add_builder") {
+            replacement = buildExpandedEffectRingGroup(sourceNode);
+            if (!replacement) {
+                showToast("环形放置展开失败：实例原型不存在", "error");
+                return false;
+            }
+        } else if (sourceNode.kind === BUILDER_REFERENCE_KIND && targetKind === "add_builder") {
             const snapshot = ensureBuilderSnapshotState()[String(sourceNode.params?.snapshotId || "")];
             if (!snapshot) return false;
             replacement = makeNode("add_builder", {
@@ -920,7 +1099,7 @@ function initPointsBuilderMain() {
             }
         });
         const label = targetKind === "add_builder"
-            ? (options.expanded ? "旋转嵌套后的普通组" : "普通组")
+            ? (sourceNode.kind === "add_with" && options.expanded ? "旋转嵌套后的普通组" : "普通组")
             : targetKind === "clear_as_mask"
                 ? (options.expanded ? "旋转嵌套后的蒙版组" : "蒙版组")
                 : "旋转嵌套组";
@@ -964,28 +1143,35 @@ function initPointsBuilderMain() {
     }
 
     function setRightPanelPage(page) {
-        const next = page === "kotlin" ? "kotlin" : (page === "presets" ? "presets" : "params");
+        const next = page === "kotlin"
+            ? "kotlin"
+            : (page === "instances" ? "instances" : (page === "presets" ? "presets" : "params"));
         rightPanelPage = next;
         const paramsActive = next === "params";
         const presetsActive = next === "presets";
+        const instancesActive = next === "instances";
         const kotlinActive = next === "kotlin";
         btnRightParamsTab?.classList.toggle("active", paramsActive);
         btnRightPresetsTab?.classList.toggle("active", presetsActive);
+        btnRightInstancesTab?.classList.toggle("active", instancesActive);
         btnRightKotlinTab?.classList.toggle("active", kotlinActive);
         rightParamsPage?.classList.toggle("active", paramsActive);
         rightPresetsPage?.classList.toggle("active", presetsActive);
+        rightInstancesPage?.classList.toggle("active", instancesActive);
         rightKotlinPage?.classList.toggle("active", kotlinActive);
         btnRightParamsTab?.setAttribute("aria-selected", paramsActive ? "true" : "false");
         btnRightPresetsTab?.setAttribute("aria-selected", presetsActive ? "true" : "false");
+        btnRightInstancesTab?.setAttribute("aria-selected", instancesActive ? "true" : "false");
         btnRightKotlinTab?.setAttribute("aria-selected", kotlinActive ? "true" : "false");
         if (paramsActive) scheduleParamEditorRender();
         if (presetsActive) schedulePresetLibraryRender();
-        if (typeof renderPresetRingPreview === "function") renderPresetRingPreview();
+        if (instancesActive) renderBuilderInstanceRegistry();
     }
 
     function bindRightPanelTabs() {
         btnRightParamsTab?.addEventListener("click", () => setRightPanelPage("params"));
         btnRightPresetsTab?.addEventListener("click", () => setRightPanelPage("presets"));
+        btnRightInstancesTab?.addEventListener("click", () => setRightPanelPage("instances"));
         btnRightKotlinTab?.addEventListener("click", () => setRightPanelPage("kotlin"));
         setRightPanelPage(rightPanelPage);
     }
@@ -1088,6 +1274,11 @@ function initPointsBuilderMain() {
     function updateRightParamEditor() {
         if (!paramEditorHost || !paramEditorStatus) return;
         detachParamEditorHandlers();
+        if (presetRingTool?.parentElement === paramEditorHost) {
+            presetRingTool.classList.add("hidden");
+            presetRingTool.classList.remove("effect-ring-param-editor");
+            effectRingEditorParking?.appendChild(presetRingTool);
+        }
         paramEditorHost.innerHTML = "";
         setParamEditorSyncHint("");
         paramEditorSyncState = null;
@@ -1273,7 +1464,7 @@ function initPointsBuilderMain() {
     };
 
     const PB_COMP_CONTEXT_KEY = "pb_comp_context_v1";
-    const COMPOSITION_REFERENCE_BUILD_VERSION = "20260825_22";
+    const COMPOSITION_REFERENCE_BUILD_VERSION = "20260828_1";
     const compositionNumericContext = {
         enabled: false,
         map: { PI: Math.PI },
@@ -1660,6 +1851,24 @@ function initPointsBuilderMain() {
         compositionNumericContext.vectorOptions = Array.isArray(next.vectorOptions) ? next.vectorOptions : [];
         compositionNumericContext.cache.clear();
         compositionNumericContext.version += 1;
+        compositionBuilderInstanceRegistry = Array.isArray(payload?.builderInstanceRegistry)
+            ? deepCloneJson(payload.builderInstanceRegistry) || []
+            : [];
+        compositionBuilderInstanceRegistryRevision = String(
+            payload?.compositionState?.revision
+            || payload?.compositionReferenceRevision
+            || ""
+        );
+        try {
+            const rawRenames = localStorage.getItem(BUILDER_INSTANCE_RENAME_STORAGE_KEY);
+            const renamePayload = rawRenames ? JSON.parse(rawRenames) : null;
+            compositionBuilderInstanceRenames = !renamePayload?.compositionRevision
+                || String(renamePayload.compositionRevision) === compositionBuilderInstanceRegistryRevision
+                ? (Array.isArray(renamePayload?.renames) ? renamePayload.renames : [])
+                : [];
+        } catch {
+            compositionBuilderInstanceRenames = [];
+        }
         compositionReferenceState = payload?.compositionState && typeof payload.compositionState === "object"
             ? payload.compositionState
             : null;
@@ -1723,6 +1932,7 @@ function initPointsBuilderMain() {
             renderCompositionReferencePanel();
             rebuildCompositionReferencePreview();
         }
+        if (rightPanelPage === "instances") renderBuilderInstanceRegistry();
         if (compositionReferenceSnapshot?.storage === "indexeddb"
             && String(compositionReferenceSnapshot.storageKey || "").trim()
             && !(Array.isArray(compositionReferenceSnapshot.frames) && compositionReferenceSnapshot.frames.length)
@@ -3322,6 +3532,11 @@ function initPointsBuilderMain() {
         const key = String(e?.key || "");
         if (!key || !key.endsWith(PB_COMP_CONTEXT_KEY)) return;
         loadCompositionNumericContext();
+        const syncResult = syncCompositionRegisteredBuilderSnapshots();
+        if (syncResult.changed) {
+            scheduleAutoSave();
+            renderAll();
+        }
         // Composition reference progress only changes the overlay. Rebuilding
         // the editable Builder here steals pointer events from the frame range
         // and makes a drag appear to stop until the next click.
@@ -3352,7 +3567,6 @@ function initPointsBuilderMain() {
         theme: "dark-1",
         pointSize: 0.5,
         offsetPreviewLimit: -1,
-        presetRingPreviewMode: "preview",
         snapGridKeyToggleMode: false,
         snapParticleKeyToggleMode: false,
         snapPriority: ["line_division", "reference_guide", "geometry_center", "grid", "particle"]
@@ -3376,7 +3590,6 @@ function initPointsBuilderMain() {
     let autoSelectCompleteGroups = DEFAULT_SETTINGS_PAYLOAD.autoSelectCompleteGroups;
     let geometryCenterPreviewEnabled = DEFAULT_SETTINGS_PAYLOAD.showGeometryCenters;
     let lineDivisionPoints = DEFAULT_SETTINGS_PAYLOAD.lineDivisionPoints;
-    let presetRingPreviewMode = DEFAULT_SETTINGS_PAYLOAD.presetRingPreviewMode;
     let snapGridKeyToggleMode = DEFAULT_SETTINGS_PAYLOAD.snapGridKeyToggleMode;
     let snapParticleKeyToggleMode = DEFAULT_SETTINGS_PAYLOAD.snapParticleKeyToggleMode;
     let snapPriority = DEFAULT_SETTINGS_PAYLOAD.snapPriority.slice();
@@ -3420,23 +3633,6 @@ function initPointsBuilderMain() {
         const n = Math.trunc(Number(v));
         if (!Number.isFinite(n) || n < 0) return DEFAULT_SETTINGS_PAYLOAD.lineDivisionPoints;
         return Math.min(64, n);
-    }
-
-    function normalizePresetRingPreviewMode(value) {
-        const mode = String(value || "").trim().toLowerCase();
-        return ["global", "hidden", "preview"].includes(mode)
-            ? mode
-            : DEFAULT_SETTINGS_PAYLOAD.presetRingPreviewMode;
-    }
-
-    function setPresetRingPreviewMode(value, opts = {}) {
-        const next = normalizePresetRingPreviewMode(value);
-        presetRingPreviewMode = next;
-        if (selPresetRingPreviewMode && selPresetRingPreviewMode.value !== next) {
-            selPresetRingPreviewMode.value = next;
-        }
-        if (typeof renderPresetRingPreview === "function") renderPresetRingPreview();
-        if (!opts.skipSave) saveSettingsToStorage();
     }
 
     function normalizeSnapPriority(value) {
@@ -3725,7 +3921,6 @@ function initPointsBuilderMain() {
             autoSelectCompleteGroups,
             showGeometryCenters: geometryCenterPreviewEnabled,
             lineDivisionPoints,
-            presetRingPreviewMode,
             theme: currentTheme,
             pointSize,
             offsetPreviewLimit,
@@ -3771,9 +3966,6 @@ function initPointsBuilderMain() {
         }
         if (payload.showGeometryCenters !== undefined) {
             setGeometryCenterPreviewEnabled(payload.showGeometryCenters, { skipSave: true });
-        }
-        if (payload.presetRingPreviewMode !== undefined) {
-            setPresetRingPreviewMode(payload.presetRingPreviewMode, { skipSave: true });
         }
         if (payload.lineDivisionPoints !== undefined) {
             setLineDivisionPoints(payload.lineDivisionPoints, { skipSave: true });
@@ -3841,13 +4033,6 @@ function initPointsBuilderMain() {
         chkAutoSelectCompleteGroups.__pbBound = true;
         chkAutoSelectCompleteGroups.addEventListener("change", () => {
             setAutoSelectCompleteGroups(chkAutoSelectCompleteGroups.checked);
-        });
-    }
-
-    if (selPresetRingPreviewMode && !selPresetRingPreviewMode.__pbBound) {
-        selPresetRingPreviewMode.__pbBound = true;
-        selPresetRingPreviewMode.addEventListener("change", () => {
-            setPresetRingPreviewMode(selPresetRingPreviewMode.value);
         });
     }
 
@@ -4308,6 +4493,255 @@ function initPointsBuilderMain() {
         return normalizeBuilderInstanceId(normalized) || fallback;
     }
 
+    function getCurrentBuilderRegistryOwner() {
+        const context = globalThis.__PB_EDITOR_CONTEXT || {};
+        const target = String(context.target || "root").trim() || "root";
+        const targetLabel = target === "shape"
+            ? "Shape Builder"
+            : (/^tree_node:/.test(target) ? "形状节点 Builder" : "根 Builder");
+        return {
+            ownerId: isCompositionPointsBuilder
+                ? String(compositionReferenceCardId || context.cardId || "current")
+                : "project",
+            ownerName: isCompositionPointsBuilder
+                ? String((compositionReferenceState?.cards || []).find((card) => String(card?.id || "") === String(compositionReferenceCardId || context.cardId || ""))?.name || "当前卡片")
+                : String(projectName || "当前项目"),
+            target,
+            targetLabel
+        };
+    }
+
+    function projectBuilderInstanceRegistryId(value) {
+        let id = String(value || "").trim();
+        for (const rename of compositionBuilderInstanceRenames) {
+            if (id === String(rename?.from || "").trim()) id = String(rename?.to || "").trim();
+        }
+        return id;
+    }
+
+    function getBuilderInstanceRegistryEntries() {
+        const currentOwner = getCurrentBuilderRegistryOwner();
+        const currentOwnerKey = `${currentOwner.ownerId}:${currentOwner.target}`;
+        const merged = new Map();
+        const addEntry = (raw, options = {}) => {
+            const id = projectBuilderInstanceRegistryId(raw?.id);
+            if (!id || raw?.registered === false) return;
+            let entry = merged.get(id);
+            if (!entry) {
+                entry = {
+                    id,
+                    name: String(raw?.name || id).trim() || id,
+                    registered: true,
+                    snapshot: null,
+                    referenceCount: 0,
+                    owners: [],
+                    references: []
+                };
+                merged.set(id, entry);
+            }
+            if (!entry.snapshot && raw?.snapshot && typeof raw.snapshot === "object") {
+                entry.snapshot = deepCloneJson(raw.snapshot) || null;
+                if (entry.snapshot) entry.snapshot.id = id;
+            }
+            const owners = Array.isArray(raw?.owners) ? raw.owners : [];
+            const references = Array.isArray(raw?.references) ? raw.references : [];
+            for (const owner of owners) {
+                const key = `${String(owner?.ownerId || "")}:${String(owner?.target || "root")}`;
+                if (options.excludeCurrent && key === currentOwnerKey) continue;
+                if (!entry.owners.some((item) => `${item.ownerId}:${item.target}` === key)) entry.owners.push({ ...owner });
+            }
+            for (const reference of references) {
+                const key = `${String(reference?.ownerId || "")}:${String(reference?.target || "root")}`;
+                if (options.excludeCurrent && key === currentOwnerKey) continue;
+                const count = Math.max(0, Math.trunc(Number(reference?.count) || 0));
+                const existing = entry.references.find((item) => `${item.ownerId}:${item.target}` === key);
+                if (existing) existing.count += count;
+                else entry.references.push({ ...reference, count });
+            }
+        };
+        if (isCompositionPointsBuilder) {
+            for (const entry of compositionBuilderInstanceRegistry) addEntry(entry, { excludeCurrent: true });
+        }
+        for (const entry of collectBuilderInstanceRegistry(state, currentOwner)) addEntry(entry);
+        for (const entry of merged.values()) {
+            entry.referenceCount = entry.references.reduce((sum, item) => sum + Math.max(0, Math.trunc(Number(item.count) || 0)), 0);
+        }
+        return [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    function importRegisteredBuilderSnapshot(snapshotId) {
+        const id = projectBuilderInstanceRegistryId(snapshotId);
+        if (!id) return null;
+        const snapshots = ensureBuilderSnapshotState();
+        const entry = getBuilderInstanceRegistryEntries().find((item) => item.id === id);
+        if (!entry?.snapshot) return snapshots[id] || null;
+        const snapshot = deepCloneJson(entry.snapshot) || null;
+        if (!snapshot) return null;
+        snapshot.id = id;
+        snapshot.children = Array.isArray(snapshot.children) ? snapshot.children : [];
+        normalizeNodeTree(snapshot.children);
+        snapshots[id] = snapshot;
+        return snapshot;
+    }
+
+    function syncCompositionRegisteredBuilderSnapshots() {
+        if (!isCompositionPointsBuilder) return { changed: false, syncedIds: [] };
+        return syncRegisteredBuilderSnapshotsFromRegistry(state, compositionBuilderInstanceRegistry, {
+            normalizeChildren: normalizeNodeTree
+        });
+    }
+
+    function persistCompositionBuilderInstanceRenames() {
+        if (!isCompositionPointsBuilder) return;
+        try {
+            localStorage.setItem(BUILDER_INSTANCE_RENAME_STORAGE_KEY, JSON.stringify({
+                compositionRevision: compositionBuilderInstanceRegistryRevision,
+                renames: compositionBuilderInstanceRenames,
+                updatedAt: Date.now()
+            }));
+        } catch (error) {
+            console.warn("persist builder instance renames failed:", error);
+        }
+    }
+
+    function queueCompositionBuilderInstanceRename(fromId, toId) {
+        if (!isCompositionPointsBuilder) return;
+        const next = [];
+        let chained = false;
+        for (const rename of compositionBuilderInstanceRenames) {
+            const from = String(rename?.from || "").trim();
+            const to = String(rename?.to || "").trim();
+            if (!from || !to) continue;
+            if (to === fromId) {
+                next.push({ from, to: toId });
+                chained = true;
+            } else if (from === fromId) {
+                next.push({ from, to: toId });
+                chained = true;
+            } else {
+                next.push({ from, to });
+            }
+        }
+        if (!chained) next.push({ from: fromId, to: toId });
+        compositionBuilderInstanceRenames = next.filter((rename) => rename.from !== rename.to);
+        persistCompositionBuilderInstanceRenames();
+    }
+
+    function renameRegisteredBuilderInstanceId(fromId, rawToId, knownEntry = null) {
+        const from = normalizeBuilderInstanceId(fromId);
+        const rawTo = String(rawToId || "").trim();
+        if (rawTo === from) return true;
+        const to = normalizeBuilderInstanceId(formatBuilderInstanceId(rawToId, { fallback: "" }));
+        if (!from || !to) {
+            showToast("实例 ID 必须是合法的小驼峰 Kotlin 标识符", "error");
+            return false;
+        }
+        if (from === to) return true;
+        const registry = getBuilderInstanceRegistryEntries();
+        if (registry.some((entry) => entry.id === to)) {
+            showToast(`实例 ID“${to}”已注册，不能覆盖`, "error");
+            return false;
+        }
+        const localEntry = registry.find((entry) => entry.id === from)
+            || (knownEntry?.id === from ? knownEntry : null);
+        if (!localEntry) {
+            showToast(`实例 ID“${from}”不存在`, "error");
+            return false;
+        }
+        historyCapture("rename_builder_instance_registry_id");
+        const result = renameBuilderInstanceIdInState(state, from, to);
+        if (result.conflict) {
+            showToast(`实例 ID“${to}”已注册，不能覆盖`, "error");
+            return false;
+        }
+        if (isCompositionPointsBuilder) queueCompositionBuilderInstanceRename(from, to);
+        if (result.changed) {
+            scheduleAutoSave();
+            renderAll();
+        } else {
+            renderBuilderInstanceRegistry();
+        }
+        showToast(`实例 ID 已重命名为 ${to}`, "success");
+        return true;
+    }
+
+    function renderBuilderInstanceRegistry() {
+        if (!builderInstanceRegistryList || !builderInstanceRegistryStatus) return;
+        const entries = getBuilderInstanceRegistryEntries();
+        const ownerKeys = new Set(entries.flatMap((entry) => entry.owners.map((owner) => `${owner.ownerId}:${owner.target}`)));
+        const referenceCount = entries.reduce((sum, entry) => sum + entry.referenceCount, 0);
+        builderInstanceRegistryStatus.textContent = isCompositionPointsBuilder
+            ? `${entries.length} 个已注册 ID · ${ownerKeys.size} 个 PointsBuilder · ${referenceCount} 处引用`
+            : `${entries.length} 个已注册 ID · ${referenceCount} 处引用`;
+        builderInstanceRegistryList.replaceChildren();
+        if (!entries.length) {
+            const empty = document.createElement("div");
+            empty.className = "param-editor-empty";
+            empty.textContent = "当前项目没有已注册的实例 ID";
+            builderInstanceRegistryList.appendChild(empty);
+            return;
+        }
+        const help = document.createElement("div");
+        help.className = "instance-registry-help pb-tooltip-anchor";
+        help.textContent = "失焦或按 Enter 应用重命名";
+        help.setAttribute("data-tip", "重命名会同步当前项目中所有普通实例、环形槽位和预设映射引用；Composition 会在返回时同步其他 PointsBuilder。");
+        builderInstanceRegistryList.appendChild(help);
+        for (const entry of entries) {
+            const item = document.createElement("article");
+            item.className = "instance-registry-item";
+            const head = document.createElement("div");
+            head.className = "instance-registry-item-head";
+            const input = document.createElement("input");
+            input.type = "text";
+            input.className = "input instance-registry-id-input";
+            input.value = entry.id;
+            input.autocomplete = "off";
+            input.spellcheck = false;
+            input.setAttribute("aria-label", `重命名实例 ID ${entry.id}`);
+            let committed = false;
+            const commit = () => {
+                if (committed) return;
+                committed = true;
+                if (!renameRegisteredBuilderInstanceId(entry.id, input.value, entry)) {
+                    input.value = entry.id;
+                    committed = false;
+                }
+            };
+            input.addEventListener("focus", () => { committed = false; });
+            input.addEventListener("blur", commit);
+            input.addEventListener("keydown", (event) => {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    input.blur();
+                } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    input.value = entry.id;
+                    committed = true;
+                    input.blur();
+                }
+            });
+            const badge = document.createElement("span");
+            badge.className = "instance-registry-reference-count";
+            badge.textContent = `${entry.referenceCount} 引用`;
+            head.append(input, badge);
+            item.appendChild(head);
+            const meta = document.createElement("div");
+            meta.className = "instance-registry-meta";
+            meta.textContent = entry.name && entry.name !== entry.id ? entry.name : "已注册实例";
+            item.appendChild(meta);
+            const owners = document.createElement("div");
+            owners.className = "instance-registry-owners";
+            for (const owner of entry.owners) {
+                const chip = document.createElement("span");
+                chip.className = "instance-registry-owner";
+                chip.textContent = `${owner.ownerName} · ${owner.targetLabel}`;
+                owners.appendChild(chip);
+            }
+            item.appendChild(owners);
+            builderInstanceRegistryList.appendChild(item);
+        }
+    }
+
     function ensureBuilderReferenceDialog() {
         let mask = document.getElementById("builderReferenceDialogMask");
         let modal = document.getElementById("builderReferenceDialog");
@@ -4331,7 +4765,11 @@ function initPointsBuilderMain() {
                 <div class="builder-reference-dialog-note" data-builder-reference-dialog-note></div>
                 <label class="builder-reference-dialog-field">
                     <span>实例 ID</span>
-                    <input class="input" type="text" autocomplete="off" spellcheck="false" data-builder-reference-dialog-input />
+                    <input id="builderReferenceIdInput" class="input" type="text" autocomplete="off" spellcheck="false"
+                        role="combobox" aria-autocomplete="list" aria-expanded="false"
+                        aria-controls="builderReferenceIdSuggestions" data-builder-reference-dialog-input />
+                    <div id="builderReferenceIdSuggestions" class="builder-reference-id-suggestions hidden"
+                        data-builder-reference-id-suggestions role="listbox" aria-label="项目内已注册实例"></div>
                 </label>
                 <div class="builder-reference-dialog-modes" data-builder-reference-dialog-modes>
                     <button class="builder-reference-mode-option active pb-tooltip-anchor" type="button" data-mode="registered" data-tip="注册式：目标 ID 不存在时注册当前原型，存在时引用已有原型。">
@@ -4358,6 +4796,7 @@ function initPointsBuilderMain() {
     function openBuilderReferenceDialog(options = {}) {
         const { mask, modal } = ensureBuilderReferenceDialog();
         const input = modal.querySelector("[data-builder-reference-dialog-input]");
+        const suggestions = modal.querySelector("[data-builder-reference-id-suggestions]");
         const note = modal.querySelector("[data-builder-reference-dialog-note]");
         const error = modal.querySelector("[data-builder-reference-dialog-error]");
         const modes = modal.querySelector("[data-builder-reference-dialog-modes]");
@@ -4374,6 +4813,66 @@ function initPointsBuilderMain() {
         };
         let resolve;
         const promise = new Promise((res) => { resolve = res; });
+        let allSuggestionIds = [];
+        let visibleSuggestionIds = [];
+        let activeSuggestionIndex = -1;
+        const hideSuggestions = () => {
+            activeSuggestionIndex = -1;
+            suggestions?.classList.add("hidden");
+            input?.setAttribute("aria-expanded", "false");
+            input?.removeAttribute("aria-activedescendant");
+        };
+        const chooseSuggestion = (id) => {
+            if (!input) return;
+            input.value = id;
+            hideSuggestions();
+            input.focus();
+        };
+        const renderSuggestions = () => {
+            if (!suggestions || !input) return;
+            const query = String(input.value || "").trim().toLowerCase();
+            const matches = allSuggestionIds.filter((id) => !query || id.toLowerCase().includes(query)).slice(0, 8);
+            suggestions.replaceChildren();
+            activeSuggestionIndex = -1;
+            if (!matches.length) {
+                hideSuggestions();
+                return;
+            }
+            const header = document.createElement("div");
+            header.className = "builder-reference-id-suggestions-head";
+            const headerTitle = document.createElement("span");
+            headerTitle.textContent = "已注册实例";
+            const headerCount = document.createElement("span");
+            headerCount.className = "builder-reference-id-suggestions-count";
+            headerCount.textContent = `${matches.length} 个`;
+            header.append(headerTitle, headerCount);
+            suggestions.appendChild(header);
+            matches.forEach((id, index) => {
+                const option = document.createElement("button");
+                option.type = "button";
+                option.className = "builder-reference-id-suggestion";
+                option.id = `builderReferenceIdSuggestion${index}`;
+                option.dataset.index = String(index);
+                option.setAttribute("role", "option");
+                option.setAttribute("aria-selected", "false");
+                const badge = document.createElement("span");
+                badge.className = "builder-reference-id-suggestion-badge";
+                badge.textContent = "ID";
+                const label = document.createElement("span");
+                label.className = "builder-reference-id-suggestion-label";
+                label.textContent = id;
+                const state = document.createElement("span");
+                state.className = "builder-reference-id-suggestion-state";
+                state.textContent = "已注册";
+                option.append(badge, label, state);
+                option.addEventListener("mousedown", (event) => event.preventDefault());
+                option.addEventListener("click", () => chooseSuggestion(id));
+                suggestions.appendChild(option);
+            });
+            visibleSuggestionIds = matches;
+            suggestions.classList.remove("hidden");
+            input.setAttribute("aria-expanded", "true");
+        };
         const setError = (message = "") => {
             if (error) error.textContent = message;
         };
@@ -4391,11 +4890,40 @@ function initPointsBuilderMain() {
             close({ id, mode: selectedMode });
         };
         if (note) note.textContent = String(options.message || "输入实例 ID，并选择这次重构的绑定方式。");
+        if (suggestions) {
+            allSuggestionIds = getBuilderInstanceRegistryEntries()
+                .map((entry) => String(entry?.id || "").trim())
+                .filter(Boolean)
+                .sort((a, b) => a.localeCompare(b));
+            hideSuggestions();
+        }
         if (input) {
             input.value = String(options.initialValue || "").trim();
+            input.oninput = renderSuggestions;
+            input.onfocus = renderSuggestions;
             input.onkeydown = (event) => {
-                if (event.key === "Enter") { event.preventDefault(); apply(); }
-                else if (event.key === "Escape") { event.preventDefault(); close(null); }
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    if (!suggestions || suggestions.classList.contains("hidden")) return;
+                    event.preventDefault();
+                    const delta = event.key === "ArrowDown" ? 1 : -1;
+                    activeSuggestionIndex = (activeSuggestionIndex + delta + visibleSuggestionIds.length) % visibleSuggestionIds.length;
+                    suggestions.querySelectorAll(".builder-reference-id-suggestion").forEach((option, index) => {
+                        option.classList.toggle("active", index === activeSuggestionIndex);
+                        option.setAttribute("aria-selected", index === activeSuggestionIndex ? "true" : "false");
+                        if (index === activeSuggestionIndex) {
+                            input.setAttribute("aria-activedescendant", option.id);
+                            option.scrollIntoView({ block: "nearest" });
+                        }
+                    });
+                } else if (event.key === "Enter") {
+                    event.preventDefault();
+                    if (activeSuggestionIndex >= 0 && visibleSuggestionIds[activeSuggestionIndex]) chooseSuggestion(visibleSuggestionIds[activeSuggestionIndex]);
+                    else apply();
+                } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    if (suggestions && !suggestions.classList.contains("hidden")) hideSuggestions();
+                    else close(null);
+                }
             };
         }
         modeButtons.forEach((button) => {
@@ -4406,6 +4934,9 @@ function initPointsBuilderMain() {
         modal.querySelector("[data-builder-reference-dialog-cancel]").onclick = () => close(null);
         modal.querySelector("[data-builder-reference-dialog-apply]").onclick = apply;
         mask.onclick = () => close(null);
+        modal.onmousedown = (event) => {
+            if (suggestions && !suggestions.contains(event.target) && event.target !== input) hideSuggestions();
+        };
         setError("");
         setMode(initialMode);
         mask.classList.remove("hidden");
@@ -4431,7 +4962,10 @@ function initPointsBuilderMain() {
         const snapshots = ensureBuilderSnapshotState();
         const mappings = ensureBuilderPresetMappingState();
         const mappedId = String(mappings[id] || "").trim();
-        if (mappedId && snapshots[mappedId]) return snapshots[mappedId];
+        if (mappedId && snapshots[mappedId]) {
+            if (String(snapshots[mappedId].sourcePresetId || "") === id) return snapshots[mappedId];
+            delete mappings[id];
+        }
         const snapshot = Object.values(snapshots).find((item) => item && item.sourcePresetId === id) || null;
         if (snapshot) mappings[id] = snapshot.id;
         return snapshot;
@@ -4529,7 +5063,8 @@ function initPointsBuilderMain() {
         const instanceId = await promptBuilderInstanceId("输入实例 ID；已注册的 ID 会直接引用已有原型。", suggestedId);
         if (!instanceId) return false;
         const bindingMode = "registered";
-        const snapshot = ensureBuilderSnapshotState()[instanceId]
+        const snapshot = importRegisteredBuilderSnapshot(instanceId)
+            || ensureBuilderSnapshotState()[instanceId]
             || makeBuilderSnapshotFromNode(sourceNode, { id: instanceId });
         if (!snapshot) return false;
         const replacement = makeNode(BUILDER_REFERENCE_KIND, {
@@ -4581,8 +5116,7 @@ function initPointsBuilderMain() {
                 if (!requestedInstanceId) return false;
             }
             while (snapshots[requestedInstanceId]
-                && String(snapshots[requestedInstanceId].sourcePresetId || "") !== String(normalized.id || "")
-                && String(mappings[normalized.id] || "") !== requestedInstanceId) {
+                && String(snapshots[requestedInstanceId].sourcePresetId || "") !== String(normalized.id || "")) {
                 showToast(`实例 ID“${requestedInstanceId}”已被其他预设占用，请输入新的实例 ID。`, "error");
                 requestedInstanceId = await promptBuilderInstanceId(
                     `预设“${normalized.name}”请输入新的实例 ID`,
@@ -5013,10 +5547,11 @@ function initPointsBuilderMain() {
         const host = document.createElement("div");
         host.className = "preset-variable-panel builder-reference-variable-panel";
         renderPresetVariableRows(host, variableInfo, overrides, {
-            title: "实例变量",
+            title: "预设参数",
             allowVariableRefs: true,
             variableCatalog,
             applyState: overrides,
+            commitOnChange: true,
             onChange: () => {
                 if (staticMode) syncStaticBuilderReferenceOverrides(snapshot, node);
                 scheduleAutoSave();
@@ -5051,10 +5586,18 @@ function initPointsBuilderMain() {
     }
 
     function collectBuilderSnapshotReferenceCounts() {
+        const snapshots = ensureBuilderSnapshotState();
         const counts = new Map();
+        const queued = new Set();
+        const pending = [];
         const add = (id) => {
             const key = String(id || "").trim();
-            if (key) counts.set(key, (counts.get(key) || 0) + 1);
+            if (!key) return;
+            counts.set(key, (counts.get(key) || 0) + 1);
+            if (!queued.has(key)) {
+                queued.add(key);
+                pending.push(key);
+            }
         };
         const visit = (nodes) => {
             for (const item of Array.isArray(nodes) ? nodes : []) {
@@ -5063,10 +5606,15 @@ function initPointsBuilderMain() {
                 if (item.kind === EFFECT_RING_KIND) {
                     for (const id of Array.isArray(item.params?.snapshotIds) ? item.params.snapshotIds : []) add(id);
                 }
+                if (isBuilderSnapshotEditNode(item)) add(item.instanceEdit?.snapshotId);
                 visit(item.children);
             }
         };
         visit(state.root?.children);
+        while (pending.length) {
+            const snapshot = snapshots[pending.shift()];
+            if (snapshot) visit(snapshot.children);
+        }
         return counts;
     }
 
@@ -5074,9 +5622,12 @@ function initPointsBuilderMain() {
         const snapshots = ensureBuilderSnapshotState();
         const mappings = ensureBuilderPresetMappingState();
         const counts = collectBuilderSnapshotReferenceCounts();
+        const projectReferenceCounts = isCompositionPointsBuilder
+            ? new Map(getBuilderInstanceRegistryEntries().map((entry) => [entry.id, entry.referenceCount]))
+            : new Map();
         let removed = 0;
         for (const id of Object.keys(snapshots)) {
-            if (counts.has(id)) continue;
+            if (counts.has(id) || (projectReferenceCounts.get(id) || 0) > 0) continue;
             delete snapshots[id];
             removed += 1;
         }
@@ -5103,6 +5654,9 @@ function initPointsBuilderMain() {
             }
         };
         visit(state.root?.children);
+        for (const snapshot of Object.values(ensureBuilderSnapshotState())) {
+            visit(snapshot?.children);
+        }
     }
 
     function syncStaticBuilderReferenceOverrides(snapshot, sourceNode) {
@@ -5149,19 +5703,55 @@ function initPointsBuilderMain() {
             showToast("当前实例原型不存在", "error");
             return false;
         }
-        let target = snapshots[nextId];
-        if (!target) {
+        const bindingMode = ["registered", "indexed", "linked"].includes(node.params?.instanceBindingMode)
+            ? node.params.instanceBindingMode
+            : "registered";
+        if (bindingMode === "linked" && snapshots[nextId] && nextId !== previousId) {
+            showToast(`实例 ID“${nextId}”已存在，联动式不能覆盖已有原型。`, "error");
+            return false;
+        }
+        historyCapture("change_builder_reference_id");
+        let target = null;
+        if (bindingMode === "linked") {
             target = deepCloneJson(source) || {};
+            delete snapshots[previousId];
             target.id = nextId;
+            target.updatedAt = Date.now();
+            snapshots[nextId] = target;
+            rewriteBuilderSnapshotReferences(previousId, nextId);
+            const mappings = ensureBuilderPresetMappingState();
+            Object.keys(mappings).forEach((presetId) => {
+                if (String(mappings[presetId] || "") === previousId) mappings[presetId] = nextId;
+            });
+        } else if (bindingMode === "indexed") {
+            let indexedId = nextId;
+            const suffix = formatBuilderInstanceId(node.id || "card", { upperFirst: true, fallback: "Card" });
+            if (snapshots[indexedId] && indexedId !== previousId) indexedId = `${indexedId}${suffix}`;
+            let index = 2;
+            while (snapshots[indexedId] && indexedId !== previousId) indexedId = `${nextId}${suffix}${index++}`;
+            target = deepCloneJson(source) || {};
+            target.id = indexedId;
             target.sourcePresetId = "";
             target.sourcePresetRevision = "";
             target.revision = 1;
             target.createdAt = Date.now();
             target.updatedAt = Date.now();
-            snapshots[nextId] = target;
+            snapshots[indexedId] = target;
+            node.params.snapshotId = indexedId;
+        } else {
+            target = importRegisteredBuilderSnapshot(nextId);
+            if (!target) {
+                target = deepCloneJson(source) || {};
+                target.id = nextId;
+                target.sourcePresetId = "";
+                target.sourcePresetRevision = "";
+                target.revision = 1;
+                target.createdAt = Date.now();
+                target.updatedAt = Date.now();
+                snapshots[nextId] = target;
+            }
+            node.params.snapshotId = target.id;
         }
-        historyCapture("change_builder_reference_id");
-        node.params.snapshotId = nextId;
         if (node.params.instanceMode === "construct") {
             ensureBuilderReferenceOverrides(node, target);
         } else {
@@ -5170,6 +5760,7 @@ function initPointsBuilderMain() {
                 : deepCloneJson(getPresetVariableDefaultValues(target.variables)) || {};
             if (!target.staticOverrides) target.staticOverrides = deepCloneJson(node.params.overrides) || {};
         }
+        cleanupUnreferencedBuilderSnapshots();
         scheduleAutoSave();
         renderAll();
         showToast(`已切换到实例：${nextId}`, "success");
@@ -5224,7 +5815,7 @@ function initPointsBuilderMain() {
             snapshots[id] = copied;
             node.params.snapshotId = id;
         } else {
-            let target = snapshots[nextId];
+            let target = importRegisteredBuilderSnapshot(nextId);
             if (!target) {
                 target = deepCloneJson(source) || {};
                 target.id = nextId;
@@ -5792,6 +6383,13 @@ function initPointsBuilderMain() {
         return ctx?.node?.kind === EFFECT_RING_KIND ? ctx.node : null;
     }
 
+    function resetPresetRingSharedVariableState() {
+        presetRingSharedVariableState.enabled = {};
+        presetRingSharedVariableState.values = {};
+        presetRingSharedVariableState.touched = {};
+        presetRingSharedVariableState.excluded = {};
+    }
+
     function findPresetIdForSnapshot(snapshotId) {
         const snapshot = ensureBuilderSnapshotState()[String(snapshotId || "")];
         return String(snapshot?.sourcePresetId || "").trim();
@@ -5800,10 +6398,11 @@ function initPointsBuilderMain() {
     function loadPresetRingEditorFromNode(node) {
         if (!node || node.kind !== EFFECT_RING_KIND) return false;
         const p = node.params || {};
+        presetRingSlots?.replaceChildren();
         if (presetRingCount) presetRingCount.value = String(Math.max(1, Math.trunc(Number(p.count) || 12)));
         if (presetRingRadius) presetRingRadius.value = String(Number.isFinite(Number(p.radius)) ? Number(p.radius) : 3);
         if (presetRingStartDeg) presetRingStartDeg.value = String(Number(p.startDeg) || 0);
-        if (presetRingGroupLabel) presetRingGroupLabel.value = String(node.label || "环形阵列实例");
+        if (presetRingGroupLabel) presetRingGroupLabel.value = String(node.label || "环形放置");
         setPresetRingPoint(presetRingOriginX, presetRingOriginY, presetRingOriginZ, {
             x: p.originX, y: p.originY, z: p.originZ
         });
@@ -5827,7 +6426,7 @@ function initPointsBuilderMain() {
         const origin = readPresetRingPoint(presetRingOriginX, presetRingOriginY, presetRingOriginZ);
         const axis = readPresetRingPoint(presetRingAxisX, presetRingAxisY, presetRingAxisZ);
         const offset = readPresetRingPoint(presetRingOffsetX, presetRingOffsetY, presetRingOffsetZ);
-        node.label = String(presetRingGroupLabel?.value || "").trim() || "环形阵列实例";
+        node.label = String(presetRingGroupLabel?.value || "").trim() || "环形放置";
         node.params = Object.assign({}, node.params || {}, {
             snapshotIds: Array.isArray(snapshotIds) ? snapshotIds.slice() : [],
             count: getPresetRingCount(),
@@ -5845,6 +6444,40 @@ function initPointsBuilderMain() {
             faceCenter: !!presetRingFaceCenter?.checked,
             reverse: !!presetRingReverse?.checked
         });
+        return true;
+    }
+
+    function commitPresetRingCardParams() {
+        const node = getActiveParameterizedInstanceNode();
+        if (!node) return false;
+        historyCapture("update_effect_ring_params");
+        writePresetRingEditorToNode(node, Array.isArray(node.params?.snapshotIds) ? node.params.snapshotIds : []);
+        scheduleAutoSave();
+        renderCards?.();
+        rebuildPreviewAndKotlin();
+        updatePresetRingStatus();
+        return true;
+    }
+
+    function schedulePresetRingSnapshotSync(options = {}) {
+        const node = getActiveParameterizedInstanceNode();
+        if (!node) return false;
+        const count = getPresetRingCount();
+        const presetIds = getPresetRingSelectedIds();
+        const presetsById = new Map(getPresetList().map((preset) => [preset.id, preset]));
+        if (presetIds.length < count || presetIds.slice(0, count).some((id) => !id || !presetsById.has(id))) {
+            return false;
+        }
+        if (presetRingSnapshotSyncTimer) clearTimeout(presetRingSnapshotSyncTimer);
+        const nodeId = node.id;
+        presetRingSnapshotSyncTimer = setTimeout(() => {
+            presetRingSnapshotSyncTimer = 0;
+            if (activeParameterizedInstanceNodeId !== nodeId) return;
+            applyPresetRingTool({ silent: true }).catch((error) => {
+                console.error("preset ring auto sync failed:", error);
+                showToast(`环形放置自动更新失败：${error.message || error}`, "error");
+            });
+        }, Math.max(0, Math.trunc(Number(options.delay) || 80)));
         return true;
     }
 
@@ -5965,99 +6598,11 @@ function initPointsBuilderMain() {
             setPresetRingSlotPickerValue(button, id, options);
             updatePresetRingStatus();
             renderPresetRingSharedVariables();
-            renderPresetRingPreview();
+            schedulePresetRingSnapshotSync();
         };
         const items = buildPresetRingPickerMenuItems(options, applySelection);
         const rect = button.getBoundingClientRect();
         return showActionMenu(rect.left, rect.bottom + 4, items);
-    }
-
-    function getPresetRingSlotPlacement(options, index) {
-        const count = Math.max(1, options.count || 1);
-        const angle = (Number(options.startDeg) || 0) + index * 360 / count;
-        const rad = angle * Math.PI / 180;
-        const radius = Number(options.radius) || 0;
-        const origin = normalizePointValue(options.origin);
-        const offset = normalizePointValue(options.offset);
-        const circlePoint = {
-            x: origin.x + Math.cos(rad) * radius,
-            y: origin.y,
-            z: origin.z + Math.sin(rad) * radius
-        };
-        const slotPoint = {
-            x: circlePoint.x + offset.x,
-            y: circlePoint.y + offset.y,
-            z: circlePoint.z + offset.z
-        };
-        return { count, angle, rad, radius, origin, offset, circlePoint, slotPoint };
-    }
-
-    function renderPresetRingPreview() {
-        if (!presetRingTool || presetRingTool.classList.contains("hidden")) {
-            clearPresetPreview();
-            return false;
-        }
-        if (presetRingPreviewMode === "hidden"
-            || (presetRingPreviewMode === "preview" && rightPanelPage !== "presets")) {
-            clearPresetPreview();
-            return false;
-        }
-        const count = getPresetRingCount();
-        const presetIds = getPresetRingSelectedIds();
-        if (presetRingPreviewMode === "preview" && !presetIds.some(Boolean)) {
-            clearPresetPreview();
-            return false;
-        }
-        const presetsById = new Map(getPresetList().map((preset) => [preset.id, preset]));
-        const options = {
-            count,
-            radius: numFromInput(presetRingRadius, 3),
-            startDeg: numFromInput(presetRingStartDeg, 0),
-            origin: readPresetRingPoint(presetRingOriginX, presetRingOriginY, presetRingOriginZ),
-            axis: readPresetRingPoint(presetRingAxisX, presetRingAxisY, presetRingAxisZ),
-            offset: readPresetRingPoint(presetRingOffsetX, presetRingOffsetY, presetRingOffsetZ),
-            faceCenter: !!presetRingFaceCenter?.checked,
-            reverse: !!presetRingReverse?.checked
-        };
-        const previewPoints = [];
-        const sharedGroups = getPresetRingVariableGroups();
-        for (let i = 0; i < count; i++) {
-            const placement = getPresetRingSlotPlacement(options, i);
-            const presetId = presetIds[i] || "";
-            const preset = presetId ? presetsById.get(presetId) : null;
-            if (!preset) {
-                if (presetRingPreviewMode === "global") previewPoints.push(placement.slotPoint);
-                continue;
-            }
-            const resolved = resolvePresetForRingSlotPreview(preset, i, sharedGroups);
-            const slot = resolved ? makePresetRingSlotNode(resolved, i, options) : null;
-            if (!slot) {
-                previewPoints.push(placement.slotPoint);
-                continue;
-            }
-            try {
-                const res = evalBuilderWithMeta([slot], U.v(0, 1, 0));
-                const points = res && Array.isArray(res.points) ? res.points : [];
-                if (!points.length) {
-                    previewPoints.push(placement.slotPoint);
-                    continue;
-                }
-                for (const p of points) {
-                    previewPoints.push({
-                        x: Number(p?.x) || 0,
-                        y: Number(p?.y) || 0,
-                        z: Number(p?.z) || 0
-                    });
-                }
-            } catch {
-                previewPoints.push(placement.slotPoint);
-            }
-        }
-        if (!previewPoints.length) {
-            clearPresetPreview();
-            return false;
-        }
-        return renderPresetPreviewPoints(previewPoints);
     }
 
     function updatePresetRingStatus() {
@@ -6106,13 +6651,13 @@ function initPointsBuilderMain() {
         }
         updatePresetRingStatus();
         renderPresetRingSharedVariables();
-        renderPresetRingPreview();
     }
 
     function syncPresetRingSlots() {
         if (isPresetRingRandomEnabled()) refreshPresetRingRandomSelection();
         renderPresetRingSlots();
         renderPresetRingSharedVariables();
+        schedulePresetRingSnapshotSync();
     }
 
     function getPresetRingSelectedIds() {
@@ -6147,7 +6692,6 @@ function initPointsBuilderMain() {
         const count = getPresetRingCount();
         const presetIds = getPresetRingSelectedIds();
         const presetsById = new Map(getPresetList().map((preset) => [preset.id, preset]));
-        const sharedGroups = getPresetRingVariableGroups().filter((sharedGroup) => isPresetRingSharedVariableEnabled(sharedGroup.key));
         const groups = new Map();
         for (let i = 0; i < count; i++) {
             const preset = presetsById.get(presetIds[i]);
@@ -6298,7 +6842,7 @@ function initPointsBuilderMain() {
             checkbox.addEventListener("change", () => {
                 presetRingSharedVariableState.enabled[group.key] = checkbox.checked;
                 renderPresetRingSharedVariables();
-                renderPresetRingPreview();
+                schedulePresetRingSnapshotSync();
             });
             card.appendChild(head);
 
@@ -6324,8 +6868,8 @@ function initPointsBuilderMain() {
                             y: inputs[1]?.value,
                             z: inputs[2]?.value
                         });
-                        renderPresetRingPreview();
                     });
+                    input.addEventListener("change", () => schedulePresetRingSnapshotSync());
                     valueRow.appendChild(input);
                     return input;
                 });
@@ -6338,8 +6882,8 @@ function initPointsBuilderMain() {
                 input.disabled = !isPresetRingSharedVariableEnabled(group.key);
                 input.addEventListener("input", () => {
                     setPresetRingSharedVariableInputValue(group, input.value);
-                    renderPresetRingPreview();
                 });
+                input.addEventListener("change", () => schedulePresetRingSnapshotSync());
                 valueRow.appendChild(input);
             }
             card.appendChild(valueRow);
@@ -6362,7 +6906,7 @@ function initPointsBuilderMain() {
                     if (exclude.checked) delete presetRingSharedVariableState.excluded[group.key][String(item.index)];
                     else presetRingSharedVariableState.excluded[group.key][String(item.index)] = true;
                     renderPresetRingSharedVariables();
-                    renderPresetRingPreview();
+                    schedulePresetRingSnapshotSync();
                 });
                 affected.appendChild(opt);
             }
@@ -6379,17 +6923,31 @@ function initPointsBuilderMain() {
             ? node
             : findNodeContextById(focusedNodeId)?.node;
         if (!presetRingTool || target?.kind !== EFFECT_RING_KIND) return false;
+        if (activeParameterizedInstanceNodeId !== target.id) resetPresetRingSharedVariableState();
         activeParameterizedInstanceNodeId = target.id;
         loadPresetRingEditorFromNode(target);
-        setRightPanelPage("presets");
+        setRightPanelPage("params");
+        scheduleParamEditorRender();
+        requestAnimationFrame(() => {
+            presetRingCount?.focus?.();
+        });
+        return true;
+    }
+
+    function renderEffectRingParams(body, node) {
+        if (!body || !presetRingTool || node?.kind !== EFFECT_RING_KIND) return false;
+        if (activeParameterizedInstanceNodeId !== node.id) {
+            resetPresetRingSharedVariableState();
+            activeParameterizedInstanceNodeId = node.id;
+            loadPresetRingEditorFromNode(node);
+        }
+        presetRingTool.classList.add("effect-ring-param-editor");
         presetRingTool.classList.remove("hidden");
+        body.appendChild(presetRingTool);
         updatePresetRingRandomGroupOptions();
         renderPresetRingSlots();
         renderPresetRingSharedVariables();
-        requestAnimationFrame(() => {
-            presetRingCount?.focus?.();
-            presetRingTool.scrollIntoView?.({ block: "nearest" });
-        });
+        updatePresetRingStatus();
         return true;
     }
 
@@ -6398,13 +6956,16 @@ function initPointsBuilderMain() {
     }
 
     function closePresetRingTool() {
+        if (presetRingSnapshotSyncTimer) clearTimeout(presetRingSnapshotSyncTimer);
+        presetRingSnapshotSyncTimer = 0;
         presetRingTool?.classList.add("hidden");
+        presetRingTool?.classList.remove("effect-ring-param-editor");
+        if (effectRingEditorParking && presetRingTool?.parentElement !== effectRingEditorParking) {
+            effectRingEditorParking.appendChild(presetRingTool);
+        }
         activeParameterizedInstanceNodeId = "";
         clearPresetPreview();
-        presetRingSharedVariableState.enabled = {};
-        presetRingSharedVariableState.values = {};
-        presetRingSharedVariableState.touched = {};
-        presetRingSharedVariableState.excluded = {};
+        resetPresetRingSharedVariableState();
     }
 
     function confirmParameterizedInstancePlacement(point) {
@@ -6421,7 +6982,7 @@ function initPointsBuilderMain() {
         scheduleAutoSave();
         renderAll();
         openParameterizedInstanceEditor(node);
-        showToast("已设置环形阵列圆心", "success");
+        showToast("已设置环形放置圆心", "success");
         return true;
     }
 
@@ -6432,7 +6993,7 @@ function initPointsBuilderMain() {
             list: Array.isArray(context.list) ? context.list : null
         };
         return startPointPick({
-            label: "环形阵列圆心（Enter 使用原点，Esc 取消）",
+            label: "环形放置圆心（Enter 使用原点，Esc 取消）",
             onPick: (point) => confirmParameterizedInstancePlacement(point)
         });
     }
@@ -6448,7 +7009,7 @@ function initPointsBuilderMain() {
         if (focusedNodeId === pending.nodeId) setFocusedNode(null, false);
         scheduleAutoSave();
         renderAll();
-        showToast("已取消创建环形阵列实例", "info");
+        showToast("已取消创建环形放置", "info");
         return true;
     }
 
@@ -6460,7 +7021,7 @@ function initPointsBuilderMain() {
 
     function handleCreatedNodeFromPicker(node, context = {}) {
         if (!node || node.kind !== EFFECT_RING_KIND) return false;
-        node.label = node.label || "环形阵列实例";
+        node.label = node.label || "环形放置";
         activeParameterizedInstanceNodeId = node.id;
         if (typeof setCardSelectionIds === "function") {
             setCardSelectionIds([node.id], { replace: true, focus: false, syncWithParamSync: false });
@@ -6470,142 +7031,108 @@ function initPointsBuilderMain() {
         return beginParameterizedInstancePlacement(node, context);
     }
 
-    function makePresetChildrenForResolvedApply(preset) {
-        const normalized = normalizePresetList([preset])[0];
-        if (!normalized || !normalized.children.length) return null;
-        const nextChildren = preparePresetChildrenForInsertion(normalized.children);
-        normalizeNodeTree(nextChildren);
-        labelInsertedPresetContainers(nextChildren, normalized.name);
-        return { normalized, children: nextChildren };
-    }
-
-    function resolvePresetForPreviewDefaults(preset) {
-        const normalized = normalizePresetList([preset])[0];
-        if (!normalized) return null;
-        const variableInfo = getPresetEffectiveVariableInfo(normalized);
-        if (!getPresetVariableEntries(variableInfo).length) return normalized;
-        const withVars = Object.assign({}, normalized, { variables: variableInfo });
-        return clonePresetWithVariableValues(withVars, getPresetVariableDefaultValues(variableInfo));
-    }
-
-    function resolvePresetForRingSlotPreview(preset, index, sharedGroups) {
-        const normalized = normalizePresetList([preset])[0];
-        if (!normalized) return null;
-        const variableInfo = getPresetEffectiveVariableInfo(normalized);
-        const entries = getPresetVariableEntries(variableInfo);
-        if (!entries.length) return normalized;
-        const values = getPresetVariableDefaultValues(variableInfo);
-        for (const sharedGroup of sharedGroups || []) {
-            if (!isPresetRingSharedVariableEnabled(sharedGroup.key)) continue;
-            const affectsSlot = (sharedGroup.entries || []).some((item) => item && item.index === index);
-            if (!affectsSlot || isPresetRingSharedVariableExcluded(sharedGroup.key, index)) continue;
-            setPresetRingSharedVariableValue(values, sharedGroup, getPresetRingSharedVariableValue(sharedGroup));
-        }
-        return clonePresetWithVariableValues(Object.assign({}, normalized, { variables: variableInfo }), values);
-    }
-
-    async function resolvePresetForRingSlot(preset, index) {
-        const normalized = normalizePresetList([preset])[0];
-        if (!normalized) return null;
-        const variableInfo = getPresetEffectiveVariableInfo(normalized);
-        if (!getPresetVariableEntries(variableInfo).length) return normalized;
-        const withVars = Object.assign({}, normalized, { variables: variableInfo });
-        const values = await openPresetVariableApplyDialog(Object.assign({}, withVars, {
-            name: `${normalized.name || "未命名预设"} #${index + 1}`
-        }));
-        if (!values) return null;
-        return clonePresetWithVariableValues(withVars, values);
-    }
-
-    function makePresetRingSlotNode(resolvedPreset, index, options) {
-        const prepared = makePresetChildrenForResolvedApply(resolvedPreset);
-        if (!prepared) return null;
-        const placement = getPresetRingSlotPlacement(options, index);
-        const { count, origin, circlePoint, slotPoint } = placement;
-        const slot = makeNode("add_builder", {
-            label: `${prepared.normalized.name || "预设"} #${index + 1}`,
-            params: { ox: slotPoint.x, oy: slotPoint.y, oz: slotPoint.z }
+    function getPresetRingSnapshotDefinitionKey(preset, values) {
+        return JSON.stringify({
+            presetId: String(preset?.id || ""),
+            values: values ? normalizePresetVariableValues(values) : null
         });
-        const presetOrigin = normalizePointValue(prepared.normalized.origin);
-        slot.children = prepared.children;
-        slot.children.push(makeNode("points_on_each_offset", {
-            params: {
-                offX: -presetOrigin.x,
-                offY: -presetOrigin.y,
-                offZ: -presetOrigin.z,
-                kotlinMode: "direct3"
-            }
-        }));
-        if (options.faceCenter) {
-            const target = {
-                x: origin.x - circlePoint.x,
-                y: origin.y - circlePoint.y,
-                z: origin.z - circlePoint.z
-            };
-            if (options.reverse) {
-                target.x *= -1;
-                target.y *= -1;
-                target.z *= -1;
-            }
-            const axis = normalizePointValue(options.axis, { x: 0, y: 0, z: 1 });
-            slot.children.push(makeNode("axis", { params: { x: axis.x, y: axis.y, z: axis.z } }));
-            slot.children.push(makeNode("rotate_to", {
-                params: {
-                    mode: "toVec",
-                    tox: target.x,
-                    toy: target.y,
-                    toz: target.z,
-                    ox: 0,
-                    oy: 0,
-                    oz: 0,
-                    ex: 0,
-                    ey: 0,
-                    ez: 1
-                }
-            }));
-        }
-        const usedIds = options && options.usedIds instanceof Set ? options.usedIds : collectNodeIds(state.root);
-        reassignNodeIdsDeep(slot, usedIds);
-        return slot;
     }
 
-    async function applyPresetRingTool() {
+    async function applyPresetRingTool(options = {}) {
         if (!presetRingTool) return false;
         const activeNode = getActiveParameterizedInstanceNode();
         const count = getPresetRingCount();
         const presetIds = getPresetRingSelectedIds();
         const presetsById = new Map(getPresetList().map((preset) => [preset.id, preset]));
+        const sharedGroups = getPresetRingVariableGroups();
         const missingIndex = Array.from({ length: count }, (_, index) => index)
             .find((index) => !presetIds[index] || !presetsById.has(presetIds[index]));
         if (missingIndex !== undefined) {
             const message = isPresetRingRandomEnabled()
-                ? `环形阵列保存失败：随机组“${presetRingRandomGroup.value}”中没有可用预设`
-                : `环形阵列保存失败：第 ${missingIndex + 1} 个槽位未选择预设`;
-            showToast(message, "error");
+                ? `环形放置保存失败：随机组“${presetRingRandomGroup.value}”中没有可用预设`
+                : `环形放置保存失败：第 ${missingIndex + 1} 个槽位未选择预设`;
+            if (!options.silent) showToast(message, "error");
             return false;
         }
 
         if (activeNode) {
+            historyCapture("update_effect_ring");
+            const snapshots = ensureBuilderSnapshotState();
             const snapshotIds = [];
+            const snapshotsByDefinitionKey = new Map();
+            const claimedDefinitionBySnapshotId = new Map();
             for (let index = 0; index < count; index += 1) {
                 const preset = normalizePresetList([presetsById.get(presetIds[index])])[0];
                 if (!preset) continue;
-                const resolved = resolvePresetForRingSlotPreview(preset, index, sharedGroups) || preset;
-                const snapshot = findBuilderSnapshotByPresetId(preset.id) || makeBuilderSnapshotFromPreset(resolved);
-                if (snapshot) snapshotIds.push(snapshot.id);
+                const existingId = String(activeNode.params?.snapshotIds?.[index] || "").trim();
+                const existing = existingId ? snapshots[existingId] : null;
+                const variableInfo = getPresetEffectiveVariableInfo(preset);
+                const entries = getPresetVariableEntries(variableInfo);
+                let values = entries.length
+                    ? getPresetVariableDefaultValues(variableInfo)
+                    : null;
+                if (values && existing?.staticOverrides) {
+                    values = normalizePresetVariableValues(existing.staticOverrides);
+                }
+                if (values) {
+                    for (const sharedGroup of sharedGroups) {
+                        const affectsSlot = (sharedGroup.entries || []).some((item) => item && item.index === index);
+                        if (affectsSlot
+                            && isPresetRingSharedVariableEnabled(sharedGroup.key)
+                            && !isPresetRingSharedVariableExcluded(sharedGroup.key, index)) {
+                            setPresetRingSharedVariableValue(values, sharedGroup, getPresetRingSharedVariableValue(sharedGroup));
+                        }
+                    }
+                }
+                const definitionKey = getPresetRingSnapshotDefinitionKey(preset, values);
+                let snapshot = snapshotsByDefinitionKey.get(definitionKey) || null;
+                const existingClaim = existing ? claimedDefinitionBySnapshotId.get(existing.id) : "";
+                if (!snapshot
+                    && existing
+                    && String(existing.sourcePresetId || "") === String(preset.id || "")
+                    && (!existingClaim || existingClaim === definitionKey)) {
+                    const updated = makeBuilderSnapshotFromPreset(preset, {
+                        persist: false,
+                        variableInfo,
+                        variableValues: values || undefined
+                    });
+                    if (updated) {
+                        updated.id = existing.id;
+                        updated.createdAt = existing.createdAt || updated.createdAt;
+                        updated.revision = Math.max(1, Math.trunc(Number(existing.revision) || 1)) + 1;
+                        snapshots[existing.id] = updated;
+                        snapshot = updated;
+                    }
+                }
+                if (!snapshot) {
+                    snapshot = Object.values(snapshots).find((candidate) => {
+                        if (!candidate || String(candidate.sourcePresetId || "") !== String(preset.id || "")) return false;
+                        const claim = claimedDefinitionBySnapshotId.get(candidate.id);
+                        if (claim && claim !== definitionKey) return false;
+                        return getPresetRingSnapshotDefinitionKey(preset, values ? candidate.staticOverrides : null) === definitionKey;
+                    }) || null;
+                }
+                snapshot = snapshot || makeBuilderSnapshotFromPreset(preset, {
+                        variableInfo,
+                        variableValues: values || undefined
+                    });
+                if (snapshot) {
+                    snapshotsByDefinitionKey.set(definitionKey, snapshot);
+                    claimedDefinitionBySnapshotId.set(snapshot.id, definitionKey);
+                    snapshotIds.push(snapshot.id);
+                }
             }
-            historyCapture("update_effect_ring");
             writePresetRingEditorToNode(activeNode, snapshotIds);
             normalizeNodeTree(state.root);
             scheduleAutoSave();
             renderAll();
-            showToast("已保存环形阵列实例", "success");
+            if (!options.silent) showToast("已保存环形放置", "success");
             return true;
         }
 
         const scopeCtx = typeof getCurrentCardScopeContext === "function" ? getCurrentCardScopeContext() : null;
         const targetList = scopeCtx && Array.isArray(scopeCtx.list) ? scopeCtx.list : state.root.children;
-        const options = {
+        const ringOptions = {
             count,
             radius: numFromInput(presetRingRadius, 3),
             startDeg: numFromInput(presetRingStartDeg, 0),
@@ -6627,12 +7154,13 @@ function initPointsBuilderMain() {
         }
 
         const snapshotIds = [];
+        const snapshotsByDefinitionKey = new Map();
         for (let index = 0; index < count; index += 1) {
             const normalized = normalizePresetList([presetsById.get(presetIds[index])])[0];
             if (!normalized) continue;
-            let resolved = normalized;
             const variableInfo = getPresetEffectiveVariableInfo(normalized);
             const entries = getPresetVariableEntries(variableInfo);
+            let resolvedValues = null;
             if (entries.length) {
                 const sharedKeys = sharedKeysBySlot.get(index) || new Set();
                 const values = getPresetVariableDefaultValues(variableInfo);
@@ -6646,42 +7174,50 @@ function initPointsBuilderMain() {
                         variables: Object.assign({}, remainingInfo, { inputs: values })
                     }));
                     if (!slotValues) {
-                        showToast("环形阵列创建已取消", "info");
+                        showToast("环形放置创建已取消", "info");
                         return false;
                     }
                     Object.assign(values.scalar, slotValues.scalar || {});
                     Object.assign(values.vector, slotValues.vector || {});
                 }
-                resolved = clonePresetWithVariableValues(Object.assign({}, normalized, { variables: variableInfo }), values);
+                resolvedValues = values;
             }
-            const snapshot = resolved?.__pbVariablesResolved
-                ? makeBuilderSnapshotFromPreset(resolved)
-                : (findBuilderSnapshotByPresetId(normalized.id) || makeBuilderSnapshotFromPreset(resolved));
-            if (snapshot) snapshotIds.push(snapshot.id);
+            const definitionKey = getPresetRingSnapshotDefinitionKey(normalized, resolvedValues);
+            const snapshot = snapshotsByDefinitionKey.get(definitionKey)
+                || (resolvedValues
+                ? makeBuilderSnapshotFromPreset(normalized, {
+                    variableInfo,
+                    variableValues: resolvedValues
+                })
+                : (findBuilderSnapshotByPresetId(normalized.id) || makeBuilderSnapshotFromPreset(normalized)));
+            if (snapshot) {
+                snapshotsByDefinitionKey.set(definitionKey, snapshot);
+                snapshotIds.push(snapshot.id);
+            }
         }
         if (!snapshotIds.length) {
-            showToast("环形阵列创建失败：没有可用的实例原型", "error");
+            showToast("环形放置创建失败：没有可用的实例原型", "error");
             return false;
         }
 
         const node = makeNode(EFFECT_RING_KIND, {
-            label: String(presetRingGroupLabel?.value || "").trim() || "环形阵列实例",
+            label: String(presetRingGroupLabel?.value || "").trim() || "环形放置",
             params: {
                 snapshotIds,
-                count: options.count,
-                radius: options.radius,
-                startDeg: options.startDeg,
-                originX: options.origin.x,
-                originY: options.origin.y,
-                originZ: options.origin.z,
-                axisX: options.axis.x,
-                axisY: options.axis.y,
-                axisZ: options.axis.z,
-                offsetX: options.offset.x,
-                offsetY: options.offset.y,
-                offsetZ: options.offset.z,
-                faceCenter: options.faceCenter,
-                reverse: options.reverse
+                count: ringOptions.count,
+                radius: ringOptions.radius,
+                startDeg: ringOptions.startDeg,
+                originX: ringOptions.origin.x,
+                originY: ringOptions.origin.y,
+                originZ: ringOptions.origin.z,
+                axisX: ringOptions.axis.x,
+                axisY: ringOptions.axis.y,
+                axisZ: ringOptions.axis.z,
+                offsetX: ringOptions.offset.x,
+                offsetY: ringOptions.offset.y,
+                offsetZ: ringOptions.offset.z,
+                faceCenter: ringOptions.faceCenter,
+                reverse: ringOptions.reverse
             }
         });
         historyCapture("create_effect_ring");
@@ -6696,7 +7232,7 @@ function initPointsBuilderMain() {
         setFocusedNode(node.id, false);
         openParameterizedInstanceEditor(node);
         beginParameterizedInstancePlacement(node, { list: targetList });
-        showToast("已创建环形阵列实例，请拾取圆心", "success");
+        showToast("已创建环形放置，请拾取圆心", "success");
         return true;
     }
 
@@ -6980,8 +7516,8 @@ function initPointsBuilderMain() {
     }
 
     function createPresetGroup(rawName = "", parentGroup = "", options = {}) {
-        const parentLabel = getPresetGroupLabel(parentGroup);
-        const parent = isDefaultPresetGroup(parentLabel) ? "" : parentLabel;
+        const normalizedParent = normalizePresetGroup(parentGroup);
+        const parent = normalizedParent ? getPresetGroupLabel(normalizedParent) : "";
         const raw = getPresetGroupLabel(rawName || `分组 ${getPresetGroups().length}`);
         const base = parent && !isDefaultPresetGroup(raw) && !raw.includes("/") ? `${parent}/${raw}` : raw;
         let name = base;
@@ -7000,8 +7536,8 @@ function initPointsBuilderMain() {
     }
 
     function createPresetGroupFromLibrary(parentGroup = "") {
-        const parentLabel = getPresetGroupLabel(parentGroup);
-        const parent = isDefaultPresetGroup(parentLabel) ? "" : parentLabel;
+        const normalizedParent = normalizePresetGroup(parentGroup);
+        const parent = normalizedParent ? getPresetGroupLabel(normalizedParent) : "";
         if (parent) presetCollapsedGroups.delete(parent);
         const group = createPresetGroup("", parent, { focusPresetInput: false });
         if (group) beginPresetGroupRename(group);
@@ -7210,8 +7746,7 @@ function initPointsBuilderMain() {
                 if (!clean) continue;
                 refs.scalar.add(clean);
                 if (!hasInput("scalar", clean)) {
-                    const n = Number(info.inputs?.scalar?.[clean]);
-                    inputs.scalar[clean] = Number.isFinite(n) ? n : 0;
+                    inputs.scalar[clean] = normalizePresetScalarVariableValue(info.inputs?.scalar?.[clean]);
                 }
             }
         }
@@ -7445,6 +7980,14 @@ function initPointsBuilderMain() {
             const row = document.createElement("div");
             row.className = `preset-variable-row ${entry.type === "vector" ? "vector" : "scalar"}`;
 
+            let activeMode = allowVariableRefs ? getMode(entry.type, name) : "manual";
+            const catalogEntries = allowVariableRefs ? catalogEntriesForType(entry.type) : [];
+            let currentRefName = allowVariableRefs ? getRefName(entry.type, name) : "";
+            if (allowVariableRefs && activeMode === "reference" && !currentRefName && catalogEntries.length) {
+                currentRefName = normalizeContextIdentifier(catalogEntries[0]?.name || "");
+                setRefName(entry.type, name, currentRefName);
+            }
+
             const label = document.createElement("div");
             label.className = "preset-variable-label";
             const labelName = document.createElement("span");
@@ -7455,29 +7998,57 @@ function initPointsBuilderMain() {
             labelMeta.textContent = `${getPresetVariableSourceText(entry.source)} / ${entry.type === "vector" ? "Vec3" : "数值"}`;
             label.append(labelName, labelMeta);
 
+            let modeSelect = null;
+            if (allowVariableRefs) {
+                modeSelect = document.createElement("select");
+                modeSelect.className = "input preset-variable-mode-select";
+                const manualOption = document.createElement("option");
+                manualOption.value = "manual";
+                manualOption.textContent = "手动输入";
+                const referenceOption = document.createElement("option");
+                referenceOption.value = "reference";
+                referenceOption.textContent = "引用变量";
+                referenceOption.disabled = !catalogEntries.length;
+                modeSelect.append(manualOption, referenceOption);
+                modeSelect.value = activeMode;
+                modeSelect.disabled = !catalogEntries.length;
+            }
+
             const valueStack = document.createElement("div");
             valueStack.className = "preset-variable-value-stack";
-            row.append(label, valueStack);
+            if (modeSelect) {
+                row.classList.add("with-input-mode");
+                const controls = document.createElement("div");
+                controls.className = "preset-variable-controls";
+                const modeField = document.createElement("div");
+                modeField.className = "preset-variable-field preset-variable-mode-field";
+                const modeLabel = document.createElement("span");
+                modeLabel.className = "preset-variable-field-label";
+                modeLabel.textContent = "输入类型";
+                modeField.append(modeLabel, modeSelect);
+                const valueField = document.createElement("div");
+                valueField.className = "preset-variable-field preset-variable-input-field";
+                const valueLabel = document.createElement("span");
+                valueLabel.className = "preset-variable-field-label";
+                valueLabel.textContent = "输入参数";
+                valueField.append(valueLabel, valueStack);
+                controls.append(modeField, valueField);
+                row.append(label, controls);
+            } else {
+                row.append(label, valueStack);
+            }
 
             const manualRow = document.createElement("div");
             manualRow.className = `preset-variable-manual-row ${entry.type === "vector" ? "vector" : "scalar"}`;
-            const currentMode = allowVariableRefs ? getMode(entry.type, name) : "manual";
-            const catalogEntries = allowVariableRefs ? catalogEntriesForType(entry.type) : [];
-            let currentRefName = allowVariableRefs ? getRefName(entry.type, name) : "";
-            if (allowVariableRefs && currentMode === "reference" && !currentRefName && catalogEntries.length) {
-                currentRefName = normalizeContextIdentifier(catalogEntries[0]?.name || "");
-                setRefName(entry.type, name, currentRefName);
-            }
-
             let scalarInput = null;
             let vectorInputs = null;
             let pickBtn = null;
-            let modeRow = null;
-            let modeSelect = null;
             let refRow = null;
             let refSelect = null;
             const syncManualScalar = () => {
                 if (!scalarInput) return;
+                const text = String(scalarInput.value ?? "").trim();
+                if (!text || /^[+-]?(?:\.|\d+\.|\d+(?:\.\d+)?[eE][+-]?)$/.test(text)) return;
                 updatePresetVariableValue(values, entry, scalarInput.value);
                 notifyChange();
             };
@@ -7512,12 +8083,6 @@ function initPointsBuilderMain() {
                     input.placeholder = axis;
                     input.value = String(current[axis]);
                     input.addEventListener("input", () => {
-                        if (allowVariableRefs && currentMode === "reference") {
-                            setMode(entry.type, name, "manual");
-                            if (modeSelect) modeSelect.value = "manual";
-                            if (refRow) refRow.hidden = true;
-                            manualRow.hidden = false;
-                        }
                         syncManualVector();
                     });
                     coords.appendChild(input);
@@ -7531,12 +8096,6 @@ function initPointsBuilderMain() {
                 pickBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s6-5.6 6-11a6 6 0 0 0-12 0c0 5.4 6 11 6 11Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="10" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
                 pickBtn.addEventListener("click", () => {
                     if (typeof options.onPickVector === "function") {
-                        if (allowVariableRefs) {
-                            setMode(entry.type, name, "manual");
-                            if (modeSelect) modeSelect.value = "manual";
-                            if (refRow) refRow.hidden = true;
-                            manualRow.hidden = false;
-                        }
                         options.onPickVector(entry, (point) => {
                             const p = normalizePointValue(point);
                             updatePresetVariableValue(values, entry, p);
@@ -7552,18 +8111,15 @@ function initPointsBuilderMain() {
             } else {
                 const current = normalizePresetScalarVariableValue(values?.scalar?.[name]);
                 const onScalarInput = (nextValue) => {
-                    if (allowVariableRefs && currentMode === "reference") {
-                        setMode(entry.type, name, "manual");
-                        if (modeSelect) modeSelect.value = "manual";
-                        if (refRow) refRow.hidden = true;
-                        manualRow.hidden = false;
-                    }
+                    const text = String(nextValue ?? "").trim();
+                    if (!text || /^[+-]?(?:\.|\d+\.|\d+(?:\.\d+)?[eE][+-]?)$/.test(text)) return;
                     updatePresetVariableValue(values, entry, nextValue);
                     notifyChange();
                 };
                 if (typeof inputNum === "function") {
                     scalarInput = inputNum(current, onScalarInput, {
                         modalNavigation: !!options.modalNavigation,
+                        commitOnChange: !!options.commitOnChange,
                         onNavigate: (key, input) => handlePresetVariableInputNavigation(key, input, {
                             host,
                             onLastEnter: options.onLastEnter
@@ -7581,43 +8137,6 @@ function initPointsBuilderMain() {
             }
 
             if (allowVariableRefs) {
-                modeRow = document.createElement("div");
-                modeRow.className = "preset-variable-source-row";
-                const modeLabel = document.createElement("span");
-                modeLabel.className = "preset-variable-meta";
-                modeLabel.textContent = "输入方式";
-                modeSelect = document.createElement("select");
-                modeSelect.className = "input preset-variable-source-select";
-                const manualOpt = document.createElement("option");
-                manualOpt.value = "manual";
-                manualOpt.textContent = "手动值";
-                const refOpt = document.createElement("option");
-                refOpt.value = "reference";
-                refOpt.textContent = "引用变量";
-                if (!catalogEntries.length) refOpt.disabled = true;
-                modeSelect.append(manualOpt, refOpt);
-                modeSelect.value = currentMode === "reference" && catalogEntries.length ? "reference" : "manual";
-                modeSelect.addEventListener("change", () => {
-                    const nextMode = modeSelect.value === "reference" && catalogEntries.length ? "reference" : "manual";
-                    setMode(entry.type, name, nextMode);
-                    manualRow.hidden = nextMode === "reference";
-                    refRow.hidden = nextMode !== "reference";
-                    if (nextMode === "reference") {
-                        if (!refSelect.value && catalogEntries.length) refSelect.value = normalizeContextIdentifier(catalogEntries[0]?.name || "");
-                        setRefName(entry.type, name, refSelect.value);
-                        if (!applyReferenceValue(refSelect.value) && catalogEntries.length) {
-                            refSelect.value = normalizeContextIdentifier(catalogEntries[0]?.name || "");
-                            setRefName(entry.type, name, refSelect.value);
-                            applyReferenceValue(refSelect.value);
-                        }
-                    } else {
-                        setRefName(entry.type, name, "");
-                        if (entry.type === "vector") syncManualVector();
-                        else syncManualScalar();
-                    }
-                });
-                modeRow.append(modeLabel, modeSelect);
-
                 refRow = document.createElement("div");
                 refRow.className = "preset-variable-ref-row";
                 const refLabel = document.createElement("span");
@@ -7650,7 +8169,27 @@ function initPointsBuilderMain() {
                     }
                 });
                 refRow.append(refLabel, refSelect);
-                refRow.hidden = modeSelect.value !== "reference";
+                refRow.hidden = activeMode !== "reference";
+
+                modeSelect?.addEventListener("change", () => {
+                    activeMode = modeSelect.value === "reference" && catalogEntries.length ? "reference" : "manual";
+                    setMode(entry.type, name, activeMode);
+                    manualRow.hidden = activeMode === "reference";
+                    refRow.hidden = activeMode !== "reference";
+                    if (activeMode === "reference") {
+                        if (!refSelect.value && catalogEntries.length) refSelect.value = normalizeContextIdentifier(catalogEntries[0]?.name || "");
+                        setRefName(entry.type, name, refSelect.value);
+                        if (!applyReferenceValue(refSelect.value) && catalogEntries.length) {
+                            refSelect.value = normalizeContextIdentifier(catalogEntries[0]?.name || "");
+                            setRefName(entry.type, name, refSelect.value);
+                            applyReferenceValue(refSelect.value);
+                        }
+                    } else {
+                        setRefName(entry.type, name, "");
+                        if (entry.type === "vector") syncManualVector();
+                        else syncManualScalar();
+                    }
+                });
             }
 
             if (entry.type === "vector") {
@@ -7662,19 +8201,18 @@ function initPointsBuilderMain() {
                 coords.appendChild(vectorInputs[1].parentElement || vectorInputs[1]);
                 coords.appendChild(vectorInputs[2].parentElement || vectorInputs[2]);
                 manualRowWrap.append(coords, pickBtn);
-                manualRow.hidden = allowVariableRefs && currentMode === "reference";
+                manualRow.hidden = allowVariableRefs && activeMode === "reference";
                 manualRow.appendChild(manualRowWrap);
             } else {
                 const manualRowWrap = document.createElement("div");
                 manualRowWrap.className = "preset-variable-manual-row scalar";
                 manualRowWrap.appendChild(scalarInput);
-                manualRow.hidden = allowVariableRefs && currentMode === "reference";
+                manualRow.hidden = allowVariableRefs && activeMode === "reference";
                 manualRow.appendChild(manualRowWrap);
             }
 
             valueStack.appendChild(manualRow);
             if (refRow) valueStack.appendChild(refRow);
-            if (modeRow) valueStack.appendChild(modeRow);
             list.appendChild(row);
         }
     }
@@ -8904,12 +9442,15 @@ function initPointsBuilderMain() {
         if (animatedGroup && presetGroupAnimationTarget === animatedGroup) presetGroupAnimationTarget = "";
     }
 
-    function schedulePresetLibraryRender() {
+    function schedulePresetLibraryRender(options = {}) {
+        if (options.dirty !== false) presetLibraryDirty = true;
         if (presetLibraryRenderRaf) return;
         presetLibraryRenderRaf = requestAnimationFrame(() => {
             presetLibraryRenderRaf = 0;
-            renderPresetLibrary();
-            if (presetRingTool && !presetRingTool.classList.contains("hidden")) renderPresetRingSlots();
+            if (rightPanelPage === "presets" && presetLibraryDirty) {
+                renderPresetLibrary();
+                presetLibraryDirty = false;
+            }
         });
     }
 
@@ -8949,26 +9490,27 @@ function initPointsBuilderMain() {
         btnOpenPresetRingTool?.addEventListener("click", openPresetRingTool);
         btnPresetRingClose?.addEventListener("click", closePresetRingTool);
         btnPresetRingSyncSlots?.addEventListener("click", syncPresetRingSlots);
-        btnPresetRingApply?.addEventListener("click", () => {
-            applyPresetRingTool().catch((e) => {
-                console.error("applyPresetRingTool failed:", e);
-                showToast(`环形阵列保存失败：${e.message || e}`, "error");
-            });
-        });
         const handlePresetRingCountChange = () => {
             if (isPresetRingRandomEnabled()) refreshPresetRingRandomSelection();
             renderPresetRingSlots();
         };
         presetRingCount?.addEventListener("input", handlePresetRingCountChange);
-        presetRingCount?.addEventListener("change", handlePresetRingCountChange);
+        presetRingCount?.addEventListener("change", () => {
+            handlePresetRingCountChange();
+            commitPresetRingCardParams();
+            schedulePresetRingSnapshotSync();
+        });
+        presetRingGroupLabel?.addEventListener("change", commitPresetRingCardParams);
         presetRingRandomEnabled?.addEventListener("change", () => {
             updatePresetRingRandomGroupOptions();
             if (isPresetRingRandomEnabled()) refreshPresetRingRandomSelection();
             renderPresetRingSlots();
+            schedulePresetRingSnapshotSync();
         });
         presetRingRandomGroup?.addEventListener("change", () => {
             refreshPresetRingRandomSelection();
             renderPresetRingSlots();
+            schedulePresetRingSnapshotSync();
         });
         [
             presetRingRadius,
@@ -8985,14 +9527,15 @@ function initPointsBuilderMain() {
             presetRingFaceCenter,
             presetRingReverse
         ].forEach((el) => {
-            el?.addEventListener("input", renderPresetRingPreview);
-            el?.addEventListener("change", renderPresetRingPreview);
+            el?.addEventListener("change", () => {
+                commitPresetRingCardParams();
+            });
         });
         btnPresetRingPickOrigin?.addEventListener("click", () => {
             if (!presetRingTool) return;
             presetRingTool.classList.add("hidden");
             startPointPick({
-                label: "拾取环形阵列圆心",
+                label: "拾取环形放置圆心",
                 onPick: (point) => {
                     setPresetRingPoint(presetRingOriginX, presetRingOriginY, presetRingOriginZ, point);
                     const node = getActiveParameterizedInstanceNode();
@@ -9005,8 +9548,7 @@ function initPointsBuilderMain() {
                     }
                     presetRingTool.classList.remove("hidden");
                     updatePresetRingStatus();
-                    renderPresetRingPreview();
-                    showToast("已拾取环形阵列圆心", "success");
+                    showToast("已拾取环形放置圆心", "success");
                 }
             });
         });
@@ -9050,6 +9592,7 @@ function initPointsBuilderMain() {
         });
         btnPresetImportZip?.addEventListener("click", () => filePresetJson?.click());
         renderPresetLibrary();
+        presetLibraryDirty = false;
     }
 
     const storedState = loadAutoState();
@@ -9057,12 +9600,14 @@ function initPointsBuilderMain() {
     const legacyStatePresets = Array.isArray(storedState?.presets) ? storedState.presets : [];
     const restoredState = normalizeState(storedState);
     if (restoredState) state = restoredState;
+    syncCompositionRegisteredBuilderSnapshots();
     state.variables = normalizeVariableState(state.variables);
     const hasSharedPresetList = hasPresetList();
-    presetList = dedupePresetList(hasSharedPresetList ? loadPresetList() : legacyStatePresets);
+    const sharedPresets = hasSharedPresetList ? loadPresetList() : [];
+    presetList = dedupePresetList([...sharedPresets, ...legacyStatePresets]);
     presetGroups = dedupePresetGroups(loadPresetGroups().concat(presetList.map((it) => it.group)));
     let legacyPresetMigrationComplete = hasSharedPresetList || legacyStatePresets.length === 0;
-    if (!hasSharedPresetList && presetList.length) {
+    if (legacyStatePresets.length && presetList.length) {
         legacyPresetMigrationComplete = savePresetList(presetList, presetGroups);
     }
 
@@ -9212,6 +9757,15 @@ function initPointsBuilderMain() {
         suppressFocusHistory = true;
         renderAll();
         suppressFocusHistory = false;
+        const restoredFocus = focusedNodeId ? findNodeContextById(focusedNodeId)?.node : null;
+        if (restoredFocus?.kind === EFFECT_RING_KIND) {
+            activeParameterizedInstanceNodeId = restoredFocus.id;
+            resetPresetRingSharedVariableState();
+            loadPresetRingEditorFromNode(restoredFocus);
+            scheduleParamEditorRender();
+        } else {
+            closePresetRingTool();
+        }
         // 尝试恢复焦点（不强制，避免打断用户）
         requestAnimationFrame(() => {
             if (!focusedNodeId) return;
@@ -14014,6 +14568,8 @@ function initPointsBuilderMain() {
         if (focusedNode?.kind === EFFECT_RING_KIND
             && (activeParameterizedInstanceNodeId !== focusedNode.id || presetRingTool?.classList.contains("hidden"))) {
             openParameterizedInstanceEditor(focusedNode);
+        } else if (focusedNode?.kind !== EFFECT_RING_KIND && activeParameterizedInstanceNodeId) {
+            closePresetRingTool();
         }
     }
 
@@ -14030,6 +14586,9 @@ function initPointsBuilderMain() {
         updateFocusCardUI();
         scheduleParamEditorRender();
         handleCollapseAllFocusChange(prev, null);
+        if (activeParameterizedInstanceNodeId) {
+            closePresetRingTool();
+        }
     }
 
 
@@ -16190,15 +16749,29 @@ function openActionMenuForBlankNoSelection(ev) {
     const items = [
         {
             label: "添加组",
-            onSelect: () => addShortcutKindInContext("add_builder", getBlankInsertContext)
+            children: [
+                {
+                    label: "普通组",
+                    onSelect: () => addShortcutKindInContext("add_builder", getBlankInsertContext)
+                },
+                {
+                    label: "遮罩组",
+                    onSelect: () => addShortcutKindInContext("clear_as_mask", getBlankInsertContext)
+                }
+            ]
         },
         {
-            label: "旋转嵌套组",
-            onSelect: () => addShortcutKindInContext("add_with", getBlankInsertContext)
-        },
-        {
-            label: "添加遮罩组",
-            onSelect: () => addShortcutKindInContext("clear_as_mask", getBlankInsertContext)
+            label: "组效果",
+            children: [
+                {
+                    label: "旋转嵌套组",
+                    onSelect: () => addShortcutKindInContext("add_with", getBlankInsertContext)
+                },
+                {
+                    label: "环形放置",
+                    onSelect: () => addShortcutKindInContext("effect_ring", getBlankInsertContext)
+                }
+            ]
         },
         {
             label: "添加圆遮罩",
@@ -16277,9 +16850,16 @@ function openActionMenuForBlankNoSelection(ev) {
             onSelect: () => completeBuilderSnapshotEdit(singleCtxNode.node)
         });
     }
+    const isEffectRing = singleCtxNode?.node?.kind === EFFECT_RING_KIND;
+    if (isEffectRing) {
+        items.push({
+            label: "转换为普通组",
+            onSelect: () => convertSingleGroupNode(singleCtxNode.node, "add_builder", { expanded: true })
+        });
+    }
     const isSingleGroup = !!(singleCtxNode && singleCtxNode.node
         && (isBuilderContainerKind(singleCtxNode.node.kind) || singleCtxNode.node.kind === BUILDER_REFERENCE_KIND));
-    const groupEntry = isInstanceEdit ? null : buildGroupActionMenuEntry(ids, {
+    const groupEntry = isInstanceEdit || isEffectRing ? null : buildGroupActionMenuEntry(ids, {
         mode: isSingleGroup ? "convert" : "create",
         sourceNode: isSingleGroup ? singleCtxNode.node : null,
         sourceKind: isSingleGroup ? singleCtxNode.node.kind : null
@@ -18578,6 +19158,11 @@ function collectSyntheticVecTargetsForNode(node) {
     }
 
     function renderAll() {
+        cleanupUnreferencedBuilderSnapshots();
+        if (activeParameterizedInstanceNodeId
+            && !findNodeContextById(activeParameterizedInstanceNodeId)?.node) {
+            closePresetRingTool();
+        }
         ensureUniqueNodeIds(state.root);
         referenceGuideController?.sync?.();
         if (activeBuilderColumn === "guides") referenceGuideController?.renderPanel?.();
@@ -18594,9 +19179,6 @@ function collectSyntheticVecTargetsForNode(node) {
         }
         updateBezierGuidePreview();
         rebuildPreviewAndKotlin();
-        if (presetRingTool && !presetRingTool.classList.contains("hidden") && typeof renderPresetRingPreview === "function") {
-            renderPresetRingPreview();
-        }
     }
 
     const pickerModule = createPickerModule({
@@ -18734,8 +19316,10 @@ function collectSyntheticVecTargetsForNode(node) {
         getAutoSelectCompleteGroups: () => autoSelectCompleteGroups,
         getBuilderSnapshot: (id) => ensureBuilderSnapshotState()[String(id || "")] || null,
           openParameterizedInstanceEditor,
+          renderEffectRingParams,
           renderBuilderReferenceVariables,
           changeBuilderReferenceId,
+          reconstructBuilderReference,
           setBuilderReferenceInstanceMode,
           setDraggingState: (v) => { isDraggingCard = !!v; },
           onCardSelectionChange: () => {
@@ -19073,7 +19657,10 @@ function collectSyntheticVecTargetsForNode(node) {
         },
         setLineDivisionPoints,
         historyCapture,
-        setState: (next) => { state = normalizeState(next); },
+        setState: (next) => {
+            state = normalizeState(next);
+            syncCompositionRegisteredBuilderSnapshots();
+        },
         normalizeNodeTree,
         ensureAxisEverywhere,
         ensureAxisInList,
@@ -19116,7 +19703,8 @@ function collectSyntheticVecTargetsForNode(node) {
         const recoveredJson = safeStringifyState(record.state);
         if (!recoveredJson || recoveredJson === initialAutoStateJson) return;
         state = normalizeState(record.state);
-        lastSavedStateJson = recoveredJson;
+        syncCompositionRegisteredBuilderSnapshots();
+        lastSavedStateJson = safeStringifyState(state) || recoveredJson;
         renderAll();
         showToast("已恢复最近一次自动保存", "info");
     }).catch(() => {});

@@ -14,7 +14,6 @@ import {
   normalizeCParticleForceResources,
   normalizeCParticleSigns
 } from './cparticle-forces.js';
-
 export { GENERATOR_VALUE_TYPES };
 export {
   CPARTICLE_FORCE_MAX_COMMANDS,
@@ -824,6 +823,7 @@ export function normalizeGeneratorProject(raw = {}) {
   delete normalized.particleBackend;
   delete normalized.gpuCommands;
   delete normalized.cparticleForces;
+  delete normalized.settings.autoSaveIntervalsMinutes;
   return normalized;
 }
 

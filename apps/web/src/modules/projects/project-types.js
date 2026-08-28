@@ -20,7 +20,8 @@ function compositionPreferencesFromDraft(payload) {
   if (!state || typeof state !== 'object' || Array.isArray(state)) return null;
   const preferences = {};
   if (state.settings && typeof state.settings === 'object' && !Array.isArray(state.settings)) {
-    preferences.settings = state.settings;
+    const { autoSaveIntervalsMinutes, ...settings } = state.settings;
+    if (Object.keys(settings).length) preferences.settings = settings;
   }
   if (state.hotkeys && typeof state.hotkeys === 'object' && !Array.isArray(state.hotkeys)) {
     preferences.hotkeys = state.hotkeys;
